@@ -15,4 +15,4 @@ if [ ! -f "$FARMS_FILE" ] && [ -f /app/farms.example.json ]; then
   echo "[entrypoint] farms.json не найден — скопирован стартовый шаблон в $FARMS_FILE"
 fi
 
-exec uvicorn main:app --host 0.0.0.0 --port "${PORT:-8787}"
+exec python -m uvicorn main:app --host 0.0.0.0 --port "${PORT:-8787}"

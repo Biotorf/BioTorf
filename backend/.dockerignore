@@ -1,8 +1,7 @@
-__pycache__/
-*.pyc
+# BIOTORF Business OS
+backend/
+biotorf-os/
+*.db
 .env
-comms.db
-farms.json
-# farms.example.json — стартовый шаблон реестра, нужен в образе (Docker)
-server.log
-Dockerfile
+README*.md
+docker-compose.yml
