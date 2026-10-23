@@ -57,7 +57,7 @@ docker compose up -d --build
 
 Готово ✅ — приложение доступно на **http://localhost:8080**, Swagger API — на **http://localhost:8080/docs**.
 
-Подробности: [README-DOCKER.md](README-DOCKER.md) · [DOCKER.md](DOCKER.md) · [Запуск в Docker Desktop (пошагово)](README-DOCKER-DESKTOP.md)
+Подробности: [README-DOCKER.md](README-DOCKER.md) · [DOCKER.md](DOCKER.md) · [Запуск в Docker Desktop (пошагово)](README-DOCKER-DESKTOP.md) · [Подключение Telegram](TELEGRAM.md)
 
 ## 🧪 Как проверить, что коммуникации работают
 
@@ -111,6 +111,7 @@ BioTorf/
 ├── README-DOCKER.md        # полный гайд по Docker-стеку
 ├── README-DOCKER-DESKTOP.md # пошаговая привязка и запуск в Docker Desktop
 ├── DOCKER.md               # архитектурные заметки
+├── TELEGRAM.md             # подключение Telegram-бота к ленте коммуникаций
 └── BIOTORF_Business_OS_demo_v0.9.html  # автономный демо-прототип
 ```
 
