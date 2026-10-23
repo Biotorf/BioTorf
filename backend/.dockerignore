@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.env
+comms.db
+farms.json
+server.log
+Dockerfile

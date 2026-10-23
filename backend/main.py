@@ -36,7 +36,10 @@ import db as store
 
 # ── конфигурация ─────────────────────────────────────────────────────────────
 def _env(name: str, default: str = "") -> str:
-    # простой .env без внешних зависимостей
+    # приоритет: переменные окружения (Docker compose задаёт их явно), затем файл .env
+    val = os.environ.get(name)
+    if val is not None and val != "":
+        return val
     env_file = Path(__file__).resolve().parent / ".env"
     if env_file.exists():
         for line in env_file.read_text().splitlines():
@@ -45,7 +48,10 @@ def _env(name: str, default: str = "") -> str:
                 k, _, v = line.partition("=")
                 if k.strip() == name:
                     return v.strip().strip('"').strip("'")
-    return os.environ.get(name, default)
+    return default
+
+
+FARMS_FILE = Path(_env("FARMS_FILE", str(Path(__file__).resolve().parent / "farms.json")))
 
 TELEGRAM_SECRET = _env("TELEGRAM_WEBHOOK_SECRET")          # X-Bot-Secret для TG-воркера
 WHATSAPP_TOKEN = _env("WHATSAPP_APP_SECRET")               # секрет Meta для проверки подписи
@@ -92,7 +98,7 @@ def auto_link(phone: str | None) -> str | None:
     d = digits(phone)
     if len(d) < 6:
         return None
-    farms_file = Path(__file__).resolve().parent / "farms.json"
+    farms_file = FARMS_FILE
     if farms_file.exists():
         try:
             farms = json.loads(farms_file.read_text())

@@ -9,6 +9,11 @@ function load() {
     const raw = localStorage.getItem(KEY);
     if (!raw) return structuredClone(SAMPLE);
     const parsed = JSON.parse(raw);
+    // миграция v1 → v2: убираем тестовые коммуникации из сохранённого демо-состояния
+    if (!parsed.version || parsed.version < 2) {
+      parsed.comms = [];
+      parsed.version = 2;
+    }
     // дополняем отсутствующие коллекции как в исходнике
     parsed.social ??= structuredClone(SAMPLE.social || []);
     parsed.contacts ??= [];
@@ -19,7 +24,7 @@ function load() {
     parsed.preferences ??= {};
     parsed.journeys ??= [];
     parsed.quotes ??= [];
-    parsed.comms ??= structuredClone(SAMPLE.comms || []);
+    parsed.comms ??= [];
     return parsed;
   } catch {
     return structuredClone(SAMPLE);

@@ -1,0 +1,58 @@
+# BIOTORF Business OS · compose-стек: frontend (nginx) + backend (FastAPI + SQLite volume)
+#
+# Запуск:                docker compose up -d --build
+# Фронтенд:              http://localhost:8080  (API/вебхуки проксируются на бэкенд через nginx)
+# Swagger бэкенда:       http://localhost:8080/docs  (или напрямую http://localhost:8787/docs)
+# Остановка:             docker compose down        (данные БД переживают перезапуск — volume dbdata)
+# Сброс БД:              docker compose down -v     ⚠ удалит все коммуникации
+
+services:
+  backend:
+    build: ./backend
+    container_name: biotorf-backend
+    restart: unless-stopped
+    environment:
+      DB_PATH: /data/comms.db
+      # Секреты интеграций подхватываются из файла .env рядом с этим файлом:
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-dev-telegram-secret}
+      WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-dev-whatsapp-app-secret}
+      TELEPHONY_TOKEN: ${TELEPHONY_TOKEN:-dev-telephony-token}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173,null}
+      FARMS_FILE: /data/farms.json
+    volumes:
+      - dbdata:/data
+    ports:
+      - "8787:8787"          # прямой доступ к API (для curl-тестов и локальной разработки)
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8787/health',timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  frontend:
+    build:
+      context: ./biotorf-os
+      args:
+        # пусто => фронт сам определит бэкенд по текущему хосту (window.location.origin)
+        VITE_COMMS_API: ${VITE_COMMS_API:-}
+    container_name: biotorf-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+
+  # Опционально: Telegram long-poll воркер (запуск: docker compose --profile tg up -d)
+  telegram-worker:
+    build: ./backend
+    container_name: biotorf-tg-worker
+    profiles: ["tg"]
+    restart: unless-stopped
+    command: ["python", "telegram_worker.py", "--api", "http://backend:8787"]
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-dev-telegram-secret}
+
+volumes:
+  dbdata:

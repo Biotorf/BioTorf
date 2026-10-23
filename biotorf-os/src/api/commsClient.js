@@ -5,10 +5,21 @@
 //     (общая база для всех сотрудников, вебхуки от Telegram/WhatsApp/телефонии);
 //   • бэкенда нет    — всё остаётся локально в localStorage (демо-режим v0.9).
 //
-// URL переопределяется через .env фронтенда: VITE_COMMS_API=http://host:8787
+// URL бэкенда: VITE_COMMS_API из окружения сборки; если пусто — определяем по
+// текущему хосту (в Docker-стеке фронт и API живут на одном origin, nginx
+// проксирует /api, /webhooks, /health на backend). При npm run dev без
+// явной переменной остаёмся на http://127.0.0.1:8787.
+function resolveApiUrl() {
+  const configured = import.meta.env?.VITE_COMMS_API;
+  if (configured) return configured;
+  if (typeof window !== 'undefined' && window.location && window.location.origin
+      && !window.location.origin.startsWith('file:')) {
+    return window.location.origin;   // прод/докер: тот же хост, что отдаёт фронт
+  }
+  return 'http://127.0.0.1:8787';    // локальная разработка вразноброс
+}
 
-export const COMMS_API_URL =
-  import.meta.env?.VITE_COMMS_API || 'http://127.0.0.1:8787';
+export const COMMS_API_URL = resolveApiUrl();
 
 // Флаг включается после успешного /health (см. checkApi)
 export const apiState = { online: false };

@@ -169,9 +169,10 @@ onMounted(async () => {
         через вебхуки бэкенда (<code>/webhooks/*</code>).
       </template>
       <template v-else>
-        Демонстрационная версия (локально, без бэкенда): сообщения фиксируются вручную.
-        Поднимите <code>backend/</code> (<code>uvicorn main:app --port 8787</code>) — и лента станет
-        общей, с автоприёмом из IP-телефонии, Telegram Bot API и WhatsApp Business API.
+        Лента работает локально (без бэкенда): сообщения фиксируются вручную и видны только в
+        этом браузере. Запустите стек — <code>docker compose up -d --build</code> (или локально
+        <code>cd backend && uvicorn main:app --port 8787</code>) — и лента станет общей, с
+        автоприёмом из IP-телефонии, Telegram Bot API и WhatsApp Business API.
       </template>
       <div v-if="db.commsSyncError" style="color:#b42318;margin-top:6px">
         Ошибка синхронизации: {{ db.commsSyncError }}

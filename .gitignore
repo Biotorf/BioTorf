@@ -1,0 +1,21 @@
+# ── Node / фронтенд ──
+node_modules/
+dist/
+*.log
+
+# ── Python / бэкенд ──
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# ── Данные и секреты (не должны попадать в git и в docker-образы) ──
+.env
+backend/.env
+backend/comms.db
+backend/farms.json
+backend/server.log
+
+# ── Прочее ──
+.git/
+.DS_Store

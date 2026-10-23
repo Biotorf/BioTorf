@@ -17,10 +17,12 @@
 """
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parent / "comms.db"
+# Путь к БД переопределяется через DB_PATH (в Docker — /data/comms.db на volume)
+DB_PATH = Path(os.environ.get("DB_PATH", str(Path(__file__).resolve().parent / "comms.db")))
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS comms (
