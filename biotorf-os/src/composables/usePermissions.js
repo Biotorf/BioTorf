@@ -17,6 +17,7 @@ const ROLES = {
 
 const EDIT_RULES = {
   crm: ['director', 'operations', 'sales_head', 'dispatcher', 'sales'],
+  comms: ['director', 'operations', 'sales_head', 'dispatcher', 'sales', 'agronomist', 'marketing'],
   pipeline: ['director', 'sales_head', 'sales'],
   pilots: ['director', 'agronomist', 'sales_head'],
   knowledge: ['director', 'agronomist', 'sales_head', 'marketing'],

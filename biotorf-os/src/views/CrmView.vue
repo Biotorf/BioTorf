@@ -21,6 +21,9 @@ const farms = computed(() =>
         .join(' ').toLowerCase().includes(q);
     })
 );
+
+const commsCount = (farmId) => db.comms.filter((c) => c.farmId === farmId).length;
+const commsUnread = (farmId) => db.comms.filter((c) => c.farmId === farmId && !c.read).length;
 </script>
 
 <template>
@@ -43,6 +46,7 @@ const farms = computed(() =>
             <th>Менеджер</th>
             <th>Статус</th>
             <th>След. контакт</th>
+            <th>Связь</th>
           </tr>
         </thead>
         <tbody>
@@ -62,6 +66,11 @@ const farms = computed(() =>
             <td>{{ f.owner }}</td>
             <td><StatusPill :status="f.status" /></td>
             <td>{{ day(f.next) }}</td>
+            <td @click.stop>
+              <button class="btn slim ghost" title="Открыть переписку и звонки" @click="ui.openComms(f.id)">
+                ☎ {{ commsCount(f.id) }}<template v-if="commsUnread(f.id)"> · <span class="pill red">{{ commsUnread(f.id) }}</span></template>
+              </button>
+            </td>
           </tr>
         </tbody>
       </table>

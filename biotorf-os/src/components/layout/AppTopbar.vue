@@ -19,6 +19,9 @@ const { ROLES } = usePermissions();
       />
     </div>
     <div class="topright">
+      <button class="toolbar-icon" @click="ui.go('comms')" title="Коммуникации: звонки и сообщения">
+        ☎<i v-if="db.comms.filter((c) => !c.read).length">{{ db.comms.filter((c) => !c.read).length }}</i>
+      </button>
       <button class="toolbar-icon" @click="ui.go('notifications')" title="Уведомления">
         ♢<i>{{ db.lateTasks.length }}</i>
       </button>

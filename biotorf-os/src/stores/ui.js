@@ -12,8 +12,17 @@ export const useUiStore = defineStore('ui', {
     calMode: 'Месяц',
     calAnchor: new Date(),
     socialTab: 'content',
+    commsFilter: 'all',        // all | call | telegram | whatsapp
+    commsFocusFarm: null,      // farmId, на котором сфокусироваться в ленте
   }),
   actions: {
+    openClient(farmId) {
+      this.openModal('Карточка клиента', () => import('@/views/ClientCardModal.vue'), { farmId });
+    },
+    openComms(farmId = null) {
+      if (farmId) this.commsFocusFarm = farmId;
+      this.go('comms');
+    },
     go(view) {
       this.view = view;
       this.search = '';
