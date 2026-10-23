@@ -1,0 +1,5 @@
+comms.db
+.env
+farms.json
+server.log
+__pycache__/
