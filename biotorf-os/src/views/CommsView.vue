@@ -375,6 +375,14 @@ onMounted(async () => {
               ответ сохранится только в ленте. Впишите токен из @BotFather в .env и выполните
               <code>docker compose --profile tg up -d --force-recreate</code>. Подробности: <code>docker logs biotorf-backend</code>.
             </div>
+            <div v-else-if="apiState.online && replyTarget.kind === 'whatsapp' && caps.whatsappSend" class="mini comms-ok" style="margin-top:8px">
+              ✉ Сообщение будет реально отправлено клиенту в WhatsApp с бизнес-номера{{ caps.whatsappPhone ? ' ' + caps.whatsappPhone : '' }}
+            </div>
+            <div v-else-if="apiState.online && replyTarget.kind === 'whatsapp'" class="mini comms-warn" style="margin-top:8px">
+              ⚠ Отправка в WhatsApp не настроена на сервере{{ caps.whatsappError ? ': ' + caps.whatsappError : '' }} —
+              ответ сохранится только в ленте. Заполните WHATSAPP_TOKEN и WHATSAPP_PHONE_NUMBER_ID в .env и выполните
+              <code>docker compose up -d --force-recreate backend</code>. Подробности: README-WHATSAPP.md.
+            </div>
             <div v-if="replyError" class="mini comms-error" style="margin-top:8px">{{ replyError }}</div>
             <div v-if="replyNotice" class="mini comms-ok" style="margin-top:8px">{{ replyNotice }}</div>
             <div v-else class="mini" style="margin-top:8px">

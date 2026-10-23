@@ -21,6 +21,9 @@ services:
       FARMS_FILE: /data/farms.json
       # Токен бота нужен и бэкенду (проверка валидности через getMe при старте):
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      # WhatsApp Cloud API — исходящая отправка из ленты (см. README-WHATSAPP.md):
+      WHATSAPP_TOKEN: ${WHATSAPP_TOKEN:-}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
     volumes:
       # БД + реестр клиентов живут в volume /data (создаётся автоматически).
       # Farms-файл НЕ монтируется с хоста: на Windows/Docker Desktop bind-mount

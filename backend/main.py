@@ -36,6 +36,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 import db as store
+import whatsapp_client
 
 # ── конфигурация ─────────────────────────────────────────────────────────────
 def _env(name: str, default: str = "") -> str:
@@ -60,6 +61,9 @@ TELEGRAM_SECRET = _env("TELEGRAM_WEBHOOK_SECRET")          # X-Bot-Secret для
 WHATSAPP_TOKEN = _env("WHATSAPP_APP_SECRET")               # секрет Meta для проверки подписи
 TELEPHONY_TOKEN = _env("TELEPHONY_TOKEN")                  # ?token= для телефонии
 TELEGRAM_BOT_TOKEN = (_env("TELEGRAM_BOT_TOKEN") or "").strip()  # токен бота — исходящая отправка из ленты
+# ── WhatsApp Cloud API (исходящая отправка из ленты) ──
+WHATSAPP_SEND_TOKEN = (_env("WHATSAPP_TOKEN") or "").strip()               # постоянный Access Token Meta
+WHATSAPP_PHONE_NUMBER_ID = (_env("WHATSAPP_PHONE_NUMBER_ID") or "").strip()  # id бизнес-номера
 CORS_ORIGINS = [o.strip() for o in _env(
     "CORS_ORIGINS",
     "http://localhost:5173,http://127.0.0.1:5173,null").split(",") if o.strip()]
@@ -75,11 +79,12 @@ app.add_middleware(
 
 
 TELEGRAM_BOT_INFO: dict | None = None  # результат getMe при старте (для /health и диагностики)
+WHATSAPP_INFO: dict | None = None      # результат проверки конфигурации Cloud API при старте
 
 
 @app.on_event("startup")
 def startup():
-    global TELEGRAM_BOT_INFO
+    global TELEGRAM_BOT_INFO, WHATSAPP_INFO
     store.init_db()
     # Проверяем токен бота сразу при старте, чтобы проблемы было видно в логах
     # и в /health, а не только когда пользователь попытается ответить.
@@ -98,6 +103,14 @@ def startup():
     else:
         print("[telegram] TELEGRAM_BOT_TOKEN пуст — исходящие ответы в Telegram отключены. "
               "Впишите токен из @BotFather в .env и выполните docker compose up -d --force-recreate")
+    # Аналогичная диагностика для WhatsApp Cloud API
+    WHATSAPP_INFO = whatsapp_client.check_config(WHATSAPP_SEND_TOKEN, WHATSAPP_PHONE_NUMBER_ID)
+    if WHATSAPP_INFO["ok"]:
+        print(f"[whatsapp] конфигурация принята Meta: номер {WHATSAPP_INFO.get('phone')} "
+              f"(id={WHATSAPP_INFO.get('id')}) — исходящая отправка активна")
+    else:
+        print(f"[whatsapp] исходящая отправка НЕ настроена: {WHATSAPP_INFO['error']}. "
+              "Заполните WHATSAPP_TOKEN и WHATSAPP_PHONE_NUMBER_ID в .env (см. README-WHATSAPP.md)")
 
 
 def now_iso() -> str:
@@ -289,6 +302,27 @@ def send_telegram(item: dict, text: str) -> dict:
     raise HTTPException(502, f"Telegram не принял сообщение: {last_err}")
 
 
+def send_whatsapp(item: dict, text: str) -> dict:
+    """Отправка сообщения клиенту в WhatsApp через Cloud API (Graph).
+
+    Адресат — телефон входящего сообщения (item.phone). Meta отвечает ошибкой,
+    если у получателя нет WhatsApp или прошёл >24ч без его сообщения —
+    ошибку видно в логах и в payload записи-ответа (sendError).
+    """
+    if not WHATSAPP_SEND_TOKEN or not WHATSAPP_PHONE_NUMBER_ID:
+        raise HTTPException(503, "WhatsApp не настроен: заполните WHATSAPP_TOKEN и WHATSAPP_PHONE_NUMBER_ID в .env "
+                                 "и выполните docker compose up -d --force-recreate")
+    to = item.get("phone")
+    if not to:
+        raise HTTPException(422, "Неизвестен адресат WhatsApp (у входящей записи нет номера телефона)")
+    try:
+        res = whatsapp_client.send_message(WHATSAPP_SEND_TOKEN, WHATSAPP_PHONE_NUMBER_ID, to, text)
+    except whatsapp_client.WhatsAppError as e:
+        raise HTTPException(502, f"WhatsApp/Meta не принял сообщение: {e}")
+    msg_id = ((res.get("messages") or [{}])[0]).get("id")
+    return {"sent": True, "via": "whatsapp", "messageId": msg_id}
+
+
 @app.post("/api/comms/{comm_id}/send")
 def send_reply(comm_id: str, body: SendIn):
     """Ответить клиенту из ленты: реально отправить в канал и создать
@@ -314,8 +348,13 @@ def send_reply(comm_id: str, body: SendIn):
             except HTTPException as e:
                 send_error = str(e.detail)[:200]  # не удалось напрямую — доставит воркер из outbox
     elif item["kind"] == "whatsapp":
-        # TODO: WhatsApp Cloud API messages (нужны WABA phone_number_id + token)
-        raise HTTPException(501, "Исходящая отправка в WhatsApp пока не подключена — запись сохраняется как зафиксированный ответ")
+        # В WhatsApp бот может писать только по номеру телефона входящего
+        # сообщения; отправляем сразу через Cloud API.
+        if WHATSAPP_SEND_TOKEN and WHATSAPP_PHONE_NUMBER_ID:
+            try:
+                sent = send_whatsapp(item, body.text)
+            except HTTPException as e:
+                send_error = str(e.detail)[:200]
 
     reply = {
         "id": new_id(),
@@ -333,6 +372,7 @@ def send_reply(comm_id: str, body: SendIn):
         "payload": {
             "replyTo": comm_id,
             "tgMessageId": (sent or {}).get("messageId"),
+            "waMessageId": (sent or {}).get("messageId") if (sent or {}).get("via") == "whatsapp" else None,
             "chatId": (item.get("payload") or {}).get("chatId"),
             "userIndex": (item.get("payload") or {}).get("userIndex"),
             **({"sendError": send_error} if send_error else {}),
@@ -372,7 +412,9 @@ def capabilities():
     return {
         "telegramSend": bool(TELEGRAM_BOT_TOKEN and TELEGRAM_BOT_INFO),
         "telegramBot": (TELEGRAM_BOT_INFO or {}).get("username"),
-        "whatsappSend": False,
+        "whatsappSend": bool(WHATSAPP_INFO and WHATSAPP_INFO.get("ok")),
+        "whatsappPhone": (WHATSAPP_INFO or {}).get("phone"),
+        "whatsappError": None if (WHATSAPP_INFO or {}).get("ok") else (WHATSAPP_INFO or {}).get("error"),
     }
 
 
