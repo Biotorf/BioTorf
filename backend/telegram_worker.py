@@ -43,10 +43,15 @@ def main():
     parser.add_argument("--once", action="store_true", help="один цикл getUpdates и выход (для теста)")
     args = parser.parse_args()
 
-    if not BOT_TOKEN:
-        sys.exit("Не задан TELEGRAM_BOT_TOKEN")
+    if not BOT_TOKEN or not BOT_TOKEN.strip():
+        sys.exit(
+            "[tg-worker] ОШИБКА: TELEGRAM_BOT_TOKEN пуст. "
+            "Впишите токен от @BotFather в файл .env рядом с docker-compose.yml "
+            "и выполните: docker compose --profile tg up -d --force-recreate telegram-worker"
+        )
     if not WEBHOOK_SECRET:
-        sys.exit("Не задан TELEGRAM_WEBHOOK_SECRET")
+        sys.exit("[tg-worker] ОШИБКА: не задан TELEGRAM_WEBHOOK_SECRET")
+    print(f"[tg-worker] старт, токен выглядит как {BOT_TOKEN[:12]}...{BOT_TOKEN[-4:]}")
 
     # Сбрасываем webhook, если он был назначен ранее — иначе getUpdates вернёт ошибку 409.
     try:

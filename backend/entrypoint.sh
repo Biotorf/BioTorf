@@ -15,4 +15,10 @@ if [ ! -f "$FARMS_FILE" ] && [ -f /app/farms.example.json ]; then
   echo "[entrypoint] farms.json не найден — скопирован стартовый шаблон в $FARMS_FILE"
 fi
 
+# Команда из docker-compose (например, python telegram_worker.py для tg-worker)
+# имеет приоритет; если её нет — стартуем API-сервер uvicorn.
+if [ "$#" -gt 0 ]; then
+  exec "$@"
+fi
+
 exec python -m uvicorn main:app --host 0.0.0.0 --port "${PORT:-8787}"
