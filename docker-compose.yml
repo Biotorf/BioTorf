@@ -23,14 +23,22 @@ services:
       - dbdata:/data
       # Реестр клиентов для автопривязки по номерам — файл на хосте,
       # редактируется админом и подхватывается контейнером сразу.
-      - ${FARMS_HOST_FILE:-./backend/farms.json}:/data/farms.json
+      # ⚠ Если файла на хосте нет, Docker создал бы КАТАЛОГ /data/farms.json,
+      # и бэкенд упал бы с IsADirectoryError → контейнер unhealthy.
+      # Поэтому src указывает на гарантированно существующий farms.example.json;
+      # FARMS_HOST_FILE позволяет переопределить своим файлом:
+      #   FARMS_HOST_FILE=./backend/farms.json docker compose up -d
+      - ${FARMS_HOST_FILE:-./backend/farms.example.json}:/data/farms.json:ro
     ports:
       - "8787:8787"          # прямой доступ к API (для curl-тестов и локальной разработки)
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8787/health',timeout=3)"]
-      interval: 15s
+      # start_period даёт uvicorn время подняться до первых проверок;
+      # внутри контейнера есть curl (установлен ниже в образе).
+      test: ["CMD", "curl", "-fsS", "--max-time", "4", "http://127.0.0.1:8787/health"]
+      interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
+      start_period: 40s
 
   frontend:
     build:

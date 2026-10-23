@@ -37,12 +37,13 @@ biotorf-os/nginx.conf   # маршруты фронта и проксирова�
   пересборку образов и перезапуск контейнеров.
 - Перезапуск без потери данных: `docker compose up -d`.
 - Полная очистка ленты: `docker compose down -v` ⚠ удалит все коммуникации.
-- Реестр клиентов для автопривязки по телефону — `backend/farms.json`
-  (маунтится в контейнер в `/data/farms.json`). Это рабочий файл: правьте
-  список хозяйств и телефонов прямо на хосте, изменения видны бэкенду сразу.
-  В git хранится шаблон `backend/farms.example.json` — при отсутствии
-  рабочего файла скопируйте его: `cp backend/farms.example.json backend/farms.json`.
-  Можно указать свой путь: `FARMS_HOST_FILE=/path/to/farms.json docker compose up -d`.
+- Реестр клиентов для автопривязки по телефону: по умолчанию в контейнер
+  монтируется `backend/farms.example.json` (он есть в git — стек стартует
+  без дополнительных шагов). Чтобы вести свой реестр:
+  `cp backend/farms.example.json backend/farms.json`, отредактируйте его и
+  укажите `FARMS_HOST_FILE=./backend/farms.json` в `.env` (или перед запуском:
+  `FARMS_HOST_FILE=./backend/farms.json docker compose up -d`).
+  Изменения в файле на хосте видны бэкенду сразу.
 
 ## Проверка ленты после запуска
 

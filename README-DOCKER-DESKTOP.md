@@ -56,7 +56,7 @@ docker compose up -d --build
 ## 4. Данные и база
 
 - База SQLite живёт в named volume **`dbdata`** (виден в Docker Desktop → **Volumes**). Данные переживают перезапуск и пересборку контейнеров.
-- Реестр клиентов для автопривязки по телефонам — файл `backend/farms.json` на хосте, примонтирован внутрь контейнера (`/data/farms.json`). Правьте его и изменения подхватываются сразу.
+- Реестр клиентов для автопривязки по телефонам по умолчанию — `backend/farms.example.json` (в git). Для своего реестра: `cp backend/farms.example.json backend/farms.json`, отредактируйте и добавьте в `.env` строку `FARMS_HOST_FILE=./backend/farms.json`, затем `docker compose up -d`.
 
 Проверить volume:
 ```bash
