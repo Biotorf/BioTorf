@@ -9,6 +9,7 @@ const { ROLES } = usePermissions();
 const MENU = [
   ['dashboard', '▦', 'Обзор'],
   ['crm', '♙', 'Клиенты и хозяйства'],
+  ['comms', '☎', 'Коммуникации'],
   ['pipeline', '▥', 'Сделки и воронка'],
   ['journey', '⤳', 'Сквозной процесс'],
   ['pilots', '❧', 'Агрономия'],
@@ -29,13 +30,16 @@ const MENU = [
 
 const VIS = {
   director: MENU.map((m) => m[0]),
-  operations: ['dashboard', 'crm', 'pilots', 'knowledge', 'social', 'orders', 'production', 'warehouse', 'shipments', 'finance', 'tasks', 'analytics'],
+  operations: ['dashboard', 'crm', 'comms', 'pilots', 'knowledge', 'social', 'orders', 'production', 'warehouse', 'shipments', 'finance', 'tasks', 'analytics'],
   // ... остальные роли 1:1 из исходника
 };
 
+// ключи разделов, которые видны всем ролям (общая рабочая лента связи)
+const ALWAYS = ['comms'];
+
 const visibleMenu = computed(() => {
   const avail = VIS[ui.role] || VIS.director;
-  return MENU.filter((m) => avail.includes(m[0]));
+  return MENU.filter((m) => avail.includes(m[0]) || ALWAYS.includes(m[0]));
 });
 </script>
 

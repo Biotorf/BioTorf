@@ -4,6 +4,12 @@ const datePlus = (days) => {
   return d.toISOString().slice(0, 10);
 };
 
+const hoursAgo = (h) => {
+  const d = new Date();
+  d.setHours(d.getHours() - h);
+  return d.toISOString();
+};
+
 export const SAMPLE = {
   version: 1,
   mode: 'demo',
@@ -38,6 +44,16 @@ export const SAMPLE = {
   invoices: [ /* ... 3 записи ... */ ],
   payments: [],
   tasks: [ /* ... 5 записей ... */ ],
+  // Единая лента коммуникаций: звонки (телефония) и сообщения (Telegram / WhatsApp).
+  // kind: 'call' | 'telegram' | 'whatsapp'; dir: 'in' | 'out'
+  comms: [
+    { id: 'C-001', kind: 'call', dir: 'in', farmId: 'F-001', contact: 'Аскер (владелец)', phone: '+996 700 112 233', ts: hoursAgo(2), duration: 260, status: 'Разговор', note: 'Вопрос по обработке картофеля на следующей неделе', read: false },
+    { id: 'C-002', kind: 'telegram', dir: 'in', farmId: 'F-001', contact: 'Аскер (владелец)', handle: '@asker_farmer', ts: hoursAgo(4), text: 'Добрый день! Когда можно привезти BIOTORF на пробу? Участок 40 га, картофель.', read: false },
+    { id: 'C-003', kind: 'whatsapp', dir: 'out', farmId: 'F-002', contact: 'Розница «Ак-Биле»', phone: '+996 555 443 322', ts: hoursAgo(7), text: 'Отправляем прайс по фасовке 1 л и 5 л. Условия для розницы — в приложении.', read: true },
+    { id: 'C-004', kind: 'call', dir: 'out', farmId: null, contact: null, phone: '+996 312 55 66 77', ts: hoursAgo(9), duration: 0, status: 'Пропущенный', note: 'Входящий с неизвестного номера был перезвонен — не дозвонились', read: true },
+    { id: 'C-005', kind: 'telegram', dir: 'in', farmId: null, contact: null, handle: '@greenhouse_chui', ts: hoursAgo(26), text: 'Здравствуйте, интересует препарат для теплиц (огурец). Работаете с дилерами?', read: false },
+    { id: 'C-006', kind: 'call', dir: 'in', farmId: 'F-003', contact: 'Николай Петрович', phone: '+996 770 887 665', ts: hoursAgo(30), duration: 145, status: 'Разговор', note: 'Обсудили сроки отгрузки, просит счёт до пятницы', read: true },
+  ],
   audit: [],
   contacts: [],
   clientNotes: [],

@@ -10,6 +10,7 @@ const ui = useUiStore();
 const views = {
   dashboard: markRaw(defineAsyncComponent(() => import('@/views/DashboardView.vue'))),
   crm: markRaw(defineAsyncComponent(() => import('@/views/CrmView.vue'))),
+  comms: markRaw(defineAsyncComponent(() => import('@/views/CommsView.vue'))),
   pipeline: markRaw(defineAsyncComponent(() => import('@/views/PipelineView.vue'))),
   pilots: markRaw(defineAsyncComponent(() => import('@/views/PilotsView.vue'))),
   knowledge: markRaw(defineAsyncComponent(() => import('@/views/KnowledgeView.vue'))),
