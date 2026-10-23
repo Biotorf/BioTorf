@@ -17,6 +17,7 @@ import json
 import os
 import sys
 import time
+import urllib.error
 import urllib.request
 
 API = os.environ.get("COMMS_API", "http://127.0.0.1:8787")
@@ -34,6 +35,59 @@ def post_json(url: str, payload: dict, headers: dict | None = None) -> dict:
     )
     with urllib.request.urlopen(req, timeout=15) as resp:
         return json.loads(resp.read() or b"{}")
+
+
+def get_json(url: str) -> dict:
+    with urllib.request.urlopen(url, timeout=15) as resp:
+        return json.loads(resp.read() or b"{}")
+
+
+def send_to_user(chat_id, text: str):
+    """sendMessage от имени бота; возвращает (ok, message_id, ошибка)."""
+    try:
+        res = post_json(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            {"chat_id": chat_id, "text": text, "disable_web_page_preview": True},
+        )
+        if res.get("ok"):
+            return True, res["result"].get("message_id"), None
+        return False, None, res.get("description", "unknown")
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="ignore")[:300]
+        print(f"[tg-worker] sendMessage error: {e.code} {body}", file=sys.stderr)
+        return False, None, f"HTTP {e.code}: {body}"
+    except Exception as e:
+        print(f"[tg-worker] sendMessage error: {e}", file=sys.stderr)
+        return False, None, str(e)
+
+
+def deliver_outbox(api: str):
+    """Доставка исходящих ответов, созданных в ленте CRM (/api/comms/outbox).
+
+    Бот может писать только пользователям, которые сами начали с ним диалог,
+    поэтому отправка живёт здесь (long-poll-сторона), а не в API-сервере."""
+    try:
+        data = get_json(f"{api}/api/comms/outbox?kind=telegram&limit=20")
+    except Exception as e:
+        print(f"[tg-worker] outbox fetch skip: {e}", file=sys.stderr)
+        return
+    for item in data.get("items", []):
+        payload = item.get("payload") or {}
+        chat_id = payload.get("chatId") or payload.get("userIndex")
+        if not chat_id:
+            continue
+        ok, msg_id, err = send_to_user(chat_id, item.get("text") or "")
+        try:
+            post_json(
+                f"{api}/api/comms/{item['id']}/delivered",
+                {"ok": ok, "messageId": msg_id, "error": err},
+            )
+        except Exception as e:
+            print(f"[tg-worker] delivered mark failed: {e}", file=sys.stderr)
+        if ok:
+            print(f"[tg-worker] доставлен ответ {item['id']} в чат {chat_id}")
+        else:
+            print(f"[tg-worker] НЕ доставлен {item['id']} в чат {chat_id}: {err}", file=sys.stderr)
 
 
 def main():
@@ -63,6 +117,7 @@ def main():
         print(f"[tg-worker] deleteWebhook skip: {e}", file=sys.stderr)
 
     print(f"[tg-worker] polling -> {args.api}/webhooks/telegram")
+    last_outbox = 0.0
     while True:
         try:
             url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?timeout=25&offset={OFFSET}"
@@ -78,6 +133,10 @@ def main():
         except Exception as e:
             print(f"[tg-worker] error: {e}", file=sys.stderr)
             time.sleep(3)
+        # раз в ~10 секунд проверяем очередь исходящих ответов из CRM
+        if time.time() - last_outbox >= 10:
+            last_outbox = time.time()
+            deliver_outbox(args.api)
         if args.once:
             break
 

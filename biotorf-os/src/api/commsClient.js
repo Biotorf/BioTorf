@@ -46,6 +46,10 @@ export function checkApi() {
   return healthPromise;
 }
 
+// Возможности сервера (что настроено): telegramSend / whatsappSend.
+// Подтягивается при синхронизации ленты; по умолчанию считаем что отправки нет.
+export const caps = { telegramSend: false, whatsappSend: false };
+
 export const commsApi = {
   list: (params = {}) => {
     const q = new URLSearchParams();
@@ -60,4 +64,7 @@ export const commsApi = {
   readAll: () => req('/api/comms/read-all', { method: 'POST' }),
   link: (id, farmId) => req(`/api/comms/${id}/link?farmId=${encodeURIComponent(farmId)}`, { method: 'POST' }),
   stats: () => req('/api/stats'),
+  // Реальный ответ клиенту: POST /api/comms/{id}/send → sendMessage в Telegram
+  send: (id, text) => req(`/api/comms/${id}/send`, { method: 'POST', body: JSON.stringify({ text }) }),
+  capabilities: () => req('/api/capabilities').then((c) => Object.assign(caps, c)),
 };

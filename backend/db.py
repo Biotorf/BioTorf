@@ -152,7 +152,7 @@ def list_comms(kind=None, farm_id=None, unread_only=False, limit=200, offset=0):
 def update(comm_id: str, patch: dict) -> dict | None:
     allowed = {"farmId": "farm_id", "read": "read", "note": "note",
                "status": "status", "contact": "contact", "phone": "phone",
-               "handle": "handle", "text": "text"}
+               "handle": "handle", "text": "text", "payload": "payload"}
     sets, params = [], []
     for k, col in allowed.items():
         if k in patch:
@@ -160,6 +160,8 @@ def update(comm_id: str, patch: dict) -> dict | None:
             v = patch[k]
             if col == "read":
                 v = int(bool(v))
+            elif col == "payload":
+                v = json.dumps(v, ensure_ascii=False)
             params.append(v)
     if not sets:
         return get(comm_id)
@@ -173,6 +175,17 @@ def mark_all_read() -> int:
     with connect() as conn:
         cur = conn.execute("UPDATE comms SET read = 1 WHERE read = 0")
         return cur.rowcount
+
+
+def pending_outbox(kind: str, limit: int = 20) -> list[dict]:
+    """Исходящие ответы, ещё не доставленные в Telegram (статус «В очереди»)."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM comms WHERE kind=? AND dir='out' AND status='В очереди' "
+            "ORDER BY ts ASC LIMIT ?",
+            (kind, limit),
+        ).fetchall()
+        return [to_dict(r) for r in rows]
 
 
 def delete(comm_id: str) -> bool:

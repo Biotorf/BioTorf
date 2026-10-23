@@ -2,6 +2,9 @@ import { defineStore } from 'pinia';
 import { SAMPLE } from '@/data/sample';
 import { commsApi, apiEnabled, checkApi } from '@/api/commsClient';
 
+// apiEnabled — функция (см. commsClient.js); вызываем как функцию
+const apiOn = () => typeof apiEnabled === 'function' ? apiEnabled() : !!apiEnabled;
+
 const KEY = 'biotorf-business-os-mvp-2026-10';
 
 function load() {
@@ -65,7 +68,7 @@ export const useDbStore = defineStore('db', {
       this.data.comms.unshift(item);
       this.data.comms.sort((a, b) => (a.ts < b.ts ? 1 : -1));
       this.save('Коммуникация добавлена', entry.farmId || 'Неизвестный контакт');
-      if (apiEnabled) {
+      if (apiOn()) {
         try {
           const remote = await commsApi.create(entry);
           if (remote?.id) {
@@ -83,7 +86,7 @@ export const useDbStore = defineStore('db', {
       if (c && !c.read) {
         c.read = true;
         this.save('Прочитано сообщение', id);
-        if (apiEnabled) {
+        if (apiOn()) {
           try { await commsApi.markRead(id); this.commsSyncError = null; }
           catch (e) { this.commsSyncError = e.message; }
         }
@@ -92,7 +95,7 @@ export const useDbStore = defineStore('db', {
     async markAllCommsRead() {
       this.data.comms.forEach((c) => (c.read = true));
       this.save('Отмечены прочитанными все сообщения', 'Коммуникации');
-      if (apiEnabled) {
+      if (apiOn()) {
         try { await commsApi.readAll(); this.commsSyncError = null; }
         catch (e) { this.commsSyncError = e.message; }
       }
@@ -102,7 +105,7 @@ export const useDbStore = defineStore('db', {
       if (c) {
         c.farmId = farmId;
         this.save('Коммуникация привязана к клиенту', `${commId} → ${farmId}`);
-        if (apiEnabled) {
+        if (apiOn()) {
           try { await commsApi.link(commId, farmId); this.commsSyncError = null; }
           catch (e) { this.commsSyncError = e.message; }
         }
@@ -112,7 +115,10 @@ export const useDbStore = defineStore('db', {
     async syncComms() {
       if (!(await checkApi())) return false;   // бэкенд не запущен — остаёмся на localStorage
       try {
-        const { items } = await commsApi.list({ limit: 500 });
+        const [{ items }, capsRes] = await Promise.all([
+          commsApi.list({ limit: 500 }),
+          commsApi.capabilities().catch(() => null),
+        ]);
         this.data.comms = items;
         this.save();
         this.commsSyncError = null;
@@ -121,6 +127,18 @@ export const useDbStore = defineStore('db', {
         this.commsSyncError = e.message;
         return false;
       }
+    },
+    // Реальный ответ клиенту из ленты: сервер отправляет в Telegram и
+    // возвращает созданную исходящую запись — добавляем её в локальную ленту.
+    async sendCommReply(commId, text) {
+      if (!apiOn()) throw new Error('Бэкенд не подключён — отправка невозможна');
+      const res = await commsApi.send(commId, text);
+      if (res?.item) {
+        this.data.comms.unshift(res.item);
+        this.data.comms.sort((a, b) => (a.ts < b.ts ? 1 : -1));
+        this.save('Ответ отправлен', commId);
+      }
+      return res;
     },
     save(action = 'Изменены данные', object = 'Система') {
       this.data.audit ??= [];

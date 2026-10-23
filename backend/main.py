@@ -24,7 +24,10 @@ import hmac
 import json
 import os
 import re
+import threading
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -56,6 +59,7 @@ FARMS_FILE = Path(_env("FARMS_FILE", str(Path(__file__).resolve().parent / "farm
 TELEGRAM_SECRET = _env("TELEGRAM_WEBHOOK_SECRET")          # X-Bot-Secret для TG-воркера
 WHATSAPP_TOKEN = _env("WHATSAPP_APP_SECRET")               # секрет Meta для проверки подписи
 TELEPHONY_TOKEN = _env("TELEPHONY_TOKEN")                  # ?token= для телефонии
+TELEGRAM_BOT_TOKEN = (_env("TELEGRAM_BOT_TOKEN") or "").strip()  # токен бота — исходящая отправка из ленты
 CORS_ORIGINS = [o.strip() for o in _env(
     "CORS_ORIGINS",
     "http://localhost:5173,http://127.0.0.1:5173,null").split(",") if o.strip()]
@@ -150,6 +154,13 @@ def list_comms(
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
+@app.get("/api/comms/outbox")
+def outbox(kind: str = Query("telegram", pattern="^(telegram|whatsapp)$"), limit: int = Query(20, le=100)):
+    """Очередь неотправленных исходящих ответов (забирает telegram_worker)."""
+    items = store.pending_outbox(kind, limit)
+    return {"items": items, "count": len(items)}
+
+
 @app.get("/api/comms/{comm_id}")
 def get_comm(comm_id: str):
     item = store.get(comm_id)
@@ -201,6 +212,143 @@ def link_comm(comm_id: str, farmId: str = Query(...)):
     if not item:
         raise HTTPException(404, "Коммуникация не найдена")
     return item
+
+
+# ── исходящая отправка: ответ клиенту прямо из ленты ─────────────────────────
+class SendIn(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+
+
+def tg_api(method: str, payload: dict) -> dict:
+    """Вызов Telegram Bot API (urllib, без внешних зависимостей)."""
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}"
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read() or b"{}")
+
+
+def send_telegram(item: dict, text: str) -> dict:
+    """Отправка сообщения клиенту в Telegram через sendMessage.
+
+    Адресат берётся из payload.chatId исходной входящей записи; если чата ещё
+    нет — пробуем username / userIndex (бот напишет первым, как только клиент
+    начнёт диалог, сообщение доставится)."""
+    if not TELEGRAM_BOT_TOKEN:
+        raise HTTPException(503, "TELEGRAM_BOT_TOKEN не настроен на сервере — отправка недоступна")
+    payload = item.get("payload") or {}
+    chat_id = payload.get("chatId")
+    attempts = []
+    if chat_id:
+        attempts.append({"chat_id": chat_id})
+    elif payload.get("username"):
+        attempts.append({"chat_id": "@" + payload["username"]})
+    elif payload.get("userIndex"):
+        attempts.append({"chat_id": payload["userIndex"]})
+    else:
+        raise HTTPException(422, "Неизвестен адресат Telegram (нет chatId/username)")
+    last_err = None
+    for a in attempts:
+        try:
+            res = tg_api("sendMessage", {**a, "text": text, "disable_web_page_preview": True})
+            if res.get("ok"):
+                return {"sent": True, "via": "telegram", "messageId": res["result"]["message_id"]}
+            last_err = res.get("description", "unknown")
+        except urllib.error.HTTPError as e:
+            last_err = e.read().decode(errors="ignore")[:300]
+        except Exception as e:  # network и прочее
+            last_err = str(e)
+    raise HTTPException(502, f"Telegram не принял сообщение: {last_err}")
+
+
+@app.post("/api/comms/{comm_id}/send")
+def send_reply(comm_id: str, body: SendIn):
+    """Ответить клиенту из ленты: реально отправить в канал и создать
+    исходящую запись «ответ» со ссылкой на исходное сообщение (replyTo)."""
+    item = store.get(comm_id)
+    if not item:
+        raise HTTPException(404, "Коммуникация не найдена")
+    if item["kind"] == "call":
+        raise HTTPException(422, "На звонок нельзя ответить сообщением — зафиксируйте звонок или позвоните")
+    if item["dir"] != "in":
+        raise HTTPException(422, "Отвечать можно только на входящее сообщение")
+
+    sent = None
+    send_error = None
+    if item["kind"] == "telegram":
+        # Бот умеет писать только тем, кто сам начал с ним диалог, поэтому
+        # исходящие идут через outbox: воркер long-poll забирает их и шлёт
+        # sendMessage. Если токен прямо здесь настроен — пробуем мгновенно.
+        chat_id = (item.get("payload") or {}).get("chatId")
+        if TELEGRAM_BOT_TOKEN and chat_id:
+            try:
+                sent = send_telegram(item, body.text)
+            except HTTPException as e:
+                send_error = str(e.detail)[:200]  # не удалось напрямую — доставит воркер из outbox
+    elif item["kind"] == "whatsapp":
+        # TODO: WhatsApp Cloud API messages (нужны WABA phone_number_id + token)
+        raise HTTPException(501, "Исходящая отправка в WhatsApp пока не подключена — запись сохраняется как зафиксированный ответ")
+
+    reply = {
+        "id": new_id(),
+        "kind": item["kind"],
+        "dir": "out",
+        "farmId": item.get("farmId"),
+        "contact": item.get("contact"),
+        "phone": item.get("phone"),
+        "handle": item.get("handle"),
+        "ts": now_iso(),
+        "text": body.text,
+        "read": True,
+        "source": "reply",
+        "status": "Доставлено" if sent else "В очереди",
+        "payload": {
+            "replyTo": comm_id,
+            "tgMessageId": (sent or {}).get("messageId"),
+            "chatId": (item.get("payload") or {}).get("chatId"),
+            "userIndex": (item.get("payload") or {}).get("userIndex"),
+            **({"sendError": send_error} if send_error else {}),
+        },
+    }
+    saved = store.insert(reply)
+    return {"item": saved, "sent": bool(sent), "error": send_error}
+
+
+class DeliveredIn(BaseModel):
+    ok: bool = True
+    messageId: int | None = None
+    error: str | None = None
+
+
+@app.post("/api/comms/{comm_id}/delivered")
+def mark_delivered(comm_id: str, body: DeliveredIn):
+    """Воркер подтверждает доставку ответа клиенту."""
+    fields = {"status": "Доставлено" if body.ok else "Ошибка доставки"}
+    item = store.get(comm_id)
+    if item and (body.messageId or body.error):
+        payload = dict(item.get("payload") or {})
+        if body.messageId:
+            payload["tgMessageId"] = body.messageId
+        if body.error:
+            payload["sendError"] = body.error[:200]
+        fields["payload"] = payload
+    item = store.update(comm_id, fields)
+    if not item:
+        raise HTTPException(404, "Коммуникация не найдена")
+    return item
+
+
+@app.get("/api/capabilities")
+def capabilities():
+    """Что умеет текущая конфигурация бэкенда (фронт показывает/скрывает кнопки)."""
+    return {
+        "telegramSend": bool(TELEGRAM_BOT_TOKEN),
+        "whatsappSend": False,
+    }
 
 
 @app.get("/api/stats")
@@ -262,10 +410,37 @@ async def telegram_webhook(
         "read": False,
         "source": "webhook:telegram",
         "externalId": external_id,
-        "payload": {"chatId": chat.get("id"), "username": frm.get("username")},
+        # chatId обязателен для исходящей отправки (sendMessage) из ленты;
+        # userIndex — запасной вариант, если чат ещё не был создан ботом
+        "payload": {
+            "chatId": chat.get("id"),
+            "username": frm.get("username"),
+            "userIndex": frm.get("id"),
+        },
     }
-    item["farmId"] = auto_link(item["phone"])
+    item["farmId"] = auto_link(item["phone"]) or auto_link_handle(item["handle"])
     return store.insert(item)
+
+
+def auto_link_handle(handle: str | None) -> str | None:
+    """Привязка входящего Telegram-сообщения к клиенту по @username.
+
+    Если у клиента в реестре (farms.json) заполнено поле telegram — сообщение
+    сразу попадает в карточку клиента, даже без номера телефона."""
+    if not handle:
+        return None
+    h = handle.lstrip("@").lower()
+    if not h:
+        return None
+    try:
+        farms = json.loads(FARMS_FILE.read_text()) if FARMS_FILE.exists() else []
+        for f in farms:
+            tg = str(f.get("telegram") or "").lstrip("@").lower()
+            if tg and tg == h:
+                return f["id"]
+    except Exception:
+        pass
+    return None
 
 
 # ── вебхук: WhatsApp Business Cloud API ──────────────────────────────────────

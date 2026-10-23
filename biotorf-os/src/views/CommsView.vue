@@ -2,7 +2,7 @@
 import { ref, computed, onMounted } from 'vue';
 import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
-import { apiState, COMMS_API_URL } from '@/api/commsClient';
+import { apiState, COMMS_API_URL, caps } from '@/api/commsClient';
 import StatusPill from '@/components/ui/StatusPill.vue';
 
 const db = useDbStore();
@@ -71,15 +71,39 @@ function saveComm() {
 // ── быстрая запись ответа в ленте ────────────────────────────────
 const replyTarget = ref(null);   // объект comms, которому отвечаем
 const replyText = ref('');
+const sendingReply = ref(false);
+const replyError = ref('');
+const replyNotice = ref('');     // «ушёл в очередь» и т.п.
 
 function startReply(c) {
   replyTarget.value = c;
   replyText.value = '';
+  replyError.value = '';
 }
 
-function sendReply() {
+async function sendReply() {
   const c = replyTarget.value;
   if (!c || !replyText.value.trim()) return;
+  const text = replyText.value.trim();
+  // С сервером — реальный ответ клиенту в Telegram (sendMessage через бэкенд/воркер).
+  // Без сервера или для WhatsApp — ответ фиксируется в ленте как исходящая запись.
+  if (apiState.online && c.kind === 'telegram') {
+    sendingReply.value = true;
+    replyError.value = '';
+    try {
+      const res = await db.sendCommReply(c.id, text);
+      replyNotice.value = res.sent
+        ? '✅ Ответ доставлен клиенту в Telegram'
+        : '⏳ Ответ принят и уйдёт клиенту, как только бот получит соединение';
+      setTimeout(() => { replyTarget.value = null; replyText.value = ''; replyNotice.value = ''; }, 1200);
+      return;
+    } catch (e) {
+      replyError.value = e.message || 'Сервер отклонил отправку';
+      return;
+    } finally {
+      sendingReply.value = false;
+    }
+  }
   db.addComm({
     kind: c.kind,
     dir: 'out',
@@ -87,7 +111,7 @@ function sendReply() {
     contact: c.contact,
     phone: c.phone,
     handle: c.handle,
-    text: replyText.value.trim(),
+    text,
     read: true,
   });
   replyTarget.value = null;
@@ -303,12 +327,18 @@ onMounted(async () => {
               </template>
               <template v-else>
                 <div class="comms-bubble" :class="{ out: c.dir === 'out' }">{{ c.text }}</div>
+                <div v-if="c.source === 'reply'" class="mini" style="margin-top:3px">
+                  ↩ ответ на сообщение клиента
+                  <span v-if="c.status === 'В очереди'" class="pill amber">⏳ в очереди на отправку</span>
+                  <span v-else-if="c.status === 'Доставлено'" class="pill green">✓ доставлено</span>
+                  <span v-else-if="c.status === 'Ошибка доставки'" class="pill red">✕ ошибка доставки</span>
+                </div>
               </template>
             </td>
             <td class="mini">{{ fmtTs(c.ts) }}</td>
             <td @click.stop>
               <div class="actionbar" style="justify-content:flex-end">
-                <button v-if="c.kind !== 'call'" class="btn slim ghost" @click="startReply(c)">Ответить</button>
+                <button v-if="c.kind !== 'call' && c.dir === 'in'" class="btn slim ghost" @click="startReply(c)">Ответить</button>
                 <button v-if="!c.farmId" class="btn slim" @click="linkingId = linkingId === c.id ? null : c.id">Привязать</button>
               </div>
               <div v-if="linkingId === c.id" style="margin-top:6px">
@@ -333,16 +363,28 @@ onMounted(async () => {
             <button class="btn ghost slim" @click="replyTarget = null">✕</button>
           </div>
           <div class="modal-body">
+            <div class="mini" style="margin-bottom:4px">Сообщение клиента · {{ fmtTs(replyTarget.ts) }}</div>
             <div class="comms-bubble" style="margin-bottom:12px">{{ replyTarget.text }}</div>
-            <textarea v-model="replyText" class="textarea" rows="4" placeholder="Ваш ответ…" autofocus></textarea>
-            <div class="mini" style="margin-top:8px">
+            <textarea v-model="replyText" class="textarea" rows="4" placeholder="Ваш ответ… (Ctrl+Enter — отправить)" autofocus
+                      @keydown.ctrl.enter.prevent="sendReply"></textarea>
+            <div v-if="apiState.online && replyTarget.kind === 'telegram' && caps.telegramSend" class="mini comms-ok" style="margin-top:8px">
+              ✉ Сообщение будет реально отправлено клиенту в Telegram от имени бота
+            </div>
+            <div v-else-if="apiState.online && replyTarget.kind === 'telegram'" class="mini comms-warn" style="margin-top:8px">
+              ⚠ Отправка через бота не настроена на сервере (TELEGRAM_BOT_TOKEN пуст) —
+              ответ сохранится только в ленте. Впишите токен в .env и перезапустите стек.
+            </div>
+            <div v-if="replyError" class="mini comms-error" style="margin-top:8px">{{ replyError }}</div>
+            <div v-if="replyNotice" class="mini comms-ok" style="margin-top:8px">{{ replyNotice }}</div>
+            <div v-else class="mini" style="margin-top:8px">
               Адресат: {{ replyTarget.contact || replyTarget.phone || replyTarget.handle || '—' }}
-              · ответ попадёт в ленту как исходящее сообщение
             </div>
           </div>
           <div class="modal-foot">
             <button class="btn ghost" @click="replyTarget = null">Отмена</button>
-            <button class="btn primary" :disabled="!replyText.trim()" @click="sendReply">Отправить</button>
+            <button class="btn primary" :disabled="!replyText.trim() || sendingReply" @click="sendReply">
+              {{ sendingReply ? 'Отправка…' : 'Отправить' }}
+            </button>
           </div>
         </div>
       </div>
@@ -359,4 +401,9 @@ onMounted(async () => {
 .comms-bubble.out { background:#e2f6e8; border-color:#cdecd6; }
 .comms-unread td { background:#fffbef; }
 .comms-unread td:first-child { box-shadow: inset 3px 0 0 #edaa55; }
+.comms-ok { color:#1f9a4b; }
+.comms-warn { color:#b54708; }
+.comms-error { color:#b42318; }
+.pill.green { background:#e4f8e8; color:#1f9a4b; }
+.pill.red { background:#fde8e8; color:#b42318; }
 </style>
