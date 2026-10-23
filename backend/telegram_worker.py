@@ -48,6 +48,15 @@ def main():
     if not WEBHOOK_SECRET:
         sys.exit("Не задан TELEGRAM_WEBHOOK_SECRET")
 
+    # Сбрасываем webhook, если он был назначен ранее — иначе getUpdates вернёт ошибку 409.
+    try:
+        with urllib.request.urlopen(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook", timeout=15
+        ) as resp:
+            json.loads(resp.read())
+    except Exception as e:
+        print(f"[tg-worker] deleteWebhook skip: {e}", file=sys.stderr)
+
     print(f"[tg-worker] polling -> {args.api}/webhooks/telegram")
     while True:
         try:
