@@ -356,25 +356,25 @@ async def telephony_webhook(request: Request, token: str = Query("")):
 
 
 # ── демо-сид: заполнение ленты тестовыми данными ────────────────────────────
-DEMO_SEED = [
-    {"kind": "call", "dir": "in", "farmId": "F-001", "contact": "Аскер (владелец)",
+# Тестовые записи для ручной проверки ленты (POST /api/dev/seed).
+# farmId оставляем null — привязка к клиентам произойдёт через auto_link()
+# по номерам из реестра FARMS_FILE (backend/farms.json), как в реальном потоке.
+TEST_SEED = [
+    {"kind": "call", "dir": "in", "contact": None,
      "phone": "+996 700 112 233", "duration": 260, "status": "Разговор",
      "note": "Вопрос по обработке картофеля на следующей неделе", "read": False},
-    {"kind": "telegram", "dir": "in", "farmId": "F-001", "contact": "Аскер (владелец)",
+    {"kind": "telegram", "dir": "in", "contact": None,
      "handle": "@asker_farmer",
      "text": "Добрый день! Когда можно привезти BIOTORF на пробу? Участок 40 га, картофель.",
      "read": False},
-    {"kind": "whatsapp", "dir": "out", "farmId": "F-002", "contact": "Розница «Ак-Биле»",
+    {"kind": "whatsapp", "dir": "out", "contact": None,
      "phone": "+996 555 443 322",
      "text": "Отправляем прайс по фасовке 1 л и 5 л. Условия для розницы — в приложении.",
      "read": True},
     {"kind": "call", "dir": "out", "farmId": None,
      "phone": "+996 312 55 66 77", "duration": 0, "status": "Пропущенный",
      "note": "Перезвонили на неизвестный номер — не дозвонились", "read": True},
-    {"kind": "telegram", "dir": "in", "farmId": None, "handle": "@greenhouse_chui",
-     "text": "Здравствуйте, интересует препарат для теплиц (огурец). Работаете с дилерами?",
-     "read": False},
-    {"kind": "call", "dir": "in", "farmId": "F-003", "contact": "Николай Петрович",
+    {"kind": "call", "dir": "in", "contact": None,
      "phone": "+996 770 887 665", "duration": 145, "status": "Разговор",
      "note": "Обсудили сроки отгрузки, просит счёт до пятницы", "read": True},
 ]
@@ -382,13 +382,15 @@ DEMO_SEED = [
 
 @app.post("/api/dev/seed")
 def seed():
-    """Заполнить ленту демо-данными."""
+    """Заполнить ленту тестовыми записями (для ручной проверки UI и вебхуков)."""
     n = 0
-    for d in DEMO_SEED:
+    for d in TEST_SEED:
         item = dict(d)
         item["id"] = new_id()
         item["ts"] = now_iso()
-        item["source"] = "demo"
+        item["source"] = "test-seed"
+        if not item.get("farmId"):
+            item["farmId"] = auto_link(item.get("phone"))
         store.insert(item)
         n += 1
     return {"seeded": n}

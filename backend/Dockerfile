@@ -9,9 +9,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 ENV DB_PATH=/data/comms.db \
+    FARMS_FILE=/data/farms.json \
     PORT=8787
 
 EXPOSE 8787
 
-# БД пишет в /data (volume в docker-compose) — образ остаётся stateless.
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT}"]
+# БД и реестр клиентов живут в /data (volume dbdata в docker-compose) —
+# образ stateless, данные переживают пересборку контейнера.
+# entrypoint.sh при первом запуске кладёт шаблон farms.json в volume.
+RUN chmod +x entrypoint.sh
+ENTRYPOINT ["/app/entrypoint.sh"]

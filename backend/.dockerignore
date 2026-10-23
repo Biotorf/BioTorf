@@ -3,5 +3,6 @@ __pycache__/
 .env
 comms.db
 farms.json
+# farms.example.json — стартовый шаблон реестра, нужен в образе (Docker)
 server.log
 Dockerfile

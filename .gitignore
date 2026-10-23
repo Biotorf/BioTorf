@@ -14,6 +14,7 @@ venv/
 backend/.env
 backend/comms.db
 backend/farms.json
+!backend/farms.example.json
 backend/server.log
 
 # ── Прочее ──

@@ -21,6 +21,9 @@ services:
       FARMS_FILE: /data/farms.json
     volumes:
       - dbdata:/data
+      # Реестр клиентов для автопривязки по номерам — файл на хосте,
+      # редактируется админом и подхватывается контейнером сразу.
+      - ${FARMS_HOST_FILE:-./backend/farms.json}:/data/farms.json
     ports:
       - "8787:8787"          # прямой доступ к API (для curl-тестов и локальной разработки)
     healthcheck:
