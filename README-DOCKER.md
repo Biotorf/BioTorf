@@ -35,7 +35,7 @@ curl -X POST http://localhost:8080/api/dev/seed
 ```
 
 Затем обновите страницу «Коммуникации» — появятся звонки, Telegram- и WhatsApp-сообщения,
-автоматически привязанные к клиентам из реестра (по умолчанию `backend/farms.example.json`, свой — через `FARMS_HOST_FILE` в `.env`).
+автоматически привязанные к клиентам из реестра (`farms.json` создаётся в volume `/data` из шаблона при первом запуске; свой реестр: `docker compose cp my-farms.json backend:/data/farms.json` && `docker compose restart backend`).
 
 ## Эмуляция реальных событий (проверка без телефона)
 

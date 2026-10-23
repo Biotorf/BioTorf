@@ -20,15 +20,13 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173,null}
       FARMS_FILE: /data/farms.json
     volumes:
+      # БД + реестр клиентов живут в volume /data (создаётся автоматически).
+      # Farms-файл НЕ монтируется с хоста: на Windows/Docker Desktop bind-mount
+      # файла падает, если путь оказался каталогом или файл менялся вне git.
+      # Вместо этого entrypoint.sh при первом запуске кладёт шаблон из образа
+      # в volume (см. backend/entrypoint.sh), а админ может положить свой
+      # farms.json через `docker compose cp my-farms.json backend:/data/farms.json`.
       - dbdata:/data
-      # Реестр клиентов для автопривязки по номерам — файл на хосте,
-      # редактируется админом и подхватывается контейнером сразу.
-      # ⚠ Если файла на хосте нет, Docker создал бы КАТАЛОГ /data/farms.json,
-      # и бэкенд упал бы с IsADirectoryError → контейнер unhealthy.
-      # Поэтому src указывает на гарантированно существующий farms.example.json;
-      # FARMS_HOST_FILE позволяет переопределить своим файлом:
-      #   FARMS_HOST_FILE=./backend/farms.json docker compose up -d
-      - ${FARMS_HOST_FILE:-./backend/farms.example.json}:/data/farms.json:ro
     ports:
       - "8787:8787"          # прямой доступ к API (для curl-тестов и локальной разработки)
     healthcheck:
