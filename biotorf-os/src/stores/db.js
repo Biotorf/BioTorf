@@ -85,6 +85,7 @@ export const useDbStore = defineStore('db', {
       const c = this.data.comms.find((x) => x.id === id);
       if (c && !c.read) {
         c.read = true;
+        c.updatedAt = new Date().toISOString();
         this.save('Прочитано сообщение', id);
         if (apiOn()) {
           try { await commsApi.markRead(id); this.commsSyncError = null; }
@@ -111,22 +112,47 @@ export const useDbStore = defineStore('db', {
         }
       }
     },
-    // Подтянуть ленту с бэкенда (вызывается при открытии «Коммуникаций»)
-    async syncComms() {
+    // Подтянуть ленту с бэкенда (вызывается при открытии «Коммуникаций»
+    // и периодически для автообновления статусов доставки).
+    // quiet=true — не показывать ошибку, если сервер временно недоступен.
+    async syncComms(quiet = false) {
       if (!(await checkApi())) return false;   // бэкенд не запущен — остаёмся на localStorage
       try {
         const [{ items }, capsRes] = await Promise.all([
           commsApi.list({ limit: 500 }),
           commsApi.capabilities().catch(() => null),
         ]);
-        this.data.comms = items;
-        this.save();
+        this.mergeServerComms(items);
         this.commsSyncError = null;
         return true;
       } catch (e) {
-        this.commsSyncError = e.message;
+        if (!quiet) this.commsSyncError = e.message;
         return false;
       }
+    },
+    // Осторожное слияние серверной ленты с локальной: берём свежие статусы
+    // доставки/прочтения, но НЕ перетираем записи, которые пользователь только
+    // что создал или изменил локально (иначе фоновое автообновление могло бы
+    // вернуть «В очереди» вместо только что проставленного «Доставлено»).
+    mergeServerComms(items) {
+      const localById = new Map(this.data.comms.map((c) => [c.id, c]));
+      const seen = new Set();
+      const merged = items.map((r) => {
+        seen.add(r.id);
+        const l = localById.get(r.id);
+        if (!l) return r;
+        const lt = Date.parse(l.updatedAt || l.ts || '') || 0;
+        const rt = Date.parse(r.updatedAt || r.ts || '') || 0;
+        // локальная запись свежее серверной (например, ответ уже доставлен
+        // и подтверждён в этой вкладке) — оставляем её поля, id берём серверный
+        if (lt > rt) return { ...r, ...l, id: r.id };
+        return r;
+      });
+      // локальные записи, которых ещё нет на сервере (не успели сохраниться)
+      for (const c of this.data.comms) if (!seen.has(c.id)) merged.push(c);
+      merged.sort((a, b) => (a.ts < b.ts ? 1 : -1));
+      this.data.comms = merged;
+      this.save();
     },
     // Реальный ответ клиенту из ленты: сервер отправляет в Telegram и
     // возвращает созданную исходящую запись — добавляем её в локальную ленту.
@@ -134,6 +160,9 @@ export const useDbStore = defineStore('db', {
       if (!apiOn()) throw new Error('Бэкенд не подключён — отправка невозможна');
       const res = await commsApi.send(commId, text);
       if (res?.item) {
+        // помечаем время изменения — слияние при автообновлении не перетрёт
+        // статус «Доставлено», если подтверждение ещё не дошло с сервера
+        res.item.updatedAt = new Date().toISOString();
         this.data.comms.unshift(res.item);
         this.data.comms.sort((a, b) => (a.ts < b.ts ? 1 : -1));
         this.save('Ответ отправлен', commId);

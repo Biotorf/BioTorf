@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
 import { apiState, COMMS_API_URL, caps } from '@/api/commsClient';
@@ -95,6 +95,9 @@ async function sendReply() {
       replyNotice.value = res.sent
         ? '✅ Ответ доставлен клиенту в Telegram'
         : '⏳ Ответ принят и уйдёт клиенту, как только бот получит соединение';
+      // если ушёл в очередь — сразу подтянем ленту: воркер забирает ответы
+      // пачками раз в несколько секунд, статус «Доставлено» появится сам
+      if (!res.sent) setTimeout(() => db.syncComms(true), 1500);
       setTimeout(() => { replyTarget.value = null; replyText.value = ''; replyNotice.value = ''; }, 1200);
       return;
     } catch (e) {
@@ -161,13 +164,30 @@ function open(c) {
   if (c.farmId) ui.openClient(c.farmId);
 }
 
+// ── автообновление ленты: входящие сообщения и статусы доставки ответов
+// подтягиваются с сервера сами, без ручного F5 ──────────────────────
+const autoRefresh = ref(true);
+let pollTimer = null;
+
+async function tick() {
+  if (!autoRefresh.value || document.hidden) return;
+  await db.syncComms(true);   // quiet — не шумим ошибкой при временном недоступе API
+}
+
 onMounted(async () => {
   // если поднят бэкенд коммуникаций (backend/, порт 8787) — лента общая, из SQLite
   await db.syncComms();
+  pollTimer = setInterval(tick, 4000);
+  window.addEventListener('focus', tick);   // сразу обновляемся при возврате во вкладку
   if (ui.commsFocusFarm) {
     ui.search = db.farmById(ui.commsFocusFarm)?.name || '';
     ui.commsFocusFarm = null;
   }
+});
+
+onBeforeUnmount(() => {
+  clearInterval(pollTimer);
+  window.removeEventListener('focus', tick);
 });
 </script>
 
@@ -179,6 +199,9 @@ onMounted(async () => {
         <div class="subtitle">Единая лента: звонки с телефона, Telegram и WhatsApp. Всё общение с клиентом — внутри сервиса.</div>
       </div>
       <div class="actionbar">
+        <label class="mini" style="display:flex;align-items:center;gap:6px;cursor:pointer" title="Лента и статусы доставки подтягиваются с сервера каждые 4 секунды">
+          <input type="checkbox" v-model="autoRefresh" /> автообновление
+        </label>
         <button class="btn slim ghost" @click="db.markAllCommsRead()" :disabled="!unreadCount">
           Прочитано всё ({{ unreadCount }})
         </button>

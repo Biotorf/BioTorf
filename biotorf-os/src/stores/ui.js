@@ -1,8 +1,20 @@
 import { defineStore } from 'pinia';
 
+// ── hash-роутинг: активный раздел живёт в URL (#/comms), поэтому при
+// обновлении страницы пользователь остаётся там же, а не сбрасывается в «Обзор»
+const VALID_VIEWS = [
+  'dashboard', 'crm', 'comms', 'pipeline', 'pilots', 'knowledge', 'social',
+  'products', 'orders', 'production', 'warehouse', 'shipments', 'finance',
+  'tasks', 'analytics', 'journey', 'calendar', 'media', 'notifications',
+];
+function viewFromHash() {
+  const v = (location.hash || '').replace(/^#\/?/, '');
+  return VALID_VIEWS.includes(v) ? v : null;
+}
+
 export const useUiStore = defineStore('ui', {
   state: () => ({
-    view: 'dashboard',
+    view: viewFromHash() || 'dashboard',
     role: 'director',
     search: '',
     filter: 'Все',
@@ -27,6 +39,9 @@ export const useUiStore = defineStore('ui', {
       this.view = view;
       this.search = '';
       this.filter = 'Все';
+      // синхронизируем URL, чтобы F5 возвращал в тот же раздел
+      const h = '#/' + view;
+      if (location.hash !== h) history.replaceState(null, '', h);
     },
     openModal(title, component, props = {}) {
       this.modal = { title, component, props };

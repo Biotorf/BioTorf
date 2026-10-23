@@ -1,11 +1,19 @@
 <script setup>
-import { computed, defineAsyncComponent, markRaw } from 'vue';
+import { computed, defineAsyncComponent, markRaw, onMounted, onBeforeUnmount } from 'vue';
 import { useUiStore } from '@/stores/ui';
 import AppSidebar from '@/components/layout/AppSidebar.vue';
 import AppTopbar from '@/components/layout/AppTopbar.vue';
 import AppModal from '@/components/ui/AppModal.vue';
 
 const ui = useUiStore();
+
+// навигация кнопкой «назад/вперёд» браузера тоже меняет раздел
+function onHashChange() {
+  const v = (location.hash || '').replace(/^#\/?/, '');
+  if (v && views[v]) ui.view = v;
+}
+onMounted(() => window.addEventListener('hashchange', onHashChange));
+onBeforeUnmount(() => window.removeEventListener('hashchange', onHashChange));
 
 const views = {
   dashboard: markRaw(defineAsyncComponent(() => import('@/views/DashboardView.vue'))),
