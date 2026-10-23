@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue';
 import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
+import { apiState, COMMS_API_URL } from '@/api/commsClient';
 import StatusPill from '@/components/ui/StatusPill.vue';
 
 const db = useDbStore();
@@ -136,7 +137,9 @@ function open(c) {
   if (c.farmId) ui.openClient(c.farmId);
 }
 
-onMounted(() => {
+onMounted(async () => {
+  // если поднят бэкенд коммуникаций (backend/, порт 8787) — лента общая, из SQLite
+  await db.syncComms();
   if (ui.commsFocusFarm) {
     ui.search = db.farmById(ui.commsFocusFarm)?.name || '';
     ui.commsFocusFarm = null;
@@ -160,9 +163,19 @@ onMounted(() => {
     </div>
 
     <div class="note">
-      Демонстрационная версия: сообщения фиксируются вручную или имитируют поток из интеграций.
-      В промышленной версии лента наполняется автоматически через IP-телефонию (Asterisk/UIS/Манго),
-      Telegram Bot API и WhatsApp Business API — см. README, раздел «Интеграция связи».
+      <template v-if="apiState.online">
+        ✅ Лента синхронизируется с сервером ({{ COMMS_API_URL }}): общая база звонков и сообщений
+        для всех сотрудников. Входящие из Telegram/WhatsApp/телефонии поступают автоматически
+        через вебхуки бэкенда (<code>/webhooks/*</code>).
+      </template>
+      <template v-else>
+        Демонстрационная версия (локально, без бэкенда): сообщения фиксируются вручную.
+        Поднимите <code>backend/</code> (<code>uvicorn main:app --port 8787</code>) — и лента станет
+        общей, с автоприёмом из IP-телефонии, Telegram Bot API и WhatsApp Business API.
+      </template>
+      <div v-if="db.commsSyncError" style="color:#b42318;margin-top:6px">
+        Ошибка синхронизации: {{ db.commsSyncError }}
+      </div>
     </div>
 
     <div v-if="showForm" class="panel" style="margin-bottom:18px">
