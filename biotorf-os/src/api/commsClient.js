@@ -48,7 +48,7 @@ export function checkApi() {
 
 // Возможности сервера (что настроено): telegramSend / whatsappSend.
 // Подтягивается при синхронизации ленты; по умолчанию считаем что отправки нет.
-export const caps = { telegramSend: false, whatsappSend: false };
+export const caps = { telegramSend: false, telegramBot: null, whatsappSend: false };
 
 export const commsApi = {
   list: (params = {}) => {

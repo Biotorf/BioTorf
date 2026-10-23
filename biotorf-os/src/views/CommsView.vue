@@ -368,11 +368,12 @@ onMounted(async () => {
             <textarea v-model="replyText" class="textarea" rows="4" placeholder="Ваш ответ… (Ctrl+Enter — отправить)" autofocus
                       @keydown.ctrl.enter.prevent="sendReply"></textarea>
             <div v-if="apiState.online && replyTarget.kind === 'telegram' && caps.telegramSend" class="mini comms-ok" style="margin-top:8px">
-              ✉ Сообщение будет реально отправлено клиенту в Telegram от имени бота
+              ✉ Сообщение будет реально отправлено клиенту в Telegram от имени бота{{ caps.telegramBot ? ' @' + caps.telegramBot : '' }}
             </div>
             <div v-else-if="apiState.online && replyTarget.kind === 'telegram'" class="mini comms-warn" style="margin-top:8px">
-              ⚠ Отправка через бота не настроена на сервере (TELEGRAM_BOT_TOKEN пуст) —
-              ответ сохранится только в ленте. Впишите токен в .env и перезапустите стек.
+              ⚠ Отправка через бота не настроена на сервере (TELEGRAM_BOT_TOKEN пуст или отвергнут Telegram) —
+              ответ сохранится только в ленте. Впишите токен из @BotFather в .env и выполните
+              <code>docker compose --profile tg up -d --force-recreate</code>. Подробности: <code>docker logs biotorf-backend</code>.
             </div>
             <div v-if="replyError" class="mini comms-error" style="margin-top:8px">{{ replyError }}</div>
             <div v-if="replyNotice" class="mini comms-ok" style="margin-top:8px">{{ replyNotice }}</div>

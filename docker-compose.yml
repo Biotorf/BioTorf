@@ -19,6 +19,8 @@ services:
       TELEPHONY_TOKEN: ${TELEPHONY_TOKEN:-dev-telephony-token}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173,null}
       FARMS_FILE: /data/farms.json
+      # Токен бота нужен и бэкенду (проверка валидности через getMe при старте):
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
     volumes:
       # БД + реестр клиентов живут в volume /data (создаётся автоматически).
       # Farms-файл НЕ монтируется с хоста: на Windows/Docker Desktop bind-mount

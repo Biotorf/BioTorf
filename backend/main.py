@@ -74,9 +74,30 @@ app.add_middleware(
 )
 
 
+TELEGRAM_BOT_INFO: dict | None = None  # результат getMe при старте (для /health и диагностики)
+
+
 @app.on_event("startup")
 def startup():
+    global TELEGRAM_BOT_INFO
     store.init_db()
+    # Проверяем токен бота сразу при старте, чтобы проблемы было видно в логах
+    # и в /health, а не только когда пользователь попытается ответить.
+    if TELEGRAM_BOT_TOKEN:
+        try:
+            res = tg_api("getMe", {})
+            if res.get("ok"):
+                TELEGRAM_BOT_INFO = res["result"]
+                print(f"[telegram] токен принят: @{TELEGRAM_BOT_INFO.get('username')} "
+                      f"(id={TELEGRAM_BOT_INFO.get('id')}) — исходящая отправка активна")
+            else:
+                print(f"[telegram] ОШИБКА: Telegram отверг TELEGRAM_BOT_TOKEN: "
+                      f"{res.get('description')} — ответы в TGsentиться НЕ будут")
+        except Exception as e:
+            print(f"[telegram] ОШИБКА проверки токена ({e}) — проверьте сеть и TELEGRAM_BOT_TOKEN")
+    else:
+        print("[telegram] TELEGRAM_BOT_TOKEN пуст — исходящие ответы в Telegram отключены. "
+              "Впишите токен из @BotFather в .env и выполните docker compose up -d --force-recreate")
 
 
 def now_iso() -> str:
@@ -239,7 +260,10 @@ def send_telegram(item: dict, text: str) -> dict:
     нет — пробуем username / userIndex (бот напишет первым, как только клиент
     начнёт диалог, сообщение доставится)."""
     if not TELEGRAM_BOT_TOKEN:
-        raise HTTPException(503, "TELEGRAM_BOT_TOKEN не настроен на сервере — отправка недоступна")
+        raise HTTPException(503, "TELEGRAM_BOT_TOKEN пуст в .env — впишите токен из @BotFather и выполните docker compose up -d --force-recreate")
+    if TELEGRAM_BOT_INFO is None:
+        # токен задан, но Telegram его не принял (проверка getMe при старте)
+        raise HTTPException(503, "Telegram отверг TELEGRAM_BOT_TOKEN (getMe вернул ошибку) — проверьте токен у @BotFather; подробности в docker logs biotorf-backend")
     payload = item.get("payload") or {}
     chat_id = payload.get("chatId")
     attempts = []
@@ -346,7 +370,8 @@ def mark_delivered(comm_id: str, body: DeliveredIn):
 def capabilities():
     """Что умеет текущая конфигурация бэкенда (фронт показывает/скрывает кнопки)."""
     return {
-        "telegramSend": bool(TELEGRAM_BOT_TOKEN),
+        "telegramSend": bool(TELEGRAM_BOT_TOKEN and TELEGRAM_BOT_INFO),
+        "telegramBot": (TELEGRAM_BOT_INFO or {}).get("username"),
         "whatsappSend": False,
     }
 
