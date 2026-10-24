@@ -4,7 +4,7 @@
 
 **CRM-платформа для агрохимического бизнеса** — звонки, Telegram, WhatsApp и сделки в одном окне
 
-`v1.0 · Docker-ready · FastAPI + Vue 3`
+`v1.1 · Docker-ready · FastAPI + Vue 3`
 
 ОсОО «Агро Трейд Плюс» · направление BIOTORF
 
