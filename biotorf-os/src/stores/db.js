@@ -105,7 +105,9 @@ export const useDbStore = defineStore('db', {
           const remote = await commsApi.create(entry);
           if (remote?.id) {
             const i = this.data.comms.findIndex((x) => x.id === item.id);
-            if (i >= 0) this.data.comms[i] = { ...item, id: remote.id, source: remote.source };
+            // берём серверную запись целиком: автопривязка к хозяйству по
+            // @username/телефону и статусы делаются на бэкенде
+            if (i >= 0) this.data.comms[i] = { ...item, ...remote };
             this.save();
           }
           this.commsSyncError = null;

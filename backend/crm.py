@@ -195,3 +195,86 @@ def build_process(conn, journey_id: str) -> dict | None:
     else:
         out["comms"] = []
     return out
+
+
+# ── Интеграция входящих коммуникаций с CRM (руководство §6 «История») ───────
+
+def _digits(s):
+    import re as _re
+    return _re.sub(r"\D", "", s or "")
+
+
+def auto_link_tg(conn, handle: str | None, phone: str | None) -> str | None:
+    """Привязка входящего Telegram/WhatsApp-сообщения к хозяйству по данным
+    реестра CRM (farms + contacts), а не только по snapshot farms.json.
+
+    Совпадение по @username или номеру телефона любого контактного лица либо
+    самого хозяйства. Возвращает id хозяйства или None."""
+    h = (handle or "").lstrip("@").lower()
+    d = _digits(phone)
+    if not h and len(d) < 6:
+        return None
+    for farm in list_records(conn, "farms"):
+        f = farm.get("data") if "data" in farm else farm
+        if isinstance(f, str):
+            continue
+        if h and _tg_norm(f.get("telegram")) == h:
+            return f.get("id")
+        if len(d) >= 6 and _digits(f.get("phone")) == d:
+            return f.get("id")
+    for c in list_records(conn, "contacts"):
+        ct = c.get("data") if "data" in c else c
+        if isinstance(ct, str):
+            continue
+        if h and _tg_norm(ct.get("telegram")) == h:
+            return ct.get("farmId")
+        if len(d) >= 6 and _digits(ct.get("phone")) == d:
+            return ct.get("farmId")
+    return None
+
+
+def _tg_norm(v) -> str:
+    return str(v or "").lstrip("@").strip().lower()
+
+
+def register_comm(conn, item: dict) -> None:
+    """Зафиксировать входящую коммуникацию в CRM: создать событие календаря
+    и запись истории для связанного хозяйства, при наличии farmId.
+
+    Идемпотентность — по id коммуникации (eventId = comm:<id>)."""
+    farm_id = item.get("farmId")
+    if not farm_id:
+        return
+    cid = item.get("id") or ""
+    kind_label = {"telegram": "Telegram", "whatsapp": "WhatsApp", "call": "Звонок"}.get(
+        item.get("kind"), "Сообщение")
+    text = (item.get("text") or item.get("note") or "").strip()
+    who = item.get("contact") or item.get("handle") or item.get("phone") or "Неизвестный контакт"
+    # событие календаря (§7: события периода открывают связанный объект)
+    ev_id = f"comm:{cid}"
+    if not get_record(conn, "applications", ev_id):
+        upsert(conn, "applications", {
+            "id": ev_id,
+            "title": f"{kind_label}: {who}",
+            "date": (item.get("ts") or "")[:10],
+            "time": (item.get("ts") or "")[11:16] or None,
+            "kind": "communication",
+            "farmId": farm_id,
+            "refKind": "farm",
+            "refId": farm_id,
+            "openObject": {"kind": "comm", "id": cid},
+            "summary": text[:280],
+            "createdBy": "system:comms",
+        }, ev_id)
+    # запись в историю клиента (§6)
+    note_id = f"hist:{cid}"
+    if not get_record(conn, "clientNotes", note_id):
+        upsert(conn, "clientNotes", {
+            "id": note_id,
+            "farmId": farm_id,
+            "type": "communication",
+            "text": f"Входящее {kind_label} от «{who}»: {text[:280]}",
+            "ts": item.get("ts"),
+            "commId": cid,
+            "createdBy": "system:comms",
+        }, note_id)

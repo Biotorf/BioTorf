@@ -157,6 +157,7 @@ def auto_link(phone: str | None) -> str | None:
 class CommIn(BaseModel):
     kind: str = Field(pattern="^(call|telegram|whatsapp)$")
     dir: str = Field("in", pattern="^(in|out)$")
+    payload: dict | None = None
     farmId: str | None = None
     contact: str | None = None
     phone: str | None = None
@@ -200,6 +201,25 @@ def outbox(kind: str = Query("telegram", pattern="^(telegram|whatsapp)$"), limit
     return {"items": items, "count": len(items)}
 
 
+# ── лента событий: входящие с момента последней позиции (long-poll) ────
+@app.get("/api/comms/events")
+def comms_events(since: int = Query(0, ge=0), limit: int = Query(100, le=500)):
+    """Возвращает сообщения с rowid > since. Позиция — целая последовательная
+    ссылка SQLite, не зависит от часов клиента. Используется фронтендом для
+    надёжного получения входящих Telegram/WhatsApp без рассинхрона по ts."""
+    with store.connect() as conn:
+        rows = conn.execute(
+            "SELECT rowid, * FROM comms WHERE rowid > ? ORDER BY rowid ASC LIMIT ?",
+            (since, limit),
+        ).fetchall()
+    items = []
+    for r in rows:
+        d = store.to_dict(r)
+        d["seq"] = r["rowid"]
+        items.append(d)
+    return {"items": items, "maxSeq": rows[-1]["rowid"] if rows else since}
+
+
 @app.get("/api/comms/{comm_id}")
 def get_comm(comm_id: str):
     item = store.get(comm_id)
@@ -216,7 +236,15 @@ def create_comm(body: CommIn):
     item["source"] = "manual"
     if item["kind"] == "call" and not item.get("status"):
         item["status"] = "Разговор"
-    return store.insert(item)
+    if not item.get("farmId"):
+        item["farmId"] = (auto_link(item.get("phone"))
+                          or crm.auto_link_tg(store.connect(), item.get("handle"), item.get("phone")))
+    saved = store.insert(item)
+    try:
+        crm.register_comm(store.connect(), saved)
+    except Exception as e:
+        print(f"[crm] register_comm skip: {e}")
+    return saved
 
 
 @app.patch("/api/comms/{comm_id}")
@@ -595,6 +623,28 @@ def verify_whatsapp_signature(body: bytes, signature: str | None):
         raise HTTPException(401, "Неверная подпись WhatsApp")
 
 
+def _tg_media_label(msg: dict) -> str:
+    """Подпись для нетекстовых сообщений (голос, фото, видео, документ...),
+    чтобы входящее не терялось в ленте как пустая строка."""
+    if msg.get("voice"):
+        return "[голосовое сообщение]"
+    if msg.get("audio"):
+        return "[аудио]"
+    if msg.get("photo"):
+        return "[фото]"
+    if msg.get("video") or msg.get("video_note"):
+        return "[видео]"
+    if msg.get("document"):
+        return "[документ]"
+    if msg.get("sticker"):
+        return "[стикер]"
+    if msg.get("contact"):
+        return "[анкета: контакт]"
+    if msg.get("location"):
+        return "[геолокация]"
+    return ""
+
+
 # ── вебхук: Telegram ─────────────────────────────────────────────────────────
 # Присылается вашим getUpdates-воркером (или самим Telegram при direct-webhook):
 # { "update_id": 123, "message": { "from": {...}, "chat": {...}, "text": "..." } }
@@ -602,8 +652,13 @@ def verify_whatsapp_signature(body: bytes, signature: str | None):
 async def telegram_webhook(
     request: Request,
     x_bot_secret: str | None = Header(None),
+    secret: str = Query(""),
 ):
-    check_secret(x_bot_secret, TELEGRAM_SECRET, "TELEGRAM_WEBHOOK_SECRET")
+    # секрет приходит либо от нашего воркера (заголовок X-Bot-Secret),
+    # либо напрямую от Telegram (заголовок X-Telegram-Bot-Api-Secret-Token,
+    # заданный через setWebhook) — принимаем любой из них
+    provided = x_bot_secret or request.headers.get("x-telegram-bot-api-secret-token") or secret
+    check_secret(provided, TELEGRAM_SECRET, "TELEGRAM_WEBHOOK_SECRET")
     payload = await request.json()
     msg = payload.get("message") or payload.get("channel_post")
     if not msg:
@@ -621,7 +676,7 @@ async def telegram_webhook(
         "handle": ("@" + frm["username"]) if frm.get("username") else None,
         "phone": frm.get("phone_number") or None,
         "ts": datetime.fromtimestamp(msg.get("date", time.time()), timezone.utc).isoformat(timespec="seconds"),
-        "text": msg.get("text") or msg.get("caption") or "",
+        "text": msg.get("text") or msg.get("caption") or _tg_media_label(msg),
         "read": False,
         "source": "webhook:telegram",
         "externalId": external_id,
@@ -633,8 +688,16 @@ async def telegram_webhook(
             "userIndex": frm.get("id"),
         },
     }
-    item["farmId"] = auto_link(item["phone"]) or auto_link_handle(item["handle"])
-    return store.insert(item)
+    item["farmId"] = (auto_link(item["phone"]) or auto_link_handle(item["handle"])
+                      or crm.auto_link_tg(store.connect(), item["handle"], item["phone"]))
+    saved = store.insert(item)
+    # сквозная интеграция: входящее сообщение попадает в карточку клиента и
+    # в историю связанного сквозного процесса (руководство §6 «История»)
+    try:
+        crm.register_comm(store.connect(), saved)
+    except Exception as e:
+        print(f"[crm] register_comm skip: {e}")
+    return saved
 
 
 def auto_link_handle(handle: str | None) -> str | None:
@@ -689,8 +752,14 @@ async def whatsapp_webhook(request: Request, x_hub_signature_256: str | None = H
                     "externalId": msg.get("id"),
                     "payload": {"to": business_phone},
                 }
-                item["farmId"] = auto_link(item["phone"])
-                created.append(store.insert(item))
+                item["farmId"] = auto_link(item["phone"]) \
+                    or crm.auto_link_tg(store.connect(), None, item["phone"])
+                saved = store.insert(item)
+                try:
+                    crm.register_comm(store.connect(), saved)
+                except Exception as e:
+                    print(f"[crm] register_comm skip: {e}")
+                created.append(saved)
     return {"created": len(created)}
 
 
@@ -740,8 +809,14 @@ async def telephony_webhook(request: Request, token: str = Query("")):
     created = []
     for c in calls:
         item = normalize_cdr(c)
-        item["farmId"] = auto_link(item["phone"])
-        created.append(store.insert(item))
+        item["farmId"] = auto_link(item["phone"]) \
+            or crm.auto_link_tg(store.connect(), None, item["phone"])
+        saved = store.insert(item)
+        try:
+            crm.register_comm(store.connect(), saved)
+        except Exception as e:
+            print(f"[crm] register_comm skip: {e}")
+        created.append(saved)
     return {"created": len(created)}
 
 

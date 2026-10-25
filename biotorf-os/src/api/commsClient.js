@@ -39,10 +39,20 @@ async function req(path, options = {}) {
 }
 
 let healthPromise = null;
+let healthTimer = null;
 export function checkApi() {
   healthPromise ??= req('/health')
     .then(() => { apiState.online = true; return true; })
     .catch(() => { apiState.online = false; return false; });
+  // фоновый watchdog: если бэкенд (или telegram-worker) упал и снова поднялся,
+  // лента должна «вернуться к жизни» без перезагрузки страницы — иначе
+  // входящие Telegram-сообщения перестают приходить на сайт молча
+  if (!healthTimer && typeof setInterval === 'function') {
+    healthTimer = setInterval(() => {
+      healthPromise = null;
+      checkApi();
+    }, 30000);
+  }
   return healthPromise;
 }
 
