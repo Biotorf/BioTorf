@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { SAMPLE } from '@/data/sample';
 import { commsApi, apiEnabled, checkApi } from '@/api/commsClient';
+import { logisticsApi } from '@/api/logisticsClient';
 
 // apiEnabled — функция (см. commsClient.js); вызываем как функцию
 const apiOn = () => typeof apiEnabled === 'function' ? apiEnabled() : !!apiEnabled;
@@ -28,6 +29,7 @@ function load() {
     parsed.journeys ??= [];
     parsed.quotes ??= [];
     parsed.comms ??= [];
+    parsed.logistics ??= [];
     return parsed;
   } catch {
     return structuredClone(SAMPLE);
@@ -48,6 +50,7 @@ export const useDbStore = defineStore('db', {
     leads: (s) => s.data.leads,
     warehouse: (s) => s.data.warehouse,
     comms: (s) => s.data.comms,
+    logistics: (s) => s.data.logistics || [],
     // хелперы
     farmById: (s) => (id) => s.data.farms.find((x) => x.id === id),
     skuById: (s) => (id) => s.data.skus.find((x) => x.id === id) || { name: id, pack: 0 },
@@ -169,6 +172,74 @@ export const useDbStore = defineStore('db', {
       }
       return res;
     },
+
+    // ── Логистика: поставки и выгрузки (отгрузки) товара ──────────────
+    // Как и с коммуникациями: если бэкенд доступен — документы общие (SQLite),
+    // иначе живут локально в localStorage. Локальные несохранённые на сервер
+    // документы догоняются синхронизацией при возможности.
+    async syncLogistics() {
+      this.data.logistics ??= [];
+      const remote = await logisticsApi.list();
+      if (!remote) return false;               // бэкенд недоступен — остаёмся локальными
+      const localById = new Map(this.data.logistics.map((d) => [d.id, d]));
+      const seen = new Set();
+      const merged = remote.map((r) => {
+        seen.add(r.id);
+        const l = localById.get(r.id);
+        if (!l) return r;
+        const lt = Date.parse(l.updatedAt || l.date || '') || 0;
+        const rt = Date.parse(r.updatedAt || r.date || '') || 0;
+        return lt > rt ? { ...r, ...l, id: r.id } : r;
+      });
+      for (const d of this.data.logistics) {
+        if (!seen.has(d.id)) {
+          // локальный документ ещё не доехал до сервера — пробуем отправить
+          try { const up = await logisticsApi.create(d); merged.push(up); }
+          catch { merged.push(d); }
+        }
+      }
+      merged.sort((a, b) => ((a.date || '') < (b.date || '') ? 1 : -1));
+      this.data.logistics = merged;
+      this.save();
+      return true;
+    },
+    async addLogistics(payload) {
+      this.data.logistics ??= [];
+      const item = {
+        id: 'LOC-' + String(Date.now()).slice(-9),
+        act: null,
+        ...payload,
+        updatedAt: new Date().toISOString(),
+      };
+      this.data.logistics.unshift(item);
+      this.save(payload.kind === 'dispatch' ? 'Создана выгрузка' : 'Создана поставка', payload.number || item.id);
+      try {
+        const remote = await logisticsApi.create(payload);
+        if (remote?.id) {
+          const i = this.data.logistics.findIndex((x) => x.id === item.id);
+          if (i >= 0) this.data.logistics[i] = { ...item, ...remote };
+          this.save();
+        }
+      } catch { /* офлайн — остаётся локально, догонит syncLogistics */ }
+      return item;
+    },
+    async updateLogistics(id, payload) {
+      const i = (this.data.logistics || []).findIndex((d) => d.id === id);
+      if (i < 0) return null;
+      const prev = this.data.logistics[i];
+      const next = { ...prev, ...payload, id, updatedAt: new Date().toISOString() };
+      this.data.logistics[i] = next;
+      this.save('Документ логистики обновлён', payload.number || id);
+      try { await logisticsApi.update(id, payload); }
+      catch { /* сервер недоступен — изменения локальные */ }
+      return next;
+    },
+    async removeLogistics(id) {
+      this.data.logistics = (this.data.logistics || []).filter((d) => d.id !== id);
+      this.save('Удалён документ логистики', id);
+      try { await logisticsApi.remove(id); } catch { /* noop */ }
+    },
+
     save(action = 'Изменены данные', object = 'Система') {
       this.data.audit ??= [];
       this.data.audit.unshift({ time: new Date().toISOString(), action, object });

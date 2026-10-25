@@ -36,6 +36,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 import db as store
+import logistics
 import whatsapp_client
 
 # ── конфигурация ─────────────────────────────────────────────────────────────
@@ -86,6 +87,8 @@ WHATSAPP_INFO: dict | None = None      # результат проверки к�
 def startup():
     global TELEGRAM_BOT_INFO, WHATSAPP_INFO
     store.init_db()
+    with store.connect() as conn:
+        logistics.init_tables(conn)
     # Проверяем токен бота сразу при старте, чтобы проблемы было видно в логах
     # и в /health, а не только когда пользователь попытается ответить.
     if TELEGRAM_BOT_TOKEN:
@@ -246,6 +249,70 @@ def link_comm(comm_id: str, farmId: str = Query(...)):
     if not item:
         raise HTTPException(404, "Коммуникация не найдена")
     return item
+
+
+# ── REST: логистика — поставки и выгрузки (отгрузки) товара ─────────────────
+class LogisticsItem(BaseModel):
+    skuId: str | None = None
+    name: str | None = None
+    qty: float = 0
+    unit: str | None = None
+    price: float | None = None
+    note: str | None = None
+
+
+class LogisticsAct(BaseModel):
+    type: str = "Акт приёма-передачи"
+    number: str | None = None
+    date: str | None = None
+
+
+class LogisticsIn(BaseModel):
+    kind: str = Field(pattern="^(supply|dispatch)$")
+    number: str | None = None
+    date: str | None = None
+    status: str | None = None
+    party: str | None = None
+    farmId: str | None = None
+    orderId: str | None = None
+    warehouse: str | None = None
+    vehicle: str | None = None
+    driver: str | None = None
+    base: str | None = None
+    note: str | None = None
+    act: LogisticsAct | None = None
+    items: list[LogisticsItem] = []
+
+
+def new_log_id(kind: str) -> str:
+    prefix = "SUP" if kind == "supply" else "DSP"
+    return prefix + "-" + str(int(time.time() * 1000))[-9:] + os.urandom(2).hex().upper()
+
+
+@app.get("/api/logistics")
+def list_logistics(kind: str | None = Query(None, pattern="^(supply|dispatch)$")):
+    return {"items": logistics.list_docs(store.connect(), kind)}
+
+
+@app.post("/api/logistics", status_code=201)
+def create_logistics(body: LogisticsIn):
+    doc_id = new_log_id(body.kind)
+    doc = logistics.upsert_doc(store.connect(), body.model_dump(), doc_id)
+    return doc
+
+
+@app.put("/api/logistics/{doc_id}")
+def update_logistics(doc_id: str, body: LogisticsIn):
+    existing = logistics.get_doc(store.connect(), doc_id)
+    if not existing:
+        raise HTTPException(404, "Документ не найден")
+    return logistics.upsert_doc(store.connect(), body.model_dump(), doc_id)
+
+
+@app.delete("/api/logistics/{doc_id}", status_code=204)
+def delete_logistics(doc_id: str):
+    if not logistics.delete_doc(store.connect(), doc_id):
+        raise HTTPException(404, "Документ не найден")
 
 
 # ── исходящая отправка: ответ клиенту прямо из ленты ─────────────────────────
