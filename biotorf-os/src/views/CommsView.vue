@@ -2,11 +2,161 @@
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
-import { apiState, COMMS_API_URL, caps } from '@/api/commsClient';
+import { apiState, COMMS_API_URL, caps, commsApi } from '@/api/commsClient';
 import StatusPill from '@/components/ui/StatusPill.vue';
 
 const db = useDbStore();
 const ui = useUiStore();
+
+// ── режим страницы: мессенджер (чаты) / лента ─────────────────────
+const MODE_KEY = 'biotorf_comms_mode';
+const mode = ref(localStorage.getItem(MODE_KEY) || 'chats');   // 'chats' | 'feed'
+function setMode(m) { mode.value = m; localStorage.setItem(MODE_KEY, m); }
+
+// ── состояние чатов (как в Telegram) ─────────────────────────────
+const chatList = ref([]);          // [{key,kind,farmId,contact,phone,handle,unread,lastMessage,draft,messages}]
+const activeKey = ref(null);       // открытый диалог
+const chatInput = ref('');
+const chatSending = ref(false);
+const chatError = ref('');
+const chatNotice = ref('');
+const newChatOpen = ref(false);
+const newChat = ref({ kind: 'telegram', handle: '', phone: '', contact: '' });
+let draftTimer = null;
+let firstLoad = true;
+
+function peerTitle(c) {
+  if (c.farmId) return db.farmById(c.farmId)?.name || c.farmId;
+  return c.contact || c.handle || c.phone || 'Неизвестный контакт';
+}
+function peerSub(c) {
+  const parts = [c.contact, c.handle, c.phone].filter(Boolean);
+  return parts.join(' · ');
+}
+function fmtDay(iso) {
+  const d = new Date(iso), today = new Date();
+  if (d.toDateString() === today.toDateString()) return 'Сегодня';
+  const yst = new Date(today.getTime() - 864e5);
+  if (d.toDateString() === yst.toDateString()) return 'Вчера';
+  return d.toLocaleDateString('ru-RU');
+}
+function fmtTime(iso) {
+  return new Date(iso).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+}
+function dayGap(list, i) {
+  if (!i) return true;
+  return new Date(list[i].ts).toDateString() !== new Date(list[i - 1].ts).toDateString();
+}
+
+const activeChat = computed(() => chatList.value.find((c) => c.key === activeKey.value) || null);
+const sortedChats = computed(() =>
+  [...chatList.value].sort((a, b) => (a.lastTs < b.lastTs ? 1 : -1))
+    .filter((c) => {
+      const q = ui.search.toLowerCase();
+      if (!q) return true;
+      return [peerTitle(c), c.contact, c.handle, c.phone, c.lastMessage?.text]
+        .filter(Boolean).join(' ').toLowerCase().includes(q);
+    })
+);
+const totalUnread = computed(() => chatList.value.reduce((s, c) => s + (c.unread || 0), 0));
+const chatMessages = computed(() => (activeChat.value?.messages || []).slice(-300));
+
+async function loadChats(quiet = false) {
+  if (!apiState.online) return;
+  try {
+    const res = await commsApi.chats();
+    chatList.value = res.items || [];
+    if (firstLoad && !activeKey.value && chatList.value.length) {
+      const withUnread = chatList.value.find((c) => c.unread > 0);
+      openChat(withUnread || chatList.value[0], false);
+    }
+    firstLoad = false;
+  } catch (e) {
+    if (!quiet) chatError.value = e.message || 'Не удалось загрузить чаты';
+  }
+}
+
+function openChat(c, doRead = true) {
+  activeKey.value = c.key;
+  chatInput.value = c.draft || '';
+  chatError.value = '';
+  chatNotice.value = '';
+  if (doRead && c.unread) {
+    c.unread = 0;
+    commsApi.markChatRead(c.key).catch(() => {});
+  }
+  scrollBottom();
+}
+
+const msgBox = ref(null);
+function scrollBottom() {
+  requestAnimationFrame(() => {
+    if (msgBox.value) msgBox.value.scrollTop = msgBox.value.scrollHeight;
+  });
+}
+
+async function sendChat() {
+  const c = activeChat.value;
+  const text = chatInput.value.trim();
+  if (!c || !text || chatSending.value) return;
+  chatSending.value = true;
+  chatError.value = '';
+  try {
+    const res = await commsApi.sendToChat(c.key, text);
+    chatNotice.value = res.sent
+      ? '✅ Доставлено'
+      : '⏳ Отправлено — уйдёт клиенту, как только канал будет готов';
+    chatInput.value = '';
+    commsApi.saveDraft(c.key, '').catch(() => {});
+    await loadChats(true);
+    const fresh = activeChat.value;
+    if (fresh) fresh.draft = '';
+    scrollBottom();
+    setTimeout(() => { chatNotice.value = ''; }, 2500);
+  } catch (e) {
+    chatError.value = e.message || 'Сервер отклонил отправку';
+  } finally {
+    chatSending.value = false;
+  }
+}
+
+function onInput() {
+  const c = activeChat.value;
+  if (!c) return;
+  clearTimeout(draftTimer);
+  draftTimer = setTimeout(() => {
+    commsApi.saveDraft(c.key, chatInput.value).catch(() => {});
+  }, 700);
+}
+
+async function startNewChat() {
+  const f = newChat.value;
+  const target = f.kind === 'telegram' ? f.handle.trim() : f.phone.trim();
+  if (!target) { chatError.value = 'Укажите ник Telegram или номер телефона'; return; }
+  const entry = {
+    kind: f.kind, dir: 'out',
+    contact: f.contact.trim() || null,
+    phone: f.kind === 'whatsapp' ? target : null,
+    handle: f.kind === 'telegram' ? target.replace(/^@/, '') : null,
+    text: chatInput.value.trim() || 'Новый диалог',
+    read: true,
+  };
+  try {
+    await db.addComm(entry);           // создаёт сообщение и peer_key на сервере
+    newChatOpen.value = false;
+    chatInput.value = '';
+    await loadChats(true);
+    const created = chatList.value.find((c) =>
+      (entry.handle && c.handle === entry.handle) || (entry.phone && c.phone === entry.phone));
+    if (created) openChat(created, false);
+  } catch (e) {
+    chatError.value = e.message || 'Не удалось начать диалог';
+  }
+}
+
+function chatGoClient(c) {
+  if (c.farmId) ui.openClient(c.farmId);
+}
 
 const KIND_META = {
   call:     { label: 'Звонок',   icon: '☎' },
@@ -172,11 +322,13 @@ let pollTimer = null;
 async function tick() {
   if (!autoRefresh.value || document.hidden) return;
   await db.syncComms(true);   // quiet — не шумим ошибкой при временном недоступе API
+  if (mode.value === 'chats') await loadChats(true);
 }
 
 onMounted(async () => {
   // если поднят бэкенд коммуникаций (backend/, порт 8787) — лента общая, из SQLite
   await db.syncComms();
+  await loadChats(true);
   pollTimer = setInterval(tick, 4000);
   window.addEventListener('focus', tick);   // сразу обновляемся при возврате во вкладку
   if (ui.commsFocusFarm) {
@@ -293,6 +445,120 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
+    <div class="chips toolbar" style="margin-bottom:14px">
+      <button class="chip" :class="{ selected: mode === 'chats' }" :style="mode === 'chats' ? 'background:#27b95a;color:#fff' : ''" @click="setMode('chats')">
+        💬 Чаты<template v-if="totalUnread"> · {{ totalUnread }}</template>
+      </button>
+      <button class="chip" :class="{ selected: mode === 'feed' }" :style="mode === 'feed' ? 'background:#27b95a;color:#fff' : ''" @click="setMode('feed')">
+        📋 Лента (все коммуникации)
+      </button>
+    </div>
+
+    <!-- ═══ МЕССЕНДЖЕР: ЧАТЫ ═══ -->
+    <div v-if="mode === 'chats'" class="messenger">
+      <div v-if="!apiState.online" class="note">
+        💬 Режим чатов доступен при поднятом бэкенде. Запустите стек (<code>docker compose up -d --build</code>) —
+        или переключитесь на ленту, чтобы работать локально.
+      </div>
+      <template v-else>
+        <aside class="chat-side">
+          <div class="chat-side-head">
+            <span class="panel-title">Чаты</span>
+            <button class="btn slim primary" @click="newChatOpen = !newChatOpen">＋ Диалог</button>
+          </div>
+          <div v-if="newChatOpen" class="newchat">
+            <select v-model="newChat.kind" class="select">
+              <option value="telegram">Telegram</option>
+              <option value="whatsapp">WhatsApp</option>
+            </select>
+            <input v-if="newChat.kind === 'telegram'" v-model="newChat.handle" class="input" placeholder="@ник клиента" />
+            <input v-else v-model="newChat.phone" class="input" placeholder="+996 … номер" />
+            <input v-model="newChat.contact" class="input" placeholder="Имя (необязательно)" />
+            <textarea v-model="chatInput" class="textarea" rows="2" placeholder="Первое сообщение…"></textarea>
+            <button class="btn primary slim" @click="startNewChat">Начать диалог</button>
+          </div>
+          <div class="chat-list">
+            <div
+              v-for="c in sortedChats" :key="c.key"
+              class="chat-item" :class="{ active: c.key === activeKey, unread: c.unread }"
+              @click="openChat(c)"
+            >
+              <div class="avatar" :class="'av-' + c.kind">{{ KIND_META[c.kind]?.icon || '💬' }}</div>
+              <div class="chat-item-main">
+                <div class="chat-item-top">
+                  <span class="chat-name">{{ peerTitle(c) }}</span>
+                  <span class="chat-time mini">{{ fmtTime(c.lastTs) }}</span>
+                </div>
+                <div class="chat-item-bottom">
+                  <span class="chat-preview">{{ c.lastMessage?.dir === 'out' ? '→ ' : '' }}{{ (c.lastMessage?.text || '').slice(0, 60) }}</span>
+                  <span v-if="c.unread" class="badge">{{ c.unread }}</span>
+                </div>
+              </div>
+            </div>
+            <div v-if="!sortedChats.length" class="empty" style="padding:18px">Диалогов пока нет.</div>
+          </div>
+        </aside>
+
+        <section class="chat-window">
+          <template v-if="activeChat">
+            <header class="chat-head">
+              <div>
+                <div class="chat-head-name" :class="{ 'txt-link': !!activeChat.farmId }" @click="chatGoClient(activeChat)">
+                  {{ peerTitle(activeChat) }}
+                </div>
+                <div class="mini">{{ KIND_META[activeChat.kind]?.label || activeChat.kind }} · {{ peerSub(activeChat) || 'диалог' }}</div>
+              </div>
+              <span v-if="activeChat.lastOutStatus === 'Доставлено'" class="pill green">ответ доставлен ✓</span>
+              <span v-else-if="activeChat.lastOutStatus === 'В очереди'" class="pill amber">⏳ в очереди</span>
+              <span v-else-if="activeChat.lastOutStatus === 'Ошибка доставки'" class="pill red">✕ ошибка</span>
+            </header>
+            <div ref="msgBox" class="chat-messages">
+              <template v-for="(m, i) in chatMessages" :key="m.seq ?? m.id">
+                <div v-if="dayGap(chatMessages, i)" class="day-divider"><span>{{ fmtDay(m.ts) }}</span></div>
+                <div class="msg-row" :class="m.dir === 'out' ? 'mine' : 'theirs'">
+                  <div class="bubble" :class="['k-' + m.kind, { failed: m.status === 'Ошибка доставки' }]">
+                    <div class="bubble-text">{{ m.text || (m.kind === 'call' ? `Звонок · ${m.status || ''}` : '') }}</div>
+                    <div class="bubble-meta">
+                      <span>{{ fmtTime(m.ts) }}</span>
+                      <span v-if="m.dir === 'out'">
+                        <template v-if="m.status === 'Доставлено'"> ✓✓</template>
+                        <template v-else-if="m.status === 'В очереди'"> 🕓</template>
+                        <template v-else-if="m.status === 'Ошибка доставки'"> ✕</template>
+                        <template v-else> ✓</template>
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </template>
+              <div v-if="!chatMessages.length" class="empty" style="padding:24px">Сообщений нет — напишите первым.</div>
+            </div>
+            <footer class="chat-input">
+              <div v-if="chatError" class="mini comms-error" style="padding:0 14px">{{ chatError }}</div>
+              <div v-if="chatNotice" class="mini comms-ok" style="padding:0 14px">{{ chatNotice }}</div>
+              <div class="chat-input-row">
+                <textarea
+                  v-model="chatInput" class="textarea chat-textarea" rows="1"
+                  :placeholder="caps.telegramSend || caps.whatsappSend ? 'Сообщение… (Enter — отправить)' : 'Сохранится в ленте; отправка не настроена на сервере'"
+                  @input="onInput"
+                  @keydown.enter.exact.prevent="sendChat"
+                ></textarea>
+                <button class="btn primary send-btn" :disabled="!chatInput.trim() || chatSending" @click="sendChat">
+                  {{ chatSending ? '…' : '➤' }}
+                </button>
+              </div>
+            </footer>
+          </template>
+          <div v-else class="chat-empty">
+            <div style="font-size:40px">💬</div>
+            <div>Выберите чат слева или начните новый диалог</div>
+            <div class="mini">Входящие из Telegram и WhatsApp автоматически группируются в чаты по собеседнику</div>
+          </div>
+        </section>
+      </template>
+    </div>
+
+    <!-- ═══ ЛЕНТА (прежний табличный вид) ═══ -->
+    <template v-if="mode === 'feed'">
     <div class="chips toolbar">
       <button
         v-for="[key, label] in FILTERS"
@@ -376,6 +642,7 @@ onBeforeUnmount(() => {
       </table>
       <div v-if="!items.length" class="empty">Записей нет — измените фильтр или зафиксируйте коммуникацию</div>
     </div>
+    </template>
 
     <!-- панель быстрого ответа -->
     <Teleport to="body">
@@ -438,4 +705,45 @@ onBeforeUnmount(() => {
 .comms-error { color:#b42318; }
 .pill.green { background:#e4f8e8; color:#1f9a4b; }
 .pill.red { background:#fde8e8; color:#b42318; }
+
+/* ── мессенджер (чаты) ─────────────────────────────────────────── */
+.messenger { display:flex; gap:0; border:1px solid #e2e8e0; border-radius:14px; overflow:hidden; height:min(640px, calc(100vh - 260px)); background:#fff; box-shadow:0 1px 3px rgba(20,40,30,.06); }
+.chat-side { width:320px; min-width:260px; border-right:1px solid #e7ece8; display:flex; flex-direction:column; background:#fbfdfb; }
+.chat-side-head { display:flex; align-items:center; justify-content:space-between; padding:12px 14px; border-bottom:1px solid #e7ece8; }
+.newchat { display:flex; flex-direction:column; gap:8px; padding:12px 14px; border-bottom:1px solid #e7ece8; background:#f4faf5; }
+.chat-list { flex:1; overflow-y:auto; }
+.chat-item { display:flex; gap:10px; padding:11px 12px; cursor:pointer; border-bottom:1px solid #eef2ee; align-items:center; }
+.chat-item:hover { background:#f1f7f2; }
+.chat-item.active { background:#e2f6e8; }
+.chat-item.unread .chat-name { font-weight:800; }
+.avatar { width:42px; height:42px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:18px; flex-shrink:0; }
+.av-telegram { background:#e3f2fd; } .av-whatsapp { background:#e4f8e8; } .av-call { background:#e7f0fb; }
+.chat-item-main { flex:1; min-width:0; }
+.chat-item-top { display:flex; justify-content:space-between; gap:8px; }
+.chat-name { font-weight:700; font-size:13.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.chat-time { flex-shrink:0; }
+.chat-item-bottom { display:flex; justify-content:space-between; gap:8px; margin-top:2px; }
+.chat-preview { font-size:12.5px; color:#5b6b60; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.badge { background:#27b95a; color:#fff; font-size:11px; font-weight:800; border-radius:10px; padding:1px 7px; flex-shrink:0; }
+.chat-window { flex:1; display:flex; flex-direction:column; min-width:0; background:#eef3ee; }
+.chat-head { display:flex; align-items:center; justify-content:space-between; padding:10px 16px; background:#fff; border-bottom:1px solid #e7ece8; }
+.chat-head-name { font-weight:800; font-size:14.5px; }
+.chat-messages { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:6px; }
+.day-divider { text-align:center; margin:10px 0 6px; }
+.day-divider span { background:#dfe8df; color:#5b6b60; font-size:11px; font-weight:700; padding:3px 10px; border-radius:10px; }
+.msg-row { display:flex; }
+.msg-row.mine { justify-content:flex-end; }
+.msg-row.theirs { justify-content:flex-start; }
+.bubble { max-width:70%; padding:8px 12px; border-radius:14px; font-size:13.5px; line-height:1.45; position:relative; word-wrap:break-word; white-space:pre-wrap; }
+.msg-row.theirs .bubble { background:#fff; border:1px solid #e2e8e0; border-bottom-left-radius:4px; }
+.msg-row.mine .bubble { background:#d6f5df; border:1px solid #c0ecd0; border-bottom-right-radius:4px; }
+.bubble.failed { border-color:#f3bcbc; background:#fdf1f1; }
+.bubble-text { white-space:pre-wrap; }
+.bubble-meta { display:flex; justify-content:flex-end; gap:4px; font-size:10.5px; color:#7a8a80; margin-top:2px; }
+.chat-input { background:#fff; border-top:1px solid #e7ece8; padding:10px 0 12px; }
+.chat-input-row { display:flex; gap:10px; align-items:flex-end; padding:0 14px; }
+.chat-textarea { flex:1; resize:none; max-height:140px; }
+.send-btn { height:40px; width:48px; font-size:16px; flex-shrink:0; }
+.chat-empty { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; color:#5b6b60; text-align:center; padding:30px; }
+@media (max-width: 900px) { .messenger { flex-direction:column; height:auto; } .chat-side { width:100%; max-height:280px; } }
 </style>

@@ -18,6 +18,7 @@
 
 import json
 import os
+import re
 import sqlite3
 from pathlib import Path
 
@@ -41,20 +42,56 @@ CREATE TABLE IF NOT EXISTS comms (
     read       INTEGER NOT NULL DEFAULT 0,
     source     TEXT NOT NULL DEFAULT 'manual',
     external_id TEXT,
-    payload    TEXT
+    payload    TEXT,
+    peer_key   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_comms_ts      ON comms (ts DESC);
 CREATE INDEX IF NOT EXISTS idx_comms_farm    ON comms (farm_id);
 CREATE INDEX IF NOT EXISTS idx_comms_unread  ON comms (read);
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_comms_ext ON comms (source, external_id)
     WHERE external_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS chat_drafts (
+    peer_key TEXT PRIMARY KEY,
+    draft    TEXT NOT NULL DEFAULT '',
+    updated  TEXT NOT NULL
+);
 """
 
 FIELDS = [
     "id", "kind", "dir", "farmId", "contact", "phone", "handle",
     "ts", "duration", "status", "text", "note", "read", "source",
-    "externalId", "payload",
+    "externalId", "payload", "peerKey",
 ]
+
+
+def compute_peer_key(item: dict) -> str | None:
+    """Ключ чата для мессенджер-ленты: диалог с собеседником идентифицируется
+    телефоном (WhatsApp/звонки), telegram-username, иначе chatId/userIndex."""
+    d = digits_for_key(item.get("phone"))
+    if len(d) >= 6:
+        return "tel:" + d
+    h = (item.get("handle") or "").lstrip("@").lower()
+    if h:
+        return "tg:" + h
+    pl = item.get("payload") or {}
+    pid = pl.get("chatId") or pl.get("userIndex")
+    return f"tgid:{pid}" if pid else None
+
+
+def digits_for_key(s) -> str:
+    import re as _re
+    d = _re.sub(r"\D", "", s or "")
+    # нормализация кыргызских/узбекских номеров: 0XX XXX XX XX <-> +996XXXXXXXXX
+    if d.startswith("996") and len(d) == 12:
+        return d[3:]
+    if d.startswith("998") and len(d) == 12:
+        return d[3:]
+    if len(d) == 11 and d.startswith("0"):
+        return d[1:]
+    if len(d) == 10 and d[:3] in ("505","555","700","701","702","707","770","771","772","777","880","999","312"):
+        return d
+    return d[-9:] if len(d) >= 6 else d
 
 
 def connect() -> sqlite3.Connection:
@@ -63,9 +100,27 @@ def connect() -> sqlite3.Connection:
     return conn
 
 
+def _ensure_schema(conn) -> None:
+    """Создать схему; для старых БД — миграция: добавить колонку peer_key."""
+    has_table = conn.execute(
+        "SELECT name FROM sqlite_master WHERE name='comms'").fetchone()
+    if has_table:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(comms)")}
+        if "peer_key" not in cols:
+            conn.execute("ALTER TABLE comms ADD COLUMN peer_key TEXT")
+    conn.executescript(SCHEMA)
+
+
 def init_db() -> None:
     with connect() as conn:
-        conn.executescript(SCHEMA)
+        _ensure_schema(conn)
+        # разово проставляем peer_key историческим записям, у которых он пуст
+        rows = conn.execute(
+            "SELECT * FROM comms WHERE peer_key IS NULL OR peer_key=''").fetchall()
+        for r in rows:
+            pk = compute_peer_key(to_dict(r))
+            if pk:
+                conn.execute("UPDATE comms SET peer_key=? WHERE id=?", (pk, r["id"]))
 
 
 def to_dict(row: sqlite3.Row) -> dict:
@@ -87,16 +142,22 @@ def to_dict(row: sqlite3.Row) -> dict:
         "source": d["source"],
         "externalId": d["external_id"],
         "payload": json.loads(d["payload"]) if d["payload"] else None,
+        "peerKey": d.get("peer_key"),
     }
 
 
 COL_MAP = {
     "farmId": "farm_id",
     "externalId": "external_id",
+    "peerKey": "peer_key",
 }
 
 
 def insert(item: dict) -> dict:
+    if "peerKey" not in item or not item.get("peerKey"):
+        pk = compute_peer_key(item)
+        if pk:
+            item = {**item, "peerKey": pk}
     cols, vals = [], []
     for f in FIELDS:
         if f in item and item[f] is not None:
@@ -168,6 +229,14 @@ def update(comm_id: str, patch: dict) -> dict | None:
     params.append(comm_id)
     with connect() as conn:
         conn.execute(f"UPDATE comms SET {', '.join(sets)} WHERE id = ?", params)
+        # привязка к клиенту распространяется на весь чат (как в мессенджер-CRM:
+        # диалог целиком принадлежит одному хозяйству)
+        if "farmId" in patch and patch["farmId"]:
+            row = conn.execute("SELECT peer_key FROM comms WHERE id=?", (comm_id,)).fetchone()
+            if row and row["peer_key"]:
+                conn.execute(
+                    "UPDATE comms SET farm_id=? WHERE peer_key=? AND farm_id IS NULL",
+                    (patch["farmId"], row["peer_key"]))
     return get(comm_id)
 
 
@@ -192,6 +261,82 @@ def delete(comm_id: str) -> bool:
     with connect() as conn:
         cur = conn.execute("DELETE FROM comms WHERE id = ?", (comm_id,))
         return cur.rowcount > 0
+
+
+def chats(limit: int = 200) -> list[dict]:
+    """Собрать чаты — группировка сообщений по собеседнику, как в мессенджере.
+
+    Возвращает список диалогов: identity (клиент/контакт/телефон/ник), канал,
+    счётчик непрочитанных, последние сообщения и черновик ответа."""
+    with connect() as conn:
+        peers = conn.execute(
+            "SELECT peer_key, MAX(ts) last_ts, COUNT(*) c FROM comms "
+            "WHERE peer_key IS NOT NULL GROUP BY peer_key "
+            "ORDER BY last_ts DESC LIMIT ?", (limit,)).fetchall()
+        out = []
+        for pr in peers:
+            msgs_rows = conn.execute(
+                "SELECT rowid, * FROM comms WHERE peer_key=? ORDER BY ts ASC, rowid ASC",
+                (pr["peer_key"],)).fetchall()
+            msgs = []
+            for r in msgs_rows:
+                d = to_dict(r)
+                d["seq"] = r["rowid"]
+                msgs.append(d)
+            g = {
+                "key": pr["peer_key"],
+                "kind": "call",
+                "farmId": None,
+                "contact": None,
+                "phone": None,
+                "handle": None,
+                "chatId": None,
+                "messages": msgs,
+                "unread": 0,
+                "lastTs": pr["last_ts"],
+                "total": len(msgs),
+            }
+            for m in msgs:
+                if m["kind"] != "call":
+                    g["kind"] = m["kind"]          # канал берём из сообщений-диалога
+                if m.get("farmId"):
+                    g["farmId"] = m["farmId"]
+                if m.get("contact"):
+                    g["contact"] = m["contact"]
+                if m.get("phone"):
+                    g["phone"] = m["phone"]
+                if m.get("handle"):
+                    g["handle"] = m["handle"]
+                pl = m.get("payload") or {}
+                if pl.get("chatId"):
+                    g["chatId"] = pl["chatId"]
+                if not m["read"] and m["dir"] == "in":
+                    g["unread"] += 1
+                if m["dir"] == "out" and m.get("status"):
+                    g["lastOutStatus"] = m["status"]
+            g["lastMessage"] = msgs[-1] if msgs else None
+            dr = conn.execute(
+                "SELECT draft FROM chat_drafts WHERE peer_key=?", (pr["peer_key"],)).fetchone()
+            g["draft"] = (dr["draft"] if dr else "") or ""
+            out.append(g)
+        return out
+
+
+def mark_peer_read(peer_key: str) -> int:
+    """Отметить прочитанными все входящие конкретного чата."""
+    with connect() as conn:
+        cur = conn.execute(
+            "UPDATE comms SET read=1 WHERE peer_key=? AND read=0 AND dir='in'",
+            (peer_key,))
+        return cur.rowcount
+
+
+def save_draft(peer_key: str, draft: str, ts: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO chat_drafts (peer_key, draft, updated) VALUES (?,?,?) "
+            "ON CONFLICT(peer_key) DO UPDATE SET draft=excluded.draft, updated=excluded.updated",
+            (peer_key, draft, ts))
 
 
 def stats():

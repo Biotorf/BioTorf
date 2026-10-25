@@ -170,6 +170,10 @@ class CommIn(BaseModel):
     read: bool = True
 
 
+class SendIn(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+
+
 class CommPatch(BaseModel):
     farmId: str | None = None
     contact: str | None = None
@@ -218,6 +222,59 @@ def comms_events(since: int = Query(0, ge=0), limit: int = Query(100, le=500)):
         d["seq"] = r["rowid"]
         items.append(d)
     return {"items": items, "maxSeq": rows[-1]["rowid"] if rows else since}
+
+
+# ── мессенджер: чаты (диалоги с клиентами) ───────────────────────────────────
+@app.get("/api/chat-list")
+def chats_list(limit: int = Query(200, le=500)):
+    """Список чатов как в Telegram: по одному диалогу на собеседника,
+    последнее сообщение, счётчик непрочитанных, статус доставки ответа."""
+    return {"items": store.chats(limit)}
+
+
+@app.get("/api/chat/{peer_key}")
+def chat_detail(peer_key: str):
+    for g in store.chats():
+        if g["key"] == peer_key:
+            return g
+    raise HTTPException(404, "Чат не найден")
+
+
+@app.post("/api/chat/{peer_key}/read")
+def chat_read(peer_key: str):
+    return {"updated": store.mark_peer_read(peer_key)}
+
+
+class DraftIn(BaseModel):
+    draft: str = Field(default="", max_length=4000)
+
+
+@app.put("/api/chat/{peer_key}/draft")
+def chat_draft(peer_key: str, body: DraftIn):
+    """Сохранить черновик ответа — как «неотправленное сообщение» в мессенджере."""
+    store.save_draft(peer_key, body.draft, now_iso())
+    return {"ok": True}
+
+
+@app.post("/api/chat/{peer_key}/send")
+def chat_send(peer_key: str, body: "SendIn"):
+    """Отправить сообщение в чат напрямую (из окна диалога мессенджера).
+
+    Сервер сам находит последнего адресата чата и доставляет через нужный
+    канал; если доставка невозможна прямо сейчас — уходит в outbox воркера."""
+    chats = [g for g in store.chats() if g["key"] == peer_key]
+    if not chats:
+        raise HTTPException(404, "Чат не найден — отправьте первое сообщение через /api/comms")
+    target = None
+    for m in reversed(chats[0]["messages"]):
+        if m["dir"] == "in" and m["kind"] != "call":
+            target = m
+            break
+    if target is None:  # исходящих нет? берём любую входящую не-звонковую
+        raise HTTPException(422, "В чате нет входящего сообщения-адресата для ответа")
+    res = send_reply(target["id"], SendIn(text=body.text))
+    return res
+
 
 
 @app.get("/api/comms/{comm_id}")
@@ -425,10 +482,6 @@ def crm_delete(coll: str, rid: str):
 
 
 # ── исходящая отправка: ответ клиенту прямо из ленты ─────────────────────────
-class SendIn(BaseModel):
-    text: str = Field(min_length=1, max_length=4000)
-
-
 def tg_api(method: str, payload: dict) -> dict:
     """Вызов Telegram Bot API (urllib, без внешних зависимостей)."""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}"
@@ -580,6 +633,61 @@ def mark_delivered(comm_id: str, body: DeliveredIn):
     if not item:
         raise HTTPException(404, "Коммуникация не найдена")
     return item
+
+
+@app.post("/api/comms/send-to")
+def send_to(body: dict):
+    """Начать диалог из мессенджера с клиентом, у которого ещё нет переписки:
+    { kind: telegram|whatsapp, chatId?|username?|userIndex?|phone?, contact?, farmId?, text }"""
+    kind = body.get("kind")
+    text = (body.get("text") or "").strip()
+    if kind not in ("telegram", "whatsapp") or not text:
+        raise HTTPException(422, "Укажите kind (telegram/whatsapp) и текст сообщения")
+    pl = {}
+    if kind == "telegram":
+        if body.get("chatId"):
+            pl["chatId"] = body["chatId"]
+        elif body.get("username"):
+            pl["username"] = str(body["username"]).lstrip("@")
+        elif body.get("userIndex"):
+            pl["userIndex"] = body["userIndex"]
+        else:
+            raise HTTPException(422, "Неизвестен адресат Telegram (нужен chatId или @username)")
+    else:
+        if not body.get("phone"):
+            raise HTTPException(422, "Для WhatsApp нужен номер телефона получателя")
+    item = {
+        "id": new_id(),
+        "kind": kind,
+        "dir": "out",
+        "farmId": body.get("farmId") or auto_link(body.get("phone"))
+                  or crm.auto_link_tg(store.connect(), body.get("handle"), body.get("phone")),
+        "contact": body.get("contact"),
+        "phone": body.get("phone"),
+        "handle": ("@" + str(body["username"]).lstrip("@")) if body.get("username") else body.get("handle"),
+        "ts": now_iso(),
+        "text": text,
+        "read": True,
+        "source": "chat",
+        "status": "В очереди",
+        "payload": pl,
+    }
+    sent = None
+    send_error = None
+    try:
+        if kind == "telegram" and TELEGRAM_BOT_TOKEN and TELEGRAM_BOT_INFO:
+            sent = send_telegram(item, text)
+        elif kind == "whatsapp" and WHATSAPP_SEND_TOKEN and WHATSAPP_PHONE_NUMBER_ID:
+            sent = send_whatsapp(item, text)
+    except HTTPException as e:
+        send_error = str(e.detail)[:200]
+    if sent:
+        item["status"] = "Доставлено"
+        item["payload"]["tgMessageId"] = sent.get("messageId")
+    if send_error:
+        item["payload"]["sendError"] = send_error
+    saved = store.insert(item)
+    return {"item": saved, "sent": bool(sent), "error": send_error}
 
 
 @app.get("/api/capabilities")

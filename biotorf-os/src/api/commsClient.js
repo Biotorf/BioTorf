@@ -77,4 +77,10 @@ export const commsApi = {
   // Реальный ответ клиенту: POST /api/comms/{id}/send → sendMessage в Telegram
   send: (id, text) => req(`/api/comms/${id}/send`, { method: 'POST', body: JSON.stringify({ text }) }),
   capabilities: () => req('/api/capabilities').then((c) => Object.assign(caps, c)),
+  // ── мессенджер: диалоги-чаты ────────────────────────────────────────────
+  chats: (limit = 200) => req(`/api/chat-list?limit=${limit}`),
+  chat: (peerKey) => req(`/api/chat/${encodeURIComponent(peerKey)}`),
+  markChatRead: (peerKey) => req(`/api/chat/${encodeURIComponent(peerKey)}/read`, { method: 'POST' }),
+  saveDraft: (peerKey, draft) => req(`/api/chat/${encodeURIComponent(peerKey)}/draft`, { method: 'PUT', body: JSON.stringify({ draft }) }),
+  sendToChat: (peerKey, text) => req(`/api/chat/${encodeURIComponent(peerKey)}/send`, { method: 'POST', body: JSON.stringify({ text }) }),
 };
