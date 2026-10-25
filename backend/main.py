@@ -37,6 +37,7 @@ from pydantic import BaseModel, Field
 
 import db as store
 import logistics
+import crm
 import whatsapp_client
 
 # ── конфигурация ─────────────────────────────────────────────────────────────
@@ -89,6 +90,7 @@ def startup():
     store.init_db()
     with store.connect() as conn:
         logistics.init_tables(conn)
+        crm.init_tables(conn)
     # Проверяем токен бота сразу при старте, чтобы проблемы было видно в логах
     # и в /health, а не только когда пользователь попытается ответить.
     if TELEGRAM_BOT_TOKEN:
@@ -313,6 +315,85 @@ def update_logistics(doc_id: str, body: LogisticsIn):
 def delete_logistics(doc_id: str):
     if not logistics.delete_doc(store.connect(), doc_id):
         raise HTTPException(404, "Документ не найден")
+
+
+# ── CRM ядро: сквозной процесс и операционные реестры (руководство v0.9) ─────
+# Хранилище — SQLite (crm_records), синхронизируется между сотрудниками.
+
+def _check_coll(coll: str) -> str:
+    if coll not in crm.COLLECTIONS:
+        raise HTTPException(404, f"Неизвестная коллекция: {coll}")
+    return coll
+
+
+@app.get("/api/crm/state")
+def crm_state():
+    """Полный снимок CRM-данных для первичной загрузки фронтенда."""
+    return crm.get_state(store.connect())
+
+
+@app.post("/api/crm/seed")
+def crm_seed(body: dict):
+    """Первичное наполнение сервера демо-данными (однократно, пустые коллекции)."""
+    conn = store.connect()
+    loaded = 0
+    for coll in crm.COLLECTIONS:
+        items = (body or {}).get(coll)
+        if not isinstance(items, list):
+            continue
+        if crm.list_records(conn, coll):   # не затираем существующие данные
+            continue
+        for rec in items:
+            if rec.get("id"):
+                crm.upsert(conn, coll, rec, rec["id"])
+                loaded += 1
+    return {"loaded": loaded}
+
+
+@app.put("/api/crm/state")
+async def crm_put_state(body: dict):
+    """Синхронизация всего состояния клиента с сервером (lastWriteWins)."""
+    return crm.put_state(store.connect(), body or {})
+
+
+@app.get("/api/crm/journeys/{journey_id}/process")
+def crm_journey_process(journey_id: str):
+    """Собранный сквозной процесс: маршрут + все связанные объекты."""
+    proc = crm.build_process(store.connect(), journey_id)
+    if not proc:
+        raise HTTPException(404, "Маршрут не найден")
+    return proc
+
+
+@app.get("/api/crm/{coll}")
+def crm_list(coll: str):
+    _check_coll(coll)
+    return {"items": crm.list_records(store.connect(), coll)}
+
+
+@app.post("/api/crm/{coll}", status_code=201)
+def crm_create(coll: str, body: dict):
+    _check_coll(coll)
+    return crm.upsert(store.connect(), coll, body or {})
+
+
+@app.put("/api/crm/{coll}/{rid}")
+def crm_update(coll: str, rid: str, body: dict):
+    _check_coll(coll)
+    existing = crm.get_record(store.connect(), coll, rid)
+    if not existing:
+        raise HTTPException(404, "Запись не найдена")
+    # PATCH-семантика: присланные поля поверх существующих (иначе PUT терял
+    # все поля, не указанные в теле запроса)
+    merged = {**existing, **(body or {}), "id": rid}
+    return crm.upsert(store.connect(), coll, merged, rid)
+
+
+@app.delete("/api/crm/{coll}/{rid}", status_code=204)
+def crm_delete(coll: str, rid: str):
+    _check_coll(coll)
+    if not crm.delete(store.connect(), coll, rid):
+        raise HTTPException(404, "Запись не найдена")
 
 
 # ── исходящая отправка: ответ клиенту прямо из ленты ─────────────────────────

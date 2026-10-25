@@ -31,6 +31,17 @@ export const useUiStore = defineStore('ui', {
     openClient(farmId) {
       this.openModal('Карточка клиента', () => import('@/views/ClientCardModal.vue'), { farmId });
     },
+    openJourney(journeyId) {
+      this.activeWork = { kind: 'journey', id: journeyId };
+      this.go('journey');
+    },
+    openRecord(kind, id) {
+      // единый просмотр/редактирование объекта из любого реестра (§5 руководства)
+      this.openModal(`Редактор · ${kind}`, () => import('@/components/forms/RecordEditForm.vue'), { kind, id });
+    },
+    openLeadCard(leadId) {
+      this.openModal('Лид и сквозной процесс', () => import('@/views/LeadJourneyModal.vue'), { leadId });
+    },
     openComms(farmId = null) {
       if (farmId) this.commsFocusFarm = farmId;
       this.go('comms');

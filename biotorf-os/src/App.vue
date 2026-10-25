@@ -1,11 +1,17 @@
 <script setup>
 import { computed, defineAsyncComponent, markRaw, onMounted, onBeforeUnmount } from 'vue';
 import { useUiStore } from '@/stores/ui';
+import { useDbStore } from '@/stores/db';
 import AppSidebar from '@/components/layout/AppSidebar.vue';
 import AppTopbar from '@/components/layout/AppTopbar.vue';
 import AppModal from '@/components/ui/AppModal.vue';
 
 const ui = useUiStore();
+const db = useDbStore();
+
+// первичная загрузка CRM с бэкенда: если сервер доступен — общая база
+// сотрудников; если нет — остаёмся на локальном демо-состоянии (v0.9)
+onMounted(() => { db.pullCrmState(); });
 
 // навигация кнопкой «назад/вперёд» браузера тоже меняет раздел
 function onHashChange() {

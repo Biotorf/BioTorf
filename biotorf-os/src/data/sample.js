@@ -11,7 +11,7 @@ const hoursAgo = (h) => {
 };
 
 export const SAMPLE = {
-  version: 2,          // v2: лента comms очищена — коммуникации живут на бэкенде
+  version: 3,          // v3: сквозной процесс (journeys/quotes) по руководству v0.9
   mode: 'demo',
   users: [
     { id: 'u1', name: 'Директор (демо)', role: 'director' },
@@ -54,4 +54,16 @@ export const SAMPLE = {
   media: [],
   marketingAttributions: [],
   preferences: {},
+  // ── Сквозной процесс (руководство v0.9, раздел 3) ─────────────
+  // journey = единая карточка маршрута: лид → квалификация → сделка →
+  // пилот (опц.) → КП → заказ → счёт → оплата → доставка → сопровождение.
+  journeys: [
+    {
+      id: 'J-001', leadId: 'L-001', farmId: null, dealId: null, pilotId: null, quoteId: null, orderId: null, invoiceId: null,
+      stage: 'Квалификация', owner: 'Менеджер Б', next: datePlus(1), createdAt: datePlus(-2),
+      qualification: null, history: [{ ts: hoursAgo(48), text: 'Маршрут создан из лида «Запрос BIOTORF — фасоль»' }],
+    },
+  ],
+  quotes: [],
+  clientDocs: [],
 };
