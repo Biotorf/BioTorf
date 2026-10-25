@@ -154,7 +154,7 @@ function buildActHtml(actMeta) {
 async function createAct() {
   const meta = {
     type: actType.value,
-    number: (props.doc?.act?.number) || ('А-' + form.number.replace(/^[А-ЯA-Zа-яa-z-]+/?/, '')),
+    number: (props.doc?.act?.number) || ('А-' + form.number.replace(/^[\u0410-\u042F\u0430-\u044F\u0401\u0451A-Za-z]+\/?/, '')),
     date: props.doc?.act?.date || form.date,
   };
   // сохраняем акт в документе (чтобы был виден статус «Акт создан» в реестре)
