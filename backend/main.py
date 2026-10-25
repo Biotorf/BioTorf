@@ -22,17 +22,22 @@ REST API для ленты «Коммуникации» (звонки + Telegram
 import hashlib
 import hmac
 import json
+import mimetypes
 import os
 import re
+import shutil
+import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import Depends, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 import db as store
@@ -69,6 +74,21 @@ WHATSAPP_PHONE_NUMBER_ID = (_env("WHATSAPP_PHONE_NUMBER_ID") or "").strip()  # i
 CORS_ORIGINS = [o.strip() for o in _env(
     "CORS_ORIGINS",
     "http://localhost:5173,http://127.0.0.1:5173,null").split(",") if o.strip()]
+
+# Хранилище медиафайлов (голосовые Telegram): скачанные входящие и запись исходящих.
+# Лежит рядом с БД — в Docker это тот же volume /data, файлы переживают пересборку.
+MEDIA_DIR = Path(_env("MEDIA_DIR") or (store.DB_PATH.parent / "media"))
+
+
+def media_path(media_id: str) -> Path | None:
+    """Безопасная резолвка mediaId → путь на диске (только наши файлы .oga/.ogg)."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{4,64}", media_id or ""):
+        return None
+    for ext in (".oga", ".ogg"):
+        p = MEDIA_DIR / f"{media_id}{ext}"
+        if p.exists():
+            return p
+    return None
 
 app = FastAPI(title="BIOTORF Business OS · Comms API", version="0.1.0")
 app.add_middleware(
@@ -174,6 +194,11 @@ class SendIn(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
 
 
+class VoiceOutboxIn(BaseModel):
+    mediaId: str
+    duration: int = 0
+
+
 class CommPatch(BaseModel):
     farmId: str | None = None
     contact: str | None = None
@@ -256,12 +281,9 @@ def chat_draft(peer_key: str, body: DraftIn):
     return {"ok": True}
 
 
-@app.post("/api/chat/{peer_key}/send")
-def chat_send(peer_key: str, body: "SendIn"):
-    """Отправить сообщение в чат напрямую (из окна диалога мессенджера).
-
-    Сервер сам находит последнего адресата чата и доставляет через нужный
-    канал; если доставка невозможна прямо сейчас — уходит в outbox воркера."""
+def chat_send_core(peer_key: str, text: str, media_file: str | None = None):
+    """Ядро отправки в чат: ищем адресата чата и доставляем через нужный канал;
+    если доставка невозможна прямо сейчас — уходит в outbox воркера."""
     chats = [g for g in store.chats() if g["key"] == peer_key]
     if not chats:
         raise HTTPException(404, "Чат не найден — отправьте первое сообщение через /api/comms")
@@ -272,8 +294,110 @@ def chat_send(peer_key: str, body: "SendIn"):
             break
     if target is None:  # исходящих нет? берём любую входящую не-звонковую
         raise HTTPException(422, "В чате нет входящего сообщения-адресата для ответа")
-    res = send_reply(target["id"], SendIn(text=body.text))
+    if media_file and target["kind"] != "telegram":
+        raise HTTPException(422, "Голосовые сообщения поддерживаются только в Telegram-чатах")
+    res = send_reply(target["id"], SendIn(text=text), media_file=media_file)
     return res
+
+
+@app.post("/api/chat/{peer_key}/send")
+def chat_send(peer_key: str, body: "SendIn"):
+    """Отправить сообщение в чат напрямую (из окна диалога мессенджера)."""
+    return chat_send_core(peer_key, body.text)
+
+
+# ── голосовые сообщения (Telegram) ───────────────────────────────────────────
+VOICE_MAX_BYTES = 10 * 1024 * 1024  # 10 МБ — больше любой разумной войсолевой
+
+
+@app.post("/api/chat/{peer_key}/send-voice")
+async def chat_send_voice(
+    peer_key: str,
+    file: UploadFile = File(...),
+    duration: int = Form(0),
+    caption: str = Form(""),
+):
+    """Записать и отправить голосовое сообщение клиенту в Telegram.
+
+    Фронтенд пишет микрофон MediaRecorder в webm/opus; бэкенд перекодирует в
+    Ogg Opus (.oga) через ffmpeg — только этот формат Telegram показывает как
+    «голосовое» с волной. Без ffmpeg файл уйдёт как обычное аудио-вложение."""
+    raw = await file.read(VOICE_MAX_BYTES + 1)
+    if len(raw) > VOICE_MAX_BYTES:
+        raise HTTPException(413, "Запись больше 10 МБ")
+    if not raw:
+        raise HTTPException(422, "Пустой аудиофайл")
+    MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+    media_id = os.urandom(8).hex()
+    src = MEDIA_DIR / f"{media_id}.src"
+    dst = MEDIA_DIR / f"{media_id}.oga"
+    src.write_bytes(raw)
+    try:
+        conv = _ffmpeg_to_oga(src, dst)
+        if not conv:
+            # ffmpeg недоступен — отдаём как есть (TG покажет аудио файлом)
+            shutil.copyfile(src, dst)
+        as_voice = conv
+        res = chat_send_core(peer_key, (caption or "").strip() or "🎤 Голосовое сообщение",
+                             media_file=str(dst) if as_voice else None)
+        item = res.get("item") or {}
+        if item.get("id"):
+            payload = dict(item.get("payload") or {})
+            payload["media"] = {"mediaId": media_id, "mimeType": "audio/ogg",
+                                "size": dst.stat().st_size, "duration": max(0, min(int(duration or 0), 3600)),
+                                "asVoice": as_voice}
+            store.update(item["id"], {"payload": payload})
+            res["media"] = payload["media"]
+        return res
+    finally:
+        try:
+            src.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _ffmpeg_to_oga(src: Path, dst: Path) -> bool:
+    """Перекодировать запись микрофона в Ogg Opus — формат голосовых Telegram."""
+    import subprocess
+    if not shutil.which("ffmpeg"):
+        return False
+    try:
+        r = subprocess.run(
+            ["ffmpeg", "-y", "-i", str(src), "-ac", "1", "-ar", "48000",
+             "-c:a", "libopus", "-b:a", "32k", "-application", "voip", str(dst)],
+            capture_output=True, timeout=60,
+        )
+        return r.returncode == 0 and dst.exists() and dst.stat().st_size > 0
+    except Exception as e:
+        print(f"[voice] ffmpeg failed: {e}")
+        return False
+
+
+@app.post("/api/comms/{comm_id}/attach-voice")
+def attach_voice(comm_id: str, body: VoiceOutboxIn):
+    """Привязать записанный медиафайл к исходящему сообщению (для повтора воркером)."""
+    p = media_path(body.mediaId)
+    if not p:
+        raise HTTPException(404, "Медиафайл не найден")
+    item = store.get(comm_id)
+    if not item or item["dir"] != "out":
+        raise HTTPException(404, "Исходящее сообщение не найдено")
+    payload = dict(item.get("payload") or {})
+    payload["media"] = {"mediaId": body.mediaId, "mimeType": "audio/ogg",
+                        "duration": max(0, min(int(body.duration or 0), 3600))}
+    updated = store.update(comm_id, {"payload": payload})
+    return updated or item
+
+
+@app.get("/api/media/{media_id}")
+def get_media(media_id: str):
+    """Отдать голосовое сообщение на прослушивание (input-stream для <audio>)."""
+    p = media_path(media_id)
+    if not p:
+        raise HTTPException(404, "Медиафайл не найден")
+    guess = mimetypes.guess_type(str(p))[0] or "audio/ogg"
+    return FileResponse(p, media_type=guess,
+                        headers={"Content-Disposition": f'inline; filename="{p.name}"'})
 
 
 
@@ -495,9 +619,11 @@ def tg_api(method: str, payload: dict) -> dict:
         return json.loads(resp.read() or b"{}")
 
 
-def send_telegram(item: dict, text: str) -> dict:
+def send_telegram(item: dict, text: str, media_file: str | None = None) -> dict:
     """Отправка сообщения клиенту в Telegram через sendMessage.
 
+    Если передан media_file (локальный путь к .oga) — отправляем голосовое
+    сообщение через sendVoice (Telegram отобразит его как плеер с волной).
     Адресат берётся из payload.chatId исходной входящей записи; если чата ещё
     нет — пробуем username / userIndex (бот напишет первым, как только клиент
     начнёт диалог, сообщение доставится)."""
@@ -520,7 +646,10 @@ def send_telegram(item: dict, text: str) -> dict:
     last_err = None
     for a in attempts:
         try:
-            res = tg_api("sendMessage", {**a, "text": text, "disable_web_page_preview": True})
+            if media_file:
+                res = tg_send_voice(a, media_file)
+            else:
+                res = tg_api("sendMessage", {**a, "text": text, "disable_web_page_preview": True})
             if res.get("ok"):
                 return {"sent": True, "via": "telegram", "messageId": res["result"]["message_id"]}
             last_err = res.get("description", "unknown")
@@ -529,6 +658,31 @@ def send_telegram(item: dict, text: str) -> dict:
         except Exception as e:  # network и прочее
             last_err = str(e)
     raise HTTPException(502, f"Telegram не принял сообщение: {last_err}")
+
+
+def tg_send_voice(attempt: dict, media_file: str) -> dict:
+    """multipart-вызов Bot API sendVoice (JSON-методы getFile/upload не принимают)."""
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVoice"
+    boundary = "----biotorf" + os.urandom(8).hex()
+    fname = Path(media_file).name
+    data = Path(media_file).read_bytes()
+    parts = []
+    for k, v in attempt.items():
+        parts.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n".encode())
+    parts.append(
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"voice\"; filename=\"{fname}\"\r\n"
+        f"Content-Type: audio/ogg\r\n\r\n".encode()
+    )
+    parts.append(data)
+    parts.append(f"\r\n--{boundary}--\r\n".encode())
+    body = b"".join(parts)
+    req = urllib.request.Request(
+        url, data=body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return json.loads(resp.read() or b"{}")
 
 
 def send_whatsapp(item: dict, text: str) -> dict:
@@ -552,8 +706,7 @@ def send_whatsapp(item: dict, text: str) -> dict:
     return {"sent": True, "via": "whatsapp", "messageId": msg_id}
 
 
-@app.post("/api/comms/{comm_id}/send")
-def send_reply(comm_id: str, body: SendIn):
+def send_reply(comm_id: str, body: SendIn, media_file: str | None = None):
     """Ответить клиенту из ленты: реально отправить в канал и создать
     исходящую запись «ответ» со ссылкой на исходное сообщение (replyTo)."""
     item = store.get(comm_id)
@@ -573,7 +726,7 @@ def send_reply(comm_id: str, body: SendIn):
         chat_id = (item.get("payload") or {}).get("chatId")
         if TELEGRAM_BOT_TOKEN and chat_id:
             try:
-                sent = send_telegram(item, body.text)
+                sent = send_telegram(item, body.text, media_file=media_file)
             except HTTPException as e:
                 send_error = str(e.detail)[:200]  # не удалось напрямую — доставит воркер из outbox
     elif item["kind"] == "whatsapp":
@@ -609,6 +762,12 @@ def send_reply(comm_id: str, body: SendIn):
     }
     saved = store.insert(reply)
     return {"item": saved, "sent": bool(sent), "error": send_error}
+
+
+@app.post("/api/comms/{comm_id}/send")
+def send_reply_http(comm_id: str, body: SendIn):
+    """HTTP-эндпоинт ответа из ленты (текст)."""
+    return send_reply(comm_id, body)
 
 
 class DeliveredIn(BaseModel):
@@ -735,15 +894,17 @@ def _tg_media_label(msg: dict) -> str:
     """Подпись для нетекстовых сообщений (голос, фото, видео, документ...),
     чтобы входящее не терялось в ленте как пустая строка."""
     if msg.get("voice"):
-        return "[голосовое сообщение]"
+        return "🎤 Голосовое сообщение"
     if msg.get("audio"):
-        return "[аудио]"
+        return "🎵 Аудио"
     if msg.get("photo"):
-        return "[фото]"
-    if msg.get("video") or msg.get("video_note"):
-        return "[видео]"
+        return "🖼 Фото"
+    if msg.get("video_note"):
+        return "⭕ Видео-кружок"
+    if msg.get("video"):
+        return "📹 Видео"
     if msg.get("document"):
-        return "[документ]"
+        return "📎 Документ"
     if msg.get("sticker"):
         return "[стикер]"
     if msg.get("contact"):
@@ -751,6 +912,46 @@ def _tg_media_label(msg: dict) -> str:
     if msg.get("location"):
         return "[геолокация]"
     return ""
+
+
+TG_MEDIA_MAX_BYTES = 20 * 1024 * 1024  # 20 МБ на файл — защита от дисковых атак
+
+
+def download_tg_voice(file_info: dict) -> dict | None:
+    """Скачать голосовой/аудио файл из Telegram Bot API в локальное хранилище.
+
+    file_path выдаётся getFile и действительна ~1 час; качаем сразу при приёме,
+    чтобы клиент мог слушать запись в любой момент (Bot API отдаёт файлы только
+    по https, special:// paths не читаются напрямую)."""
+    fid = file_info.get("file_id")
+    if not fid or not TELEGRAM_BOT_TOKEN:
+        return None
+    try:
+        res = tg_api("getFile", {"file_id": fid})
+        fp = (res.get("result") or {}).get("file_path")
+        if not fp:
+            print(f"[tg-media] getFile не вернул file_path для {fid[:24]}…")
+            return None
+        url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{fp}"
+        with urllib.request.urlopen(url, timeout=30) as resp:
+            data = resp.read(TG_MEDIA_MAX_BYTES + 1)
+        if len(data) > TG_MEDIA_MAX_BYTES:
+            print("[tg-media] файл больше 20 МБ — пропущен")
+            return None
+        MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+        ext = Path(fp).suffix or ".oga"
+        media_id = hashlib.sha1(fid.encode()).hexdigest()[:16]
+        dest = MEDIA_DIR / f"{media_id}{ext}"
+        dest.write_bytes(data)
+        return {
+            "mediaId": media_id,
+            "mimeType": file_info.get("mime_type") or "audio/ogg",
+            "size": len(data),
+            "duration": file_info.get("duration"),
+        }
+    except Exception as e:
+        print(f"[tg-media] скачивание не удалось: {e}")
+        return None
 
 
 # ── вебхук: Telegram ─────────────────────────────────────────────────────────
@@ -776,6 +977,15 @@ async def telegram_webhook(
     frm = msg.get("from") or {}
     external_id = str(payload.get("update_id") or msg.get("message_id"))
 
+    # голосовые/аудио: скачиваем файл сразу при приёме, чтобы его можно было
+    # прослушать в чате CRM (Bot API отдаёт file_path только на время)
+    media = None
+    for mkey in ("voice", "audio"):
+        if msg.get(mkey):
+            media = download_tg_voice(msg[mkey])
+            if media:
+                break
+
     item = {
         "id": new_id(),
         "kind": "telegram",
@@ -794,6 +1004,7 @@ async def telegram_webhook(
             "chatId": chat.get("id"),
             "username": frm.get("username"),
             "userIndex": frm.get("id"),
+            **({"media": media} if media else {}),
         },
     }
     item["farmId"] = (auto_link(item["phone"]) or auto_link_handle(item["handle"])

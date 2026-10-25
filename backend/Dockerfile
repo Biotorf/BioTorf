@@ -1,8 +1,9 @@
 # BIOTORF Business OS · backend (FastAPI + SQLite)
 FROM python:3.12-slim
 
-# curl нужен для docker healthcheck'а (см. docker-compose.yml)
-RUN apt-get update && apt-get install -y --no-install-recommends curl \
+# curl нужен для docker healthcheck'а (см. docker-compose.yml);
+# ffmpeg — перекодировка записей микрофона в Ogg Opus для голосовых Telegram
+RUN apt-get update && apt-get install -y --no-install-recommends curl ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

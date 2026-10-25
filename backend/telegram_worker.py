@@ -42,9 +42,14 @@ def get_json(url: str) -> dict:
         return json.loads(resp.read() or b"{}")
 
 
-def send_to_user(chat_id, text: str):
-    """sendMessage от имени бота; возвращает (ok, message_id, ошибка)."""
+def send_to_user(chat_id, text: str, voice_path: str | None = None):
+    """sendMessage (или sendVoice для голосовых) от имени бота; (ok, message_id, ошибка)."""
     try:
+        if voice_path:
+            ok, msg_id, err = _send_voice_multipart(chat_id, voice_path)
+            if ok or "400" not in str(err or ""):
+                return ok, msg_id, err
+            # Telegram отверг голосовое — fallback: обычный текст-заглушка
         res = post_json(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
             {"chat_id": chat_id, "text": text, "disable_web_page_preview": True},
@@ -59,6 +64,55 @@ def send_to_user(chat_id, text: str):
     except Exception as e:
         print(f"[tg-worker] sendMessage error: {e}", file=sys.stderr)
         return False, None, str(e)
+
+
+def _send_voice_multipart(chat_id, path: str):
+    """Bot API принимает файлы только multipart/form-data (не JSON)."""
+    import uuid
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendVoice"
+    boundary = "----biotorfw" + uuid.uuid4().hex[:12]
+    data = open(path, "rb").read()
+    parts = [
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n{chat_id}\r\n".encode(),
+        (f"--{boundary}\r\nContent-Disposition: form-data; name=\"voice\"; filename=\"voice.oga\"\r\n"
+         f"Content-Type: audio/ogg\r\n\r\n").encode(),
+        data,
+        f"\r\n--{boundary}--\r\n".encode(),
+    ]
+    req = urllib.request.Request(
+        url, data=b"".join(parts),
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            res = json.loads(resp.read() or b"{}")
+        if res.get("ok"):
+            return True, res["result"].get("message_id"), None
+        return False, None, res.get("description", "unknown")
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="ignore")[:300]
+        return False, None, f"HTTP {e.code}: {body}"
+
+
+def resolve_media_path(media_id: str, api: str):
+    """Скачать медиафайл с Comms API во временный файл для отправки в Bot API."""
+    import re as _re
+    import tempfile
+    if not media_id or not _re.fullmatch(r"[A-Za-z0-9_-]{4,64}", media_id):
+        return None
+    try:
+        with urllib.request.urlopen(f"{api}/api/media/{media_id}", timeout=30) as resp:
+            data = resp.read(20 * 1024 * 1024)
+        if not data:
+            return None
+        fd, p = tempfile.mkstemp(suffix=".oga", prefix="tgvoice_")
+        os.write(fd, data)
+        os.close(fd)
+        return p
+    except Exception as e:
+        print(f"[tg-worker] media download failed ({media_id}): {e}", file=sys.stderr)
+        return None
 
 
 def deliver_outbox(api: str):
@@ -76,7 +130,18 @@ def deliver_outbox(api: str):
         chat_id = payload.get("chatId") or payload.get("userIndex")
         if not chat_id:
             continue
-        ok, msg_id, err = send_to_user(chat_id, item.get("text") or "")
+        # голосовые сообщения: если к записи привязан медиафайл — качаем его с
+        # Comms API и отправляем через sendVoice (Telegram покажет плеер)
+        voice_path = None
+        media = payload.get("media") or {}
+        if media.get("mediaId"):
+            voice_path = resolve_media_path(media["mediaId"], api)
+        ok, msg_id, err = send_to_user(chat_id, item.get("text") or "", voice_path)
+        if voice_path:
+            try:
+                os.unlink(voice_path)
+            except OSError:
+                pass
         try:
             post_json(
                 f"{api}/api/comms/{item['id']}/delivered",
