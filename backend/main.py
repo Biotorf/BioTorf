@@ -35,7 +35,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import Depends, File, Form, Header, HTTPException, Query, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
