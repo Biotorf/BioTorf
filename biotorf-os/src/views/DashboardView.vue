@@ -32,6 +32,16 @@ const info = computed(() => {
     ['Активные пилоты', pilots, 'С учетом протоколов'],
   ];
 });
+
+const upcoming = computed(() =>
+  [...db.tasks]
+    .filter((t) => t.status !== 'Выполнена' && t.due)
+    .sort((a, b) => a.due.localeCompare(b.due))
+    .slice(0, 6)
+);
+const pilotControl = computed(() =>
+  db.pilots.filter((p) => !['Завершен', 'Пилот прекращен'].includes(p.status)).slice(0, 5)
+);
 </script>
 
 <template>
@@ -63,13 +73,30 @@ const info = computed(() => {
           v-for="t in db.lateTasks"
           :key="t.id"
           class="insight actionable"
-          @click="ui.openWork('task', t.id)"
+          @click="ui.openRecord('task', t.id)"
         >
           <div>
             <b>{{ t.title }}</b>
             <div class="mini">Задача · срок {{ day(t.due) }}</div>
           </div>
           <StatusPill status="Просрочено" />
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><div class="panel-title">Ближайшие задачи</div></div>
+        <div v-if="!upcoming.length" class="empty">Открытых задач с датой нет</div>
+        <div v-for="t in upcoming" :key="t.id" class="insight actionable" @click="ui.openRecord('task', t.id)">
+          <div><b>{{ t.title }}</b><div class="mini">{{ t.owner }} · срок {{ day(t.due) }}</div></div>
+          <StatusPill :status="t.status" />
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><div class="panel-title">Контроль агрономии</div></div>
+        <div v-if="!pilotControl.length" class="empty">Активных пилотов нет</div>
+        <div v-for="p in pilotControl" :key="p.id" class="insight actionable" @click="ui.openRecord('pilot', p.id)">
+          <div><b>{{ p.title || p.id }}</b><div class="mini">{{ p.crop || '' }} · {{ p.owner || '' }}</div></div>
+          <StatusPill :status="p.status" />
         </div>
       </section>
     </div>
