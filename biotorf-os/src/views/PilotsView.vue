@@ -6,6 +6,7 @@ import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
 import { useFormatters } from '@/composables/useFormatters';
 import StatusPill from '@/components/ui/StatusPill.vue';
+import BackendBadge from '@/components/ui/BackendBadge.vue';
 
 const db = useDbStore();
 const ui = useUiStore();
@@ -33,6 +34,7 @@ const appsOf = (pid) => (db.data.applications || []).filter((a) => a.pilotId ===
       <div>
         <h1>Агрономия · Пилоты</h1>
         <div class="subtitle">Пилоты, обработки и агрономические результаты</div>
+      <BackendBadge collection="pilots" />
       </div>
       <input :value="ui.search" @input="ui.search = $event.target.value" class="input" style="max-width:260px" placeholder="Поиск по пилотам…" />
     </div>

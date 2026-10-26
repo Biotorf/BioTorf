@@ -6,6 +6,7 @@ import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
 import { useFormatters } from '@/composables/useFormatters';
 import StatusPill from '@/components/ui/StatusPill.vue';
+import BackendBadge from '@/components/ui/BackendBadge.vue';
 
 const db = useDbStore();
 const ui = useUiStore();
@@ -46,6 +47,7 @@ function move(d, dir) {
       <div>
         <h1>Сделки и воронка</h1>
         <div class="subtitle">Открытая воронка: {{ money(totalPipeline) }} · сделок: {{ deals.length }}</div>
+      <BackendBadge collection="deals" />
       </div>
       <input :value="ui.search" @input="ui.search = $event.target.value" class="input" style="max-width:260px" placeholder="Поиск по сделкам…" />
     </div>

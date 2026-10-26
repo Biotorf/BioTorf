@@ -6,6 +6,7 @@ import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
 import { useFormatters } from '@/composables/useFormatters';
 import StatusPill from '@/components/ui/StatusPill.vue';
+import BackendBadge from '@/components/ui/BackendBadge.vue';
 
 const db = useDbStore();
 const ui = useUiStore();
@@ -54,6 +55,7 @@ function create() {
       <div>
         <h1>Задачи</h1>
         <div class="subtitle">Поручения с исполнителем, сроком и статусом · просрочено: <b :style="lateCount ? 'color:#c62828' : ''">{{ lateCount }}</b></div>
+      <BackendBadge collection="tasks" />
       </div>
       <button class="btn primary slim" @click="showNew = !showNew">＋ Создать задачу</button>
     </div>

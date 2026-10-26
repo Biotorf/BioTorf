@@ -8,6 +8,7 @@ import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
 import { useFormatters } from '@/composables/useFormatters';
 import StatusPill from '@/components/ui/StatusPill.vue';
+import BackendBadge from '@/components/ui/BackendBadge.vue';
 import LogisticsDocEditor from '@/components/forms/LogisticsDocEditor.vue';
 import { toCsv, toXmlSpreadsheet, downloadBlob, printHtml } from '@/utils/spreadsheet';
 
@@ -115,6 +116,7 @@ const partyLabel = computed(() => tab.value === 'supply' ? 'Поставщик' 
       <div>
         <h1>Логистика · поставки и выгрузки</h1>
         <div class="subtitle">Excel-подобные реестры документов движения товара с актами приёма-передачи</div>
+      <BackendBadge collection="shipments" />
       </div>
       <div class="actionbar">
         <button class="btn slim ghost" @click="exportRegistry('xls')" title="Скачать отфильтрованный реестр в Excel">⬇ Excel (.xls)</button>

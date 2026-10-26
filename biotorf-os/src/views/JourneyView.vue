@@ -7,6 +7,7 @@ import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
 import { useFormatters } from '@/composables/useFormatters';
 import StatusPill from '@/components/ui/StatusPill.vue';
+import BackendBadge from '@/components/ui/BackendBadge.vue';
 
 const db = useDbStore();
 const ui = useUiStore();
@@ -103,6 +104,7 @@ function fmtTs(iso) { return new Date(iso).toLocaleString('ru-RU', { day: '2-dig
       <div>
         <h1>Сквозной процесс</h1>
         <div class="subtitle">Лид → квалификация → сделка → пилот (если нужен) → КП → заказ → счёт → оплата → доставка</div>
+      <BackendBadge collection="journeys" />
       </div>
       <button class="btn primary slim" @click="newLeadOpen = !newLeadOpen">＋ Создать лид</button>
     </div>

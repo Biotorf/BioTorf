@@ -4,6 +4,7 @@ import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
 import { apiState, COMMS_API_URL, caps, commsApi } from '@/api/commsClient';
 import StatusPill from '@/components/ui/StatusPill.vue';
+import BackendBadge from '@/components/ui/BackendBadge.vue';
 
 const db = useDbStore();
 const ui = useUiStore();
@@ -349,6 +350,7 @@ onBeforeUnmount(() => {
       <div>
         <h1>Коммуникации</h1>
         <div class="subtitle">Единая лента: звонки с телефона, Telegram и WhatsApp. Всё общение с клиентом — внутри сервиса.</div>
+      <BackendBadge collection="comms" />
       </div>
       <div class="actionbar">
         <label class="mini" style="display:flex;align-items:center;gap:6px;cursor:pointer" title="Лента и статусы доставки подтягиваются с сервера каждые 4 секунды">

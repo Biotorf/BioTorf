@@ -5,6 +5,7 @@ import { useUiStore } from '@/stores/ui';
 import { usePermissions } from '@/composables/usePermissions';
 import { useFormatters } from '@/composables/useFormatters';
 import StatusPill from '@/components/ui/StatusPill.vue';
+import BackendBadge from '@/components/ui/BackendBadge.vue';
 
 const db = useDbStore();
 const ui = useUiStore();
@@ -49,6 +50,7 @@ const commsUnread = (farmId) => db.comms.filter((c) => c.farmId === farmId && !c
         <h1>Клиенты и хозяйства</h1>
         <div class="subtitle">Реестр хозяйств, контактов и входящих лидов</div>
       </div>
+      <BackendBadge collection="farms" />
       <button class="btn primary slim" @click="ui.go('journey')">＋ Создать · Лид</button>
     </div>
 
