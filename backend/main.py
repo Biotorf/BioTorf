@@ -44,6 +44,8 @@ from pydantic import BaseModel, Field
 import auth
 import farms_index
 import db as store
+if store.IS_POSTGRES:
+    from pg import check_connection as pg_check
 import logistics
 import channels
 import crm
@@ -1319,8 +1321,16 @@ def stats():
 
 @app.get("/health")
 def health():
+    # Проверка доступности БД не должна вешать запрос: pg.check_connection
+    # использует пул с коротким connect_timeout и сразу возвращает ошибку.
+    try:
+        db_ok, db_msg = pg_check() if store.IS_POSTGRES else (True, "sqlite")
+    except Exception as e:  # на всякий случай: health обязан отвечать всегда
+        db_ok, db_msg = False, f"{type(e).__name__}: {str(e)[:120]}"
     return {"ok": True, "service": "biotorf-comms", "version": app.version,
-            "db": os.environ.get("DATABASE_URL", str(store.DB_PATH)).split("@")[-1], "ts": now_iso(),
+            "db": ("postgres: " + ("up" if db_ok else "DOWN — " + db_msg))
+                  if store.IS_POSTGRES else "sqlite",
+            "ts": now_iso(),
             # authRequired: фронт показывает экран входа; hasUsers — что на нём
             # предложить «зарегистрировать первого сотрудника (гендиректора)»
             "authRequired": bool(auth.AUTH_PASSWORD) or users.count() > 0 or not auth.DEV_MODE,

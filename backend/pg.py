@@ -274,17 +274,37 @@ _POOL: ConnectionPool | None = None
 
 
 def get_pool() -> ConnectionPool:
+    """Ленивый пул без ожидания первого соединения (wait_on_close=False,
+    timeout=None): если PostgreSQL недоступен, getconn() сразу бросает
+    OperationalError вместо зависания на 30 секунд — иначе health-check
+    платформы успевает убить процесс и весь сервис висит в 502."""
     global _POOL
     if _POOL is None:
         _POOL = ConnectionPool(
             conninfo=_database_url(),
-            min_size=1,
+            min_size=0,
             max_size=int(os.environ.get("POSTGRES_POOL_MAX", "10")),
-            kwargs={"autocommit": True, "prepare_threshold": 0},
+            kwargs={"autocommit": True, "prepare_threshold": 0,
+                    "connect_timeout": int(os.environ.get("PG_CONNECT_TIMEOUT", "5"))},
             open=True,
+            timeout=10,
+            max_idle=60,
             check=ConnectionPool.check_connection,
         )
     return _POOL
+
+
+def check_connection() -> tuple[bool, str]:
+    """Диагностика подключения для /health: (ok, сообщение)."""
+    try:
+        conn = connect()
+        try:
+            conn.execute("SELECT 1").fetchone()
+        finally:
+            conn.close()
+        return True, "ok"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {str(e)[:200]}"
 
 
 def connect():
