@@ -5,7 +5,7 @@ import { defineStore } from 'pinia';
 const VALID_VIEWS = [
   'dashboard', 'crm', 'comms', 'pipeline', 'pilots', 'knowledge', 'social',
   'products', 'orders', 'production', 'warehouse', 'shipments', 'finance',
-  'tasks', 'analytics', 'journey', 'calendar', 'media', 'notifications',
+  'tasks', 'analytics', 'journey', 'calendar', 'media', 'notifications', 'employees',
 ];
 function viewFromHash() {
   const v = (location.hash || '').replace(/^#\/?/, '');
@@ -15,7 +15,11 @@ function viewFromHash() {
 export const useUiStore = defineStore('ui', {
   state: () => ({
     view: viewFromHash() || 'dashboard',
-    role: 'director',
+    // роль приходит с сервера (JWT) — больше не демо-переключатель
+    role: localStorage.getItem('biotorf.auth.user')
+      ? (JSON.parse(localStorage.getItem('biotorf.auth.user')).role || 'director')
+      : 'director',
+    login: '', name: '', demoRole: false,
     search: '',
     filter: 'Все',
     modal: null,           // { title, component, props }
@@ -63,6 +67,17 @@ export const useUiStore = defineStore('ui', {
     },
     setRole(role) {
       this.role = role;
+    },
+    applySession(user) {
+      // вызывается после входа/регистрации: роль только что созданного аккаунта
+      this.login = user.login || user.user || '';
+      this.name = user.name || '';
+      this.role = user.role || 'director';
+      localStorage.setItem('biotorf.auth.user', JSON.stringify(user));
+    },
+    clearSession() {
+      this.login = ''; this.name = '';
+      this.role = 'director';
     },
   },
 });

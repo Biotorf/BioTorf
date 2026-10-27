@@ -5,10 +5,11 @@
 import { COMMS_API_URL, checkApi } from './commsClient';
 
 async function req(path, options = {}) {
+  const { authHeaders } = await import('./authClient');
   const resp = await fetch(COMMS_API_URL + path, {
-    headers: { 'Content-Type': 'application/json' },
-    signal: AbortSignal.timeout(5000),
     ...options,
+    headers: { 'Content-Type': 'application/json', ...authHeaders(), ...(options.headers || {}) },
+    signal: AbortSignal.timeout(5000),
   });
   if (!resp.ok) throw new Error(`Logistics API ${resp.status}: ${await resp.text()}`);
   if (resp.status === 204) return null;

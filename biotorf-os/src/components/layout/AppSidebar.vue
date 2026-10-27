@@ -2,9 +2,16 @@
 import { computed } from 'vue';
 import { useUiStore } from '@/stores/ui';
 import { usePermissions } from '@/composables/usePermissions';
+import { logout } from '@/api/authClient';
 
 const ui = useUiStore();
 const { ROLES } = usePermissions();
+
+function onLogout() {
+  logout();
+  ui.clearSession();
+  location.reload();
+}
 
 const MENU = [
   ['dashboard', '▦', 'Обзор'],
@@ -29,7 +36,7 @@ const MENU = [
 ];
 
 const VIS = {
-  director: MENU.map((m) => m[0]),
+  director: [...MENU.map((m) => m[0]), 'employees'],
   operations: ['dashboard', 'crm', 'comms', 'pilots', 'knowledge', 'social', 'orders', 'production', 'warehouse', 'shipments', 'finance', 'tasks', 'analytics'],
   // ... остальные роли 1:1 из исходника
 };
@@ -37,9 +44,13 @@ const VIS = {
 // ключи разделов, которые видны всем ролям (общая рабочая лента связи)
 const ALWAYS = ['comms'];
 
+// «Сотрудники и роли» — виден всем, но управлять может только директор
+// (сервер всё равно проверяет право на выдачу ролей)
+const FULL_MENU = [...MENU, ['employees', '♟', 'Сотрудники и роли']];
+
 const visibleMenu = computed(() => {
   const avail = VIS[ui.role] || VIS.director;
-  return MENU.filter((m) => avail.includes(m[0]) || ALWAYS.includes(m[0]));
+  return FULL_MENU.filter((m) => avail.includes(m[0]) || ALWAYS.includes(m[0]));
 });
 </script>
 
@@ -64,10 +75,16 @@ const visibleMenu = computed(() => {
       </button>
     </nav>
     <div class="side-bottom">
-      ОсОО «Агро Трейд Плюс»
-      <p style="margin:6px 0 0">
-        Прототип на обезличенных данных. Переключение ролей — демонстрация.
-      </p>
+      <template v-if="ui.login">
+        {{ ui.name || ui.login }} · {{ ROLES[ui.role] || ui.role }}
+        <p style="margin:6px 0 0">
+          <button class="btn ghost slim" @click="onLogout">Выйти</button>
+        </p>
+      </template>
+      <template v-else>
+        ОсОО «Агро Трейд Плюс»
+        <p style="margin:6px 0 0">Прототип на обезличенных данных.</p>
+      </template>
     </div>
   </aside>
 </template>

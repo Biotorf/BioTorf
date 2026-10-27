@@ -26,9 +26,9 @@ const { ROLES } = usePermissions();
         ♢<i>{{ db.lateTasks.length }}</i>
       </button>
       <button class="toolbar-icon" @click="ui.go('calendar')" title="Календарь">▦</button>
-      <select v-model="ui.role" class="role">
-        <option v-for="(label, key) in ROLES" :key="key" :value="key">{{ label }}</option>
-      </select>
+      <span class="role" :title="ui.login ? `Вход: ${ui.login}` : 'Демо-режим (без бэкенда)'">
+        {{ ROLES[ui.role] || ui.role }}
+      </span>
     </div>
   </div>
 </template>

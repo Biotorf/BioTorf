@@ -143,7 +143,9 @@ WHATSAPP_INFO: dict | None = None      # результат проверки к�
 
 
 # ── аутентификация HTTP-запросов к /api/* ────────────────────────────────────
-PUBLIC_PATHS = ("/health", "/docs", "/openapi.json", "/redoc", "/webhooks/", "/auth/")
+# /auth/me требует токен (остальные /auth/* — публичные: login/register)
+PUBLIC_PATHS = ("/health", "/docs", "/openapi.json", "/redoc", "/webhooks/",
+                "/auth/login", "/auth/register")
 
 
 @app.middleware("http")
@@ -186,12 +188,26 @@ async def auth_middleware(request: Request, call_next):
                 "detail": "Требуется авторизация: передайте заголовок "
                           "Authorization: Bearer <token> (POST /auth/login)"})
     request.state.user = payload.get("sub") or "?"
-    request.state.role = payload["role"]
+    # если в системе есть зарегистрированные сотрудники — сверяем токен с
+    # живым реестром: снятая директором роль или удалённый аккаунт отзывают
+    # доступ немедленно, не дожидаясь истечения TTL токена
+    if has_users:
+        live = users.get(request.state.user)
+        if not live or not live.get("active"):
+            return JSONResponse(status_code=401, content={
+                "detail": "Аккаунт отозван администратором — войдите заново"})
+        if live["role"] == "pending":
+            return JSONResponse(status_code=403, content={
+                "detail": "Учётная запись ожидает подтверждения роли "
+                          "генеральным директором"})
+        request.state.role = live["role"]
+    else:
+        request.state.role = payload["role"]
     if request.method not in ("GET", "HEAD", "OPTIONS"):
         section = auth.section_for(path)
-        if section and not auth.can_write(payload["role"], section):
+        if section and not auth.can_write(request.state.role, section):
             return JSONResponse(status_code=403, content={
-                "detail": f"Роль «{auth.ROLES.get(payload['role'], payload['role'])}» "
+                "detail": f"Роль «{auth.ROLES.get(request.state.role, request.state.role)}» "
                           f"не имеет права изменять раздел «{section}»"})
     return await call_next(request)
 
@@ -292,9 +308,13 @@ def auth_register(body: RegisterIn, request: Request):
 
 @app.get("/auth/me")
 def auth_me(request: Request):
-    return {"user": getattr(request.state, "user", "?"),
-            "role": getattr(request.state, "role", "?"),
-            "roleName": auth.ROLES.get(getattr(request.state, "role", ""), None)}
+    role = getattr(request.state, "role", "?")
+    login_name = getattr(request.state, "user", "?")
+    live = users.get(login_name) if users.count() > 0 else None
+    return {"user": login_name,
+            "name": (live or {}).get("name") or login_name,
+            "role": role,
+            "roleName": auth.ROLES.get(role, None)}
 
 
 @app.on_event("startup")

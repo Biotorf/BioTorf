@@ -54,6 +54,9 @@ ROLES = {
 
 # Права на запись по разделам (серверная версия EDIT_RULES фронтенда).
 ROLE_PERMS = {
+    # реестр сотрудников: писать (выдавать/снимать роли, удалять) — только
+    # генеральный директор; смотреть список могут все авторизованные
+    "users": {"director"},
     "crm": {"director", "operations", "sales_head", "dispatcher", "sales"},
     "comms": {"director", "operations", "sales_head", "dispatcher", "sales",
               "agronomist", "marketing"},
@@ -138,7 +141,7 @@ WRITE_ROUTES = (
     ("/api/media", "comms"),
     ("/api/logistics", "shipments"),
     ("/api/dev/", "admin"),
-    ("/api/users", "admin"),      # выдача ролей; в handler — только director
+    ("/api/users", "users"),      # выдача ролей; право — только у director
 )
 
 

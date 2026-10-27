@@ -1,17 +1,44 @@
 <script setup>
-import { computed, defineAsyncComponent, markRaw, onMounted, onBeforeUnmount } from 'vue';
+import { computed, ref, defineAsyncComponent, markRaw, onMounted, onBeforeUnmount } from 'vue';
 import { useUiStore } from '@/stores/ui';
 import { useDbStore } from '@/stores/db';
 import AppSidebar from '@/components/layout/AppSidebar.vue';
 import AppTopbar from '@/components/layout/AppTopbar.vue';
 import AppModal from '@/components/ui/AppModal.vue';
+import AuthGate from '@/components/auth/AuthGate.vue';
+import { authState, checkAuthRequired, isAuthed, logout } from '@/api/authClient';
 
 const ui = useUiStore();
 const db = useDbStore();
+const authChecked = ref(false);
 
-// первичная загрузка CRM с бэкенда: если сервер доступен — общая база
-// сотрудников; если нет — остаёмся на локальном демо-состоянии (v0.9)
-onMounted(() => { db.pullCrmState(); });
+// при старте: восстанавливаем профиль из localStorage, затем узнаём у /health,
+// требует ли сервер авторизацию; только после этого тянем CRM
+onMounted(async () => {
+  try {
+    const stored = JSON.parse(localStorage.getItem('biotorf.auth.user') || 'null');
+    if (stored) ui.applySession(stored);
+  } catch { /* битый localStorage */ }
+  await checkAuthRequired();
+  authChecked.value = true;
+  if (isAuthed()) db.pullCrmState();
+});
+
+function onSession() {
+  // успешный вход/регистрация первого сотрудника (гендиректора)
+  ui.applySession(authState.user);
+  authChecked.value = true;
+  db.pullCrmState();
+}
+
+// 401 — токен истёк/отозван, 403 — роль снята директором: выходим на экран входа
+function sessionExpired() {
+  logout(); ui.clearSession(); authChecked.value = true;
+}
+onMounted(() => window.addEventListener('unhandledrejection', (ev) => {
+  const m = String(ev.reason && ev.reason.message || ev.reason || '');
+  if (/API 401|API 403/.test(m)) sessionExpired();
+}));
 
 // навигация кнопкой «назад/вперёд» браузера тоже меняет раздел
 function onHashChange() {
@@ -41,13 +68,17 @@ const views = {
   calendar: markRaw(defineAsyncComponent(() => import('@/views/CalendarView.vue'))),
   media: markRaw(defineAsyncComponent(() => import('@/views/MediaView.vue'))),
   notifications: markRaw(defineAsyncComponent(() => import('@/views/NotificationsView.vue'))),
+  employees: markRaw(defineAsyncComponent(() => import('@/views/EmployeesView.vue'))),
 };
 
 const currentView = computed(() => views[ui.view] || views.dashboard);
 </script>
 
 <template>
-  <div class="shell">
+  <!-- пока сервер требует токен, а сессии нет — только экран входа/регистрации -->
+  <AuthGate v-if="authChecked && authState.required && !isAuthed()" @session="onSession" />
+  <div v-else-if="!authChecked" class="boot">Загрузка…</div>
+  <div v-else class="shell">
     <AppSidebar />
     <main class="main">
       <AppTopbar />
@@ -57,6 +88,10 @@ const currentView = computed(() => views[ui.view] || views.dashboard);
           <template #fallback>
             <div class="empty">Загрузка раздела…</div>
           </template>
+
+<style scoped>
+.boot{min-height:100vh;display:grid;place-items:center;color:#729e8e;font-size:13px}
+</style>
         </Suspense>
         <footer class="app-footer">
           BIOTORF Business OS · Vue 3 · демонстрационные показатели
