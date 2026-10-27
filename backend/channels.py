@@ -265,3 +265,46 @@ def get_secret(kind: str, field: str = "token") -> str | None:
             f"SELECT {col} v FROM channel_accounts WHERE channel=? AND status='active' "
             f"AND {col} IS NOT NULL ORDER BY updated_at DESC LIMIT 1", (kind,)).fetchone()
     return r["v"] if r else None
+
+
+# ── гейт ленты: сообщения видны и принимаются только для подключённых каналов ─
+def is_connected(kind: str) -> bool:
+    """Канал «подключён», если он включён в реестре И имеет хотя бы один
+    активный аккаунт. Пока аккаунт не привязан (или отключён/удалён),
+    лента канала скрыта и входящие вебхуки не принимаются."""
+    with _conn() as conn:
+        r = conn.execute(
+            "SELECT 1 FROM channels c WHERE c.id=? AND c.enabled=1 AND EXISTS "
+            "(SELECT 1 FROM channel_accounts a WHERE a.channel=c.id AND a.status='active')",
+            (kind,)).fetchone()
+    return bool(r)
+
+
+def connected_kinds() -> set[str]:
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT a.channel k FROM channel_accounts a "
+            "JOIN channels c ON c.id=a.channel "
+            "WHERE a.status='active' AND c.enabled=1").fetchall()
+    return {r["k"] for r in rows}
+
+
+def guard_message(item: dict) -> dict:
+    """Бросить HTTP 409, если канал сообщения не подключён."""
+    from fastapi import HTTPException
+    kind = item.get("kind") or ""
+    if not is_connected(kind):
+        raise HTTPException(409, f"Канал «{channels_label(kind)}» не подключён. "
+                                 "Привяжите аккаунт в Настройках → Каналы CRM — "
+                                 "пока аккаунт не подключён, сообщения этого канала "
+                                 "не отображаются и не принимаются.")
+    return item
+
+
+def channels_label(kind: str) -> str:
+    try:
+        with _conn() as conn:
+            r = conn.execute("SELECT label FROM channels WHERE id=?", (kind,)).fetchone()
+        return r["label"] if r else kind
+    except Exception:
+        return kind

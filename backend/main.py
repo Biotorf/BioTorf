@@ -459,8 +459,12 @@ def list_comms(
 ):
     if kind and kind not in channels.all_kinds():
         return {"items": [], "total": 0}
-    items, total = store.list_comms(kind, farmId, unreadOnly, limit, offset)
-    return {"items": items, "total": total, "limit": limit, "offset": offset}
+    # гейт: показываем сообщения только подключённых каналов (есть активный аккаунт)
+    conn_kinds = channels.connected_kinds()
+    items, total = store.list_comms(kind, farmId, unreadOnly, limit * 3 + 50, offset)
+    items = [it for it in items if it["kind"] in conn_kinds][:limit]
+    return {"items": items, "total": total, "connected": sorted(conn_kinds),
+            "limit": limit, "offset": offset}
 
 
 @app.get("/api/comms/outbox")
@@ -482,8 +486,11 @@ def comms_events(since: int = Query(0, ge=0), limit: int = Query(100, le=500)):
             (since, limit),
         ).fetchall()
     items = []
+    conn_kinds = channels.connected_kinds()
     for r in rows:
         d = store.to_dict(r)
+        if d["kind"] not in conn_kinds:
+            continue  # канал отключён/не привязан — событие не отдаём
         d["seq"] = r["rowid"]
         items.append(d)
     return {"items": items, "maxSeq": rows[-1]["rowid"] if rows else since}
@@ -493,14 +500,19 @@ def comms_events(since: int = Query(0, ge=0), limit: int = Query(100, le=500)):
 @app.get("/api/chat-list")
 def chats_list(limit: int = Query(200, le=500)):
     """Список чатов как в Telegram: по одному диалогу на собеседника,
-    последнее сообщение, счётчик непрочитанных, статус доставки ответа."""
-    return {"items": store.chats(limit)}
+    последнее сообщение, счётчик непрочитанных, статус доставки ответа.
+    Чаты неподключённых каналов скрыты."""
+    conn_kinds = channels.connected_kinds()
+    return {"items": [g for g in store.chats(limit) if g["kind"] in conn_kinds]}
 
 
 @app.get("/api/chat/{peer_key}")
 def chat_detail(peer_key: str):
     for g in store.chats():
         if g["key"] == peer_key:
+            if g["kind"] not in channels.connected_kinds():
+                raise HTTPException(409, "Канал этого чата не подключён — "
+                                         "привяжите аккаунт в Настройках → Каналы CRM")
             return g
     raise HTTPException(404, "Чат не найден")
 
@@ -663,6 +675,7 @@ def create_comm(body: CommIn):
     if not item.get("farmId"):
         item["farmId"] = (auto_link(item.get("phone"))
                           or crm.auto_link_tg(store.connect(), item.get("handle"), item.get("phone")))
+    channels.guard_message(item)  # 409: канал не подключён — сообщения не принимаем
     saved = store.insert(item)
     try:
         crm.register_comm(store.connect(), saved)
@@ -781,6 +794,7 @@ async def webhook_channel(kind: str, request: Request,
     if not item.get("farmId"):
         item["farmId"] = (auto_link(item.get("phone"))
                           or crm.auto_link_tg(store.connect(), item.get("handle"), item.get("phone")))
+    channels.guard_message(item)  # 409: аккаунт канала не подключён — не принимаем
     saved = store.insert(item)
     try:
         crm.register_comm(store.connect(), saved)
@@ -1070,6 +1084,9 @@ def send_reply(comm_id: str, body: SendIn, media_file: str | None = None):
     item = store.get(comm_id)
     if not item:
         raise HTTPException(404, "Коммуникация не найдена")
+    if not channels.is_connected(item["kind"]):
+        raise HTTPException(409, "Канал этого диалога не подключён — "
+                                 "привяжите аккаунт в Настройках → Каналы CRM")
     if item["kind"] == "call":
         raise HTTPException(422, "На звонок нельзя ответить сообщением — зафиксируйте звонок или позвоните")
     if item["dir"] != "in":
@@ -1160,6 +1177,9 @@ def send_to(body: dict):
     text = (body.get("text") or "").strip()
     if kind not in ("telegram", "whatsapp") or not text:
         raise HTTPException(422, "Укажите kind (telegram/whatsapp) и текст сообщения")
+    if not channels.is_connected(kind):
+        raise HTTPException(409, f"Канал «{channels.channels_label(kind)}» не подключён. "
+                                 "Привяжите аккаунт в Настройках → Каналы CRM.")
     pl = {}
     if kind == "telegram":
         if body.get("chatId"):
@@ -1467,6 +1487,7 @@ async def telegram_webhook(
     }
     item["farmId"] = (auto_link(item["phone"]) or auto_link_handle(item["handle"])
                       or crm.auto_link_tg(store.connect(), item["handle"], item["phone"]))
+    channels.guard_message(item)  # 409: Telegram-аккаунт не подключён в Настройках
     saved = store.insert(item)
     # сквозная интеграция: входящее сообщение попадает в карточку клиента и
     # в историю связанного сквозного процесса (руководство §6 «История»)
@@ -1519,6 +1540,8 @@ async def whatsapp_webhook(request: Request, x_hub_signature_256: str | None = H
                 }
                 item["farmId"] = auto_link(item["phone"]) \
                     or crm.auto_link_tg(store.connect(), None, item["phone"])
+                if not channels.is_connected("whatsapp"):
+                    continue  # WhatsApp-аккаунт не подключён — не принимаем
                 saved = store.insert(item)
                 try:
                     crm.register_comm(store.connect(), saved)
@@ -1582,6 +1605,8 @@ async def telephony_webhook(
         item = normalize_cdr(c)
         item["farmId"] = auto_link(item["phone"]) \
             or crm.auto_link_tg(store.connect(), None, item["phone"])
+        if not channels.is_connected("call"):
+            continue  # телефония не подключена — CDR не сохраняем
         saved = store.insert(item)
         try:
             crm.register_comm(store.connect(), saved)
