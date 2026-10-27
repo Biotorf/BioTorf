@@ -561,10 +561,14 @@ def _reclaim_leaked(max_keep: int = 256) -> None:
 
 
 def get_pool() -> ConnectionPool:
-    """Ленивый пул без ожидания первого соединения (wait_on_close=False,
-    timeout=None): если PostgreSQL недоступен, getconn() сразу бросает
-    OperationalError вместо зависания на 30 секунд — иначе health-check
-    платформы успевает убить процесс и весь сервис висит в 502."""
+    """Ленивый пул с быстрым отказом при недоступной базе.
+
+    min_size=0 + timeout=3: пул не создаёт соединений в фоне и не ждёт их
+    при старте процесса; getconn() при недоступном PostgreSQL бросает
+    PoolTimeout за ~3 секунды вместо зависания на десятки секунд. Раньше
+    блокирующий пул вешал startup-хук, health-check платформы не дожидался
+    /health, убивал контейнер — и весь стек падал через 20–30 секунд после
+    деплоя («работало и упало»)."""
     global _POOL
     if _POOL is None:
         _POOL = ConnectionPool(
@@ -574,7 +578,7 @@ def get_pool() -> ConnectionPool:
             kwargs={"autocommit": True, "prepare_threshold": 0,
                     "connect_timeout": int(os.environ.get("PG_CONNECT_TIMEOUT", "5"))},
             open=True,
-            timeout=10,
+            timeout=3,            # быстрый отказ вместо зависания на десятки секунд
             max_idle=60,
             check=ConnectionPool.check_connection,
         )

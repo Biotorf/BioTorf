@@ -128,14 +128,58 @@ def _ensure_channels_schema():
 
 
 def _ensure_schema():
-    """Инициализация схемы SQLite (вызывается из startup-хука и лениво при
-    первом запросе — на случай запуска без lifespan-событий)."""
-    store.init_db()
-    with store.connect() as conn:
-        logistics.init_tables(conn)
-        crm.init_tables(conn)
-        users.init_tables(conn)
-    _ensure_channels_schema()
+    """Инициализация схемы (SQLite или PostgreSQL).
+
+    В PG-режиме вызывается из фонового потока с ретраями (_schema_worker),
+    а не из startup-хука: если база ещё не поднялась (общий старт в docker
+    compose, медленный первый initdb), блокирующий executescript() вешал
+    startup, uvicorn не открывал порт, health-check платформы убивал
+    контейнер — и весь стек падал через 20–30 секунд после деплоя.
+    Здесь допускается временный сбой:worker повторит позже."""
+    try:
+        store.init_db()
+        with store.connect() as conn:
+            logistics.init_tables(conn)
+            crm.init_tables(conn)
+            users.init_tables(conn)
+        _ensure_channels_schema()
+        return True
+    except Exception as e:
+        log.warning("[db] схема не готова (%s) — повторим в фоновом режиме", e)
+        return False
+
+
+def _schema_worker():
+    """Фоновая инициализация схемы PG с бесконечным (с ограничением по
+    интервалу) retry: сервер поднимается мгновенно, /health отвечает сразу,
+    а БД-зависимые эндпоинты начинают работать, как только база оживёт."""
+    delay = 2.0
+    while not _schema_ready[0]:
+        if _ensure_schema():
+            _schema_ready[0] = True
+            log.info("[db] схема готова")
+            return
+        time.sleep(delay)
+        delay = min(delay * 2, 30.0)
+
+
+def _users_count_safe() -> int | None:
+    """count() сотрудников с защитой от недоступной БД; кэш на 10 секунд —
+    иначе каждый /health тратит два медленных таймаута пула при DOWN-базе."""
+    now = time.time()
+    cached = _USERS_CACHE[0]
+    if cached is not None and now - _USERS_CACHE[1] < 10:
+        return cached
+    try:
+        n = users.count()
+        _USERS_CACHE[0], _USERS_CACHE[1] = n, now
+        return n
+    except Exception as e:
+        log.warning("[health] users.count() недоступен: %s", str(e)[:120])
+        return None
+
+
+_USERS_CACHE: list = [None, 0.0]   # [значение, timestamp]
 
 
 _schema_ready = [False]
@@ -176,8 +220,11 @@ async def auth_middleware(request: Request, call_next):
     """
     path = request.url.path
     if not _schema_ready[0]:
-        _ensure_schema()
-        _schema_ready[0] = True
+        # Ленивая инициализация схемы (запуск без lifespan-событий). В PG-режиме
+        # она не должна вешать запрос: при недоступной базе _ensure_schema()
+        # возвращает False, а фоновый _schema_worker повторит попытку сам.
+        if _ensure_schema():
+            _schema_ready[0] = True
     if request.method == "OPTIONS" or not path.startswith("/api/"):
         return await call_next(request)
     if any(path.startswith(p) for p in PUBLIC_PATHS):
@@ -386,9 +433,15 @@ def _startup_checks():
 
 @app.on_event("startup")
 def startup():
-    # Только локальные операции (схема БД + быстрые запросы) — без сети.
-    _ensure_schema()
-    _ensure_channels_schema()
+    # Только локальные операции — без сети и без блокирующего ожидания БД.
+    if store.IS_POSTGRES:
+        # В PG-режиме инициализация схемы уходит в фоновый поток с ретраями:
+        # если база ещё не поднялась, startup не должен висеть — иначе
+        # health-check платформы не дождётся /health и убьёт контейнер.
+        threading.Thread(target=_schema_worker, daemon=True).start()
+    else:
+        _ensure_schema()
+        _schema_ready[0] = True
     if not auth.AUTH_PASSWORD and not auth.DEV_MODE:
         log.warning("[auth] ⚠ AUTH_PASSWORD не задан — API ЗАБЛОКИРОВАН (503 на все /api/*). "
                     "Задайте пароль в .env или включите DEV_MODE=1 для локальной разработки.")
@@ -1369,15 +1422,23 @@ def health():
         db_ok, db_msg = pg_check() if store.IS_POSTGRES else (True, "sqlite")
     except Exception as e:  # на всякий случай: health обязан отвечать всегда
         db_ok, db_msg = False, f"{type(e).__name__}: {str(e)[:120]}"
-    return {"ok": True, "service": "biotorf-comms", "version": app.version,
-            "db": ("postgres: " + ("up" if db_ok else "DOWN — " + db_msg))
-                  if store.IS_POSTGRES else "sqlite",
-            "ts": now_iso(),
-            # authRequired: фронт показывает экран входа; hasUsers — что на нём
-            # предложить «зарегистрировать первого сотрудника (гендиректора)»
-            "authRequired": bool(auth.AUTH_PASSWORD) or users.count() > 0 or not auth.DEV_MODE,
-            "hasUsers": users.count() > 0,
-            "devMode": bool(auth.DEV_MODE)}
+    # authRequired/hasUsers требуют обращения к БД — при недоступной базе
+    # эти запросы бросают исключение. Раньше оно выходило наружу и curl
+    # получал «500 Internal Server Error». Теперь health всегда отвечает:
+    # 200 с деталями, если сервис жив; 503, если база недоступна.
+    n_users = _users_count_safe()   # кэш + try/except: не виснет на таймаутах пула
+    auth_required = bool(auth.AUTH_PASSWORD) or (n_users or 0) > 0 or not auth.DEV_MODE
+    status = 200 if db_ok else 503
+    return JSONResponse(status_code=status, content={
+        "ok": db_ok, "service": "biotorf-comms", "version": app.version,
+        "db": ("postgres: " + ("up" if db_ok else "DOWN — " + db_msg))
+              if store.IS_POSTGRES else "sqlite",
+        "ts": now_iso(),
+        # authRequired: фронт показывает экран входа; hasUsers — что на нём
+        # предложить «зарегистрировать первого сотрудника (гендиректора)»
+        "authRequired": auth_required,
+        "hasUsers": (n_users or 0) > 0,
+        "devMode": bool(auth.DEV_MODE)})
 
 
 # ── защита вебхуков ──────────────────────────────────────────────────────────
