@@ -142,7 +142,10 @@ def list_channels(include_disabled=True):
         rows = conn.execute(sql + " ORDER BY grp, label").fetchall()
     out = []
     for r in rows:
-        acc = _accounts_for(conn_safe=None, channel=r["id"])
+        # conn уже закрыт (with) — аккаунты читаем отдельным соединением;
+        # раньше сюда передавался conn_safe=None с именованным аргументом,
+        # из-за чего каналы в UI пропадали, а запрос держал соединение >8 сек.
+        acc = _accounts_for(r["id"])
         out.append({
             "id": r["id"], "label": r["label"], "icon": r["icon"], "color": r["color"],
             "group": r["grp"], "enabled": bool(r["enabled"]),

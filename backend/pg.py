@@ -209,6 +209,19 @@ class Cursor:
         self._owner = owner
         self._auto_release = None   # callable: вернуть соединение в пул после fetch
 
+    def _rebind(self):
+        """Вернуть курсор на свежее raw-соединение (после реконнекта владельца)."""
+        try:
+            if self._owner is not None and self._cur is not None \
+                    and self._cur.connection is not self._owner._raw:
+                self._cur.close()
+        except Exception:
+            pass
+        try:
+            self._cur = self._owner._live_raw().cursor(row_factory=compat_dict_row)
+        except Exception:
+            pass
+
     def execute(self, sql, params=None):
         psql = qmark_to_format(sql)
         args = tuple(params) if params else ()
@@ -235,12 +248,24 @@ class Cursor:
     def fetchone(self):
         try:
             return self._cur.fetchone()
+        except (psycopg.OperationalError, psycopg.InterfaceError) as e:
+            if self._owner is not None and self._owner._is_broken(e) \
+                    and self._owner._replace_broken():
+                self._rebind()
+                return self._cur.fetchone()
+            raise
         finally:
             self._release()
 
     def fetchall(self):
         try:
             return self._cur.fetchall()
+        except (psycopg.OperationalError, psycopg.InterfaceError) as e:
+            if self._owner is not None and self._owner._is_broken(e) \
+                    and self._owner._replace_broken():
+                self._rebind()
+                return self._cur.fetchall()
+            raise
         finally:
             self._release()
 
