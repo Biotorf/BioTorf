@@ -26,9 +26,10 @@ CREATE INDEX IF NOT EXISTS idx_comms_ts     ON comms (ts DESC);
 CREATE INDEX IF NOT EXISTS idx_comms_farm   ON comms (farm_id);
 CREATE INDEX IF NOT EXISTS idx_comms_unread ON comms (read);
 CREATE INDEX IF NOT EXISTS idx_comms_seq    ON comms (seq);
--- идемпотентность webhook'ов (в SQLite был partial unique index)
-CREATE UNIQUE INDEX IF NOT EXISTS idx_comms_ext ON comms (source, external_id)
-    WHERE external_id IS NOT NULL;
+-- идемпотентность webhook'ов: в SQLite был partial unique index, но для
+-- ON CONFLICT (source, external_id) без WHERE в PG нужен полный уникальный
+-- индекс; NULL-ы в source/external_id не конфликтуют (NULL DISTINCT в PG).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_comms_ext ON comms (source, external_id);
 
 CREATE TABLE IF NOT EXISTS chat_drafts (
     peer_key TEXT PRIMARY KEY,
