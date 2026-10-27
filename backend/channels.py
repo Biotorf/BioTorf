@@ -204,6 +204,11 @@ def patch_channel(kind: str, data: dict) -> dict:
         "label": data.get("label"), "icon": data.get("icon"), "color": data.get("color"),
         "grp": data.get("group"), "enabled": data.get("enabled"),
     }.items() if v is not None}
+    # PostgreSQL-столбец enabled — INTEGER: Python bool иначе падает с
+    # DatatypeMismatch ("column enabled is of type integer but expression
+    # is of type boolean")
+    if isinstance(fields.get("enabled"), bool):
+        fields["enabled"] = int(fields["enabled"])
     sets = ", ".join(f"{k}=?" for k in fields)
     with _conn() as conn:
         if not conn.execute("SELECT 1 FROM channels WHERE id=?", (kind,)).fetchone():
