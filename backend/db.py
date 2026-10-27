@@ -1,4 +1,8 @@
-"""Простейкое хранилище коммуникаций: SQLite (файл comms.db рядом с backend/).
+"""Хранилище коммуникаций: PostgreSQL (основная БД) или SQLite (legacy-режим).
+
+Выбор бэкенда: DB_BACKEND=postgres (по умолчанию, если задан DATABASE_URL или
+POSTGRES_HOST) | sqlite (явно). Подключение — через pg.connect(), весь SQL
+пишется в sqlite-диалекте с плейсхолдерами "?" — конвертацию делает слой pg.
 
 Таблица comms полностью повторяет модель фронтенда (stores/db.js / CommsView.vue):
   kind     : id канала из реестра channels (call|telegram|whatsapp|instagram|vk|avito|...)
@@ -22,12 +26,27 @@ import re
 import sqlite3
 from pathlib import Path
 
-# Путь к БД переопределяется через DB_PATH (в Docker — /data/comms.db на volume)
+# Путь к SQLite-файлу — только для legacy-режима (DB_BACKEND=sqlite) и миграции.
 DB_PATH = Path(os.environ.get("DB_PATH", str(Path(__file__).resolve().parent / "comms.db")))
+
+
+def _is_postgres() -> bool:
+    """postgres — режим по умолчанию; sqlite включается явно (DB_BACKEND=sqlite,
+    например в тестах/скрипте миграции)."""
+    b = (os.environ.get("DB_BACKEND") or "").strip().lower()
+    if b in ("sqlite", "sqlite3"):
+        return False
+    if b in ("postgres", "postgresql", "pg"):
+        return True
+    return bool(os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_HOST"))
+
+
+IS_POSTGRES = _is_postgres()
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS comms (
-    id         TEXT PRIMARY KEY,
+    seq        INTEGER PRIMARY KEY AUTOINCREMENT,  -- позиция long-poll-ленты (в PG — BIGINT identity)
+    id         TEXT NOT NULL UNIQUE,
     kind       TEXT NOT NULL,
     dir        TEXT NOT NULL DEFAULT 'in' CHECK (dir IN ('in','out')),
     farm_id    TEXT,
@@ -100,7 +119,12 @@ def digits_for_key(s) -> str:
     return d[-9:] if len(d) >= 6 else d
 
 
-def connect() -> sqlite3.Connection:
+def connect():
+    """Соединение с основной БД. postgres — пул psycopg (см. pg.py);
+    sqlite — legacy-режим для тестов/миграции."""
+    if IS_POSTGRES:
+        import pg
+        return pg.connect()
     conn = sqlite3.connect(DB_PATH, timeout=15)
     conn.row_factory = sqlite3.Row
     # WAL: читатели не блокируются писателем и наоборот — критично при
@@ -140,10 +164,14 @@ CREATE TABLE comms (
 
 
 def _ensure_schema(conn) -> None:
-    """Создать схему; для старых БД — миграции:
+    """Создать схему. postgres — из schema.sql; sqlite (legacy) — миграции:
        * добавить колонку peer_key;
        * снять CHECK(kind IN (...)) — каналы теперь расширяемы через реестр
          channels (sqlite не умеет ALTER CONSTRAINT — перестройка таблицы)."""
+    if IS_POSTGRES:
+        p = Path(__file__).resolve().parent / "schema.sql"
+        conn.executescript(p.read_text(encoding="utf-8"))
+        return
     has_table = conn.execute(
         "SELECT name FROM sqlite_master WHERE name='comms'").fetchone()
     if has_table:
@@ -181,7 +209,7 @@ def init_db() -> None:
                 conn.execute("UPDATE comms SET peer_key=? WHERE id=?", (pk, r["id"]))
 
 
-def to_dict(row: sqlite3.Row) -> dict:
+def to_dict(row) -> dict:
     d = dict(row)
     return {
         "id": d["id"],
@@ -226,10 +254,19 @@ def insert(item: dict) -> dict:
             elif f == "payload":
                 v = json.dumps(v, ensure_ascii=False)
             vals.append(v)
-    sql = (
-        f"INSERT OR IGNORE INTO comms ({', '.join(cols)}) "
-        f"VALUES ({', '.join('?' for _ in cols)})"
-    )
+    if IS_POSTGRES:
+        # идемпотентность webhook'ов: пропуск дубликата по unique-индексу
+        # (source, external_id) — без TRIGGER (см. migrate_sqlite_to_pg.py)
+        sql = (
+            f"INSERT INTO comms ({', '.join(cols)}) "
+            f"VALUES ({', '.join('?' for _ in cols)}) "
+            "ON CONFLICT DO NOTHING"
+        )
+    else:
+        sql = (
+            f"INSERT OR IGNORE INTO comms ({', '.join(cols)}) "
+            f"VALUES ({', '.join('?' for _ in cols)})"
+        )
     with connect() as conn:
         cur = conn.execute(sql, vals)
         if cur.rowcount == 0:
@@ -326,6 +363,7 @@ def chats(limit: int = 200) -> list[dict]:
 
     Возвращает список диалогов: identity (клиент/контакт/телефон/ник), канал,
     счётчик непрочитанных, последние сообщения и черновик ответа."""
+    seq_col = "seq" if IS_POSTGRES else "rowid"
     with connect() as conn:
         peers = conn.execute(
             "SELECT peer_key, MAX(ts) last_ts, COUNT(*) c FROM comms "
@@ -334,12 +372,12 @@ def chats(limit: int = 200) -> list[dict]:
         out = []
         for pr in peers:
             msgs_rows = conn.execute(
-                "SELECT rowid, * FROM comms WHERE peer_key=? ORDER BY ts ASC, rowid ASC",
+                f"SELECT {seq_col}, * FROM comms WHERE peer_key=? ORDER BY ts ASC, {seq_col} ASC",
                 (pr["peer_key"],)).fetchall()
             msgs = []
             for r in msgs_rows:
                 d = to_dict(r)
-                d["seq"] = r["rowid"]
+                d["seq"] = r[seq_col]
                 msgs.append(d)
             g = {
                 "key": pr["peer_key"],

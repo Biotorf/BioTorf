@@ -1,37 +1,66 @@
-# BIOTORF Business OS · compose-стек: frontend (nginx) + backend (FastAPI + SQLite volume)
+# BIOTORF Business OS · compose-стек: frontend (nginx) + backend (FastAPI + PostgreSQL)
 #
 # Запуск:                docker compose up -d --build
 # Фронтенд:              http://localhost:8080  (API/вебхуки проксируются на бэкенд через nginx)
 # Swagger бэкенда:       http://localhost:8080/docs  (или напрямую http://localhost:8787/docs)
-# Остановка:             docker compose down        (данные БД переживают перезапуск — volume dbdata)
+# Остановка:             docker compose down        (данные БД переживают перезапуск — volume pgdata)
 # Сброс БД:              docker compose down -v     ⚠ удалит все коммуникации
+#
+# Миграция старых данных SQLite → PostgreSQL (однократно):
+#   docker compose cp old-comms.db backend:/tmp/comms.db
+#   docker compose exec backend python migrate_sqlite_to_pg.py /tmp/comms.db
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: biotorf-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-biotorf}
+      POSTGRES_USER: ${POSTGRES_USER:-biotorf}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-biotorf-dev-password}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432"               # только внутри сети compose; наружу — при необходимости "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-biotorf} -d ${POSTGRES_DB:-biotorf}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
+
   backend:
     build: ./backend
     container_name: biotorf-backend
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
-      DB_PATH: /data/comms.db
+      DB_BACKEND: postgres
+      DATABASE_URL: postgresql://${POSTGRES_USER:-biotorf}:${POSTGRES_PASSWORD:-biotorf-dev-password}@postgres:5432/${POSTGRES_DB:-biotorf}
+      MEDIA_DIR: /data/media
+      FARMS_FILE: /data/farms.json
       # Секреты интеграций подхватываются из файла .env рядом с этим файлом:
       TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-dev-telegram-secret}
       WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-dev-whatsapp-app-secret}
       TELEPHONY_TOKEN: ${TELEPHONY_TOKEN:-dev-telephony-token}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173,null}
-      FARMS_FILE: /data/farms.json
       # Токен бота нужен и бэкенду (проверка валидности через getMe при старте):
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       # WhatsApp Cloud API — исходящая отправка из ленты (см. README-WHATSAPP.md):
       WHATSAPP_TOKEN: ${WHATSAPP_TOKEN:-}
       WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
     volumes:
-      # БД + реестр клиентов живут в volume /data (создаётся автоматически).
+      # farms.json и голосовые медиа живут в volume /data (создаётся автоматически).
+      # Сама БД — в PostgreSQL (volume pgdata), а не в этом каталоге.
       # Farms-файл НЕ монтируется с хоста: на Windows/Docker Desktop bind-mount
       # файла падает, если путь оказался каталогом или файл менялся вне git.
       # Вместо этого entrypoint.sh при первом запуске кладёт шаблон из образа
       # в volume (см. backend/entrypoint.sh), а админ может положить свой
       # farms.json через `docker compose cp my-farms.json backend:/data/farms.json`.
-      - dbdata:/data
+      - appdata:/data
     ports:
       - "8787:8787"          # прямой доступ к API (для curl-тестов и локальной разработки)
     healthcheck:
@@ -69,4 +98,5 @@ services:
       TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-dev-telegram-secret}
 
 volumes:
-  dbdata:
+  pgdata:
+  appdata:

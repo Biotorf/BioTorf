@@ -1,4 +1,4 @@
-"""Реестр сотрудников BIOTORF Business OS (SQLite, таблица users).
+"""Реестр сотрудников BIOTORF Business OS (PostgreSQL/SQLite, таблица users).
 
 Зачем: раньше вход в систему был только по общему паролю AUTH_PASSWORD —
 любой сотрудник получал одну и ту же роль, и зарегистрироваться через
@@ -58,6 +58,9 @@ PROFILE_MAX_LEN = {"name": 64, "position": 64, "phone": 32, "email": 64, "note":
 
 
 def init_tables(conn) -> None:
+    """В postgres-режиме схема создаётся schema.sql — здесь только SQLite."""
+    if store.IS_POSTGRES:
+        return
     conn.executescript(SCHEMA_USERS)
     # миграция для существующих БД: добавляем колонки, если их нет
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}

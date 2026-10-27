@@ -1,6 +1,6 @@
 """CRM ядро BIOTORF Business OS: сквозной процесс и операционные реестры.
 
-Хранилище — SQLite (тот же файл comms.db, таблица crm_records). Каждая запись
+Хранилище — PostgreSQL (таблица crm_records; legacy-режим SQLite). Каждая запись
 лежит в JSON-колонке data, коллекция — в поле _coll. Такой «документный» подход
 позволяет фронтенду (stores/db.js) синхронизировать любые сущности без миграций
 схемы при изменении полей.
@@ -44,7 +44,11 @@ CREATE INDEX IF NOT EXISTS idx_crm_coll ON crm_records (coll);
 """
 
 
-def init_tables(conn: sqlite3.Connection) -> None:
+def init_tables(conn) -> None:
+    """В postgres-режиме схема создаётся schema.sql — здесь только SQLite."""
+    import db as _store
+    if _store.IS_POSTGRES:
+        return
     conn.executescript(SCHEMA_CRM)
 
 
