@@ -72,6 +72,11 @@ async function changePass() {
 
       <p v-if="error" class="msg err">{{ error }}</p>
       <p v-if="saved" class="msg ok">Профиль сохранён ✓</p>
+      <p v-if="role === 'pending'" class="msg wait">
+        ⏳ Учётная запись ожидает подтверждения роли генеральным директором.
+        Данные профиля видны директору в разделе «Сотрудники» — после выдачи роли
+        откроется доступ к системе.
+      </p>
 
       <div class="row">
         <button class="btn primary" :disabled="saving" @click="save">{{ saving ? 'Сохранение…' : 'Сохранить' }}</button>
@@ -98,6 +103,7 @@ async function changePass() {
 .msg{font-size:12px;margin:0;padding:7px 10px;border-radius:8px;background:#fffbec;border:1px solid #e7ddbf;color:#7a6840}
 .msg.err{background:#ffedea;border-color:#f0cfc9;color:#b94337}
 .msg.ok{background:#e5f5ee;border-color:#cfe9db;color:#218468}
+.msg.wait{background:#fff7e0;border-color:#ead9a8;color:#8a6d1b}
 .row{display:flex;gap:8px;align-items:center;margin-top:4px}
 .passbox{display:flex;flex-direction:column;gap:8px;border-top:1px dashed #d8e2dc;padding-top:10px}
 </style>

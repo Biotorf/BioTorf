@@ -25,10 +25,14 @@ onMounted(async () => {
 });
 
 function onSession() {
-  // успешный вход/регистрация первого сотрудника (гендиректора)
+  // успешный вход/регистрация (в т.ч. pending): применяем сессию из authClient
   ui.applySession(authState.user);
   authChecked.value = true;
-  db.pullCrmState();
+  if (isAuthed()) db.pullCrmState();
+  // pending-сотрудник сразу видит модалку профиля, чтобы заполнить данные
+  if (authState.user && authState.user.role === 'pending') {
+    ui.openModal('Мой профиль', () => import('@/components/auth/ProfileModal.vue'), {});
+  }
 }
 
 // 401 — токен истёк/отозван, 403 — роль снята директором: выходим на экран входа

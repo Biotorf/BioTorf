@@ -188,6 +188,10 @@ async def auth_middleware(request: Request, call_next):
                 "detail": "Требуется авторизация: передайте заголовок "
                           "Authorization: Bearer <token> (POST /auth/login)"})
     request.state.user = payload.get("sub") or "?"
+    # профиль своего аккаунта (/api/me/*) доступен ЛЮБОМУ вошедшему, включая
+    # pending: он может заполнить данные о себе, пока ждёт выдачи роли
+    if path.startswith("/api/me"):
+        return await call_next(request)
     # если в системе есть зарегистрированные сотрудники — сверяем токен с
     # живым реестром: снятая директором роль или удалённый аккаунт отзывают
     # доступ немедленно, не дожидаясь истечения TTL токена
@@ -200,17 +204,11 @@ async def auth_middleware(request: Request, call_next):
         if int(payload.get("tv", 0)) != int(live.get("token_version", 0)):
             return JSONResponse(status_code=401, content={
                 "detail": "Ваша роль изменена администратором — войдите заново"})
-        if live["role"] == "pending":
-            return JSONResponse(status_code=403, content={
-                "detail": "Учётная запись ожидает подтверждения роли "
-                          "генеральным директором"})
-        request.state.role = live["role"]
-    else:
-        request.state.role = payload["role"]
-    # профиль своего аккаунта (/api/me) доступен ЛЮБОМУ вошедшему, включая
-    # pending: он может заполнить данные о себе, пока ждёт выдачи роли
-    if path.startswith("/api/me") and request.state.user != "?":
-        return await call_next(request)
+    if payload["role"] == "pending":
+        return JSONResponse(status_code=403, content={
+            "detail": "Учётная запись ожидает подтверждения роли "
+                      "генеральным директором"})
+    request.state.role = payload["role"]
     # реестр сотрудников: GET /api/users — только директору (остальные видят
     # мини-профиль и не должны знать состав/логины коллег); выдача ролей и
     # удаление проверяются в самих эндпоинтах
@@ -281,10 +279,14 @@ def auth_login(body: LoginIn, request: Request):
         log.warning("[auth] неудачный вход: user=%r ip=%s", body.user, ip)
         raise HTTPException(401, "Неверный логин или пароль")
     if res.get("pending"):
+        # pending получает токен role=pending: middleware пускает его только
+        # в /api/me/* (заполнить профиль, пока ждёт подтверждения), остальные
+        # разделы — 403, пока директор не выдаст роль
         log.info("[auth] вход ожидающего подтверждения: %s", res["login"])
-        return {"pending": True, "user": res["login"], "name": res["name"],
+        return {"pending": True, "token": auth.make_token(res["login"], "pending"),
+                "user": res["login"], "name": res["name"],
                 "role": "pending", "roleName": "Ожидает подтверждения",
-                "roles": auth.ROLES}
+                "expiresIn": auth.AUTH_TOKEN_TTL, "roles": auth.ROLES}
     _throttle(ip, ok=True)
     log.info("[auth] вход: %s role=%s", res["user"], res["role"])
     return res

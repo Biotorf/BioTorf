@@ -16,6 +16,7 @@ const pass2 = ref('');
 const busy = ref(false);
 const error = ref('');
 const info = ref('');
+const pendingSession = ref(null);     // сессия pending: можно заполнить профиль
 
 const firstRun = computed(() => authState.required && !authState.hasUsers);
 
@@ -33,7 +34,9 @@ async function submit() {
     if (mode.value === 'login') {
       const res = await login(user.value.trim(), pass.value);
       if (res.pending) {
-        info.value = `Учётная запись «${res.name || res.user}» ожидает подтверждения роли генеральным директором.`;
+        // вход разрешён: показываем мини-профиль, но данные закрыты до выдачи роли
+        info.value = `Вы вошли как ожидающий подтверждения. Заполните профиль — генеральный директор увидит ваши данные и выдаст роль.`;
+        pendingSession.value = res;
       } else {
         emit('session', res);
       }
@@ -43,14 +46,26 @@ async function submit() {
         emit('session', res);       // первый аккаунт = директор, токен уже выдан
         return;
       }
-      info.value = 'Аккаунт создан и ожидает подтверждения роли генеральным директором. Теперь войдите.';
-      mode.value = 'login';
+      // зарегистрировались → сразу входим под этим же логином/паролем:
+      // получаем pending-токен и можем заполнить профиль до подтверждения
+      const lg = await login(res.login || user.value.trim(), pass.value);
+      if (lg.token) {
+        pendingSession.value = lg;
+        info.value = 'Аккаунт создан и ожидает подтверждения роли генеральным директором. Заполните профиль — директор увидит ваши данные.';
+      } else {
+        info.value = 'Аккаунт создан и ожидает подтверждения роли генеральным директором. Теперь войдите.';
+        mode.value = 'login';
+      }
     }
   } catch (e) {
     error.value = e.message || 'Сервер недоступен';
   } finally {
     busy.value = false;
   }
+}
+
+function enterPending() {
+  if (pendingSession.value) emit('session', pendingSession.value);
 }
 </script>
 
@@ -90,17 +105,23 @@ async function submit() {
       <p v-if="error" class="gate-note err">{{ error }}</p>
       <p v-if="info" class="gate-note ok">{{ info }}</p>
 
-      <button class="btn primary" type="submit" :disabled="busy">
-        {{ busy ? 'Проверка…' : (mode === 'login' ? 'Войти' : 'Зарегистрироваться') }}
+      <!-- после регистрации/входа pending: кнопка войти в мини-профиль -->
+      <button v-if="pendingSession" class="btn primary" type="button" @click="enterPending">
+        👤 Заполнить профиль →
       </button>
+      <template v-else>
+        <button class="btn primary" type="submit" :disabled="busy">
+          {{ busy ? 'Проверка…' : (mode === 'login' ? 'Войти' : 'Зарегистрироваться') }}
+        </button>
 
-      <button v-if="!firstRun" class="btn ghost gate-switch" type="button"
-              @click="switchMode(mode === 'login' ? 'register' : 'login')">
-        {{ mode === 'login' ? 'Нет аккаунта? Регистрация' : 'Уже есть аккаунт? Вход' }}
-      </button>
-      <button v-else-if="mode === 'login'" class="btn ghost gate-switch" type="button" @click="switchMode('register')">
-        Зарегистрировать генерального директора →
-      </button>
+        <button v-if="!firstRun" class="btn ghost gate-switch" type="button"
+                @click="switchMode(mode === 'login' ? 'register' : 'login')">
+          {{ mode === 'login' ? 'Нет аккаунта? Регистрация' : 'Уже есть аккаунт? Вход' }}
+        </button>
+        <button v-else-if="mode === 'login'" class="btn ghost gate-switch" type="button" @click="switchMode('register')">
+          Зарегистрировать генерального директора →
+        </button>
+      </template>
     </form>
   </div>
 </template>

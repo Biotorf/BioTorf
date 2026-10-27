@@ -27,7 +27,7 @@ onBeforeUnmount(() => document.removeEventListener('click', close));
 
 function openProfile() {
   open.value = false;
-  ui.openModal('Мой профиль', () => import('@/components/auth/ProfileModal.vue'), {});
+  ui.openMyProfile();
 }
 function doLogout() {
   open.value = false;

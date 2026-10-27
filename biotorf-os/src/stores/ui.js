@@ -87,5 +87,9 @@ export const useUiStore = defineStore('ui', {
       this.clearSession();
       location.reload();
     },
+    openMyProfile() {
+      // модалка профиля сотрудника — открывается из мини-профиля топбара
+      this.openModal('Мой профиль', () => import('@/components/auth/ProfileModal.vue'), {});
+    },
   },
 });

@@ -82,12 +82,18 @@ onMounted(load);
     <div class="table-wrap">
       <table class="table">
         <thead>
-          <tr><th>Логин</th><th>Имя</th><th>Роль</th><th>Статус</th><th>Создан</th><th v-if="canManage">Действия</th></tr>
+          <tr><th>Логин</th><th>Имя</th><th>Должность</th><th>Контакты</th><th>Роль</th><th>Статус</th><th>Создан</th><th v-if="canManage">Действия</th></tr>
         </thead>
         <tbody>
           <tr v-for="u in items" :key="u.login">
             <td class="mono">{{ u.login }}</td>
             <td>{{ u.name || '—' }}</td>
+            <td>{{ u.position || '—' }}</td>
+            <td class="text-muted" style="font-size:11.5px">
+              <div v-if="u.phone">{{ u.phone }}</div>
+              <div v-if="u.email">{{ u.email }}</div>
+              <div v-if="!u.phone && !u.email">—</div>
+            </td>
             <td>
               <select v-if="canManage && u.login !== ui.login" class="select" :value="u.role"
                       :disabled="busyLogin === u.login"
@@ -108,7 +114,7 @@ onMounted(load);
                       :disabled="busyLogin === u.login" @click="removeUser(u.login)">✕</button>
             </td>
           </tr>
-          <tr v-if="!items.length && online"><td colspan="6" class="empty">Сотрудников пока нет.</td></tr>
+          <tr v-if="!items.length && online"><td colspan="8" class="empty">Сотрудников пока нет.</td></tr>
         </tbody>
       </table>
     </div>
