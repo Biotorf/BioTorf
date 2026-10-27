@@ -38,7 +38,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 import auth
@@ -114,6 +114,19 @@ def media_path(media_id: str) -> Path | None:
     return None
 
 app = FastAPI(title="BIOTORF Business OS · Comms API", version="0.2.0")
+
+
+def _ensure_schema():
+    """Инициализация схемы SQLite (вызывается из startup-хука и лениво при
+    первом запросе — на случай запуска без lifespan-событий)."""
+    store.init_db()
+    with store.connect() as conn:
+        logistics.init_tables(conn)
+        crm.init_tables(conn)
+
+
+_schema_ready = [False]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
@@ -145,13 +158,17 @@ async def auth_middleware(request: Request, call_next):
         не задаст AUTH_PASSWORD (безопаснее открытого API).
     """
     path = request.url.path
+    if not _schema_ready[0]:
+        _ensure_schema()
+        _schema_ready[0] = True
     if request.method == "OPTIONS" or not path.startswith("/api/"):
         return await call_next(request)
     if any(path.startswith(p) for p in PUBLIC_PATHS):
         return await call_next(request)
     if not auth.AUTH_PASSWORD and not auth.DEV_MODE:
-        raise HTTPException(503, "API заблокирован: задайте AUTH_PASSWORD в .env "
-                                 "и перезапустите бэкенд (см. README-AUTH.md)")
+        return JSONResponse(status_code=503, content={
+            "detail": "API заблокирован: задайте AUTH_PASSWORD в .env "
+                      "и перезапустите бэкенд (см. README-AUTH.md)"})
     hdr = request.headers.get("authorization") or ""
     token = hdr[7:].strip() if hdr.lower().startswith("bearer ") else ""
     if not token and auth.DEV_MODE and not auth.AUTH_PASSWORD:
@@ -159,15 +176,17 @@ async def auth_middleware(request: Request, call_next):
     else:
         payload = auth.verify_token(token) if token else None
         if payload is None:
-            raise HTTPException(401, "Требуется авторизация: передайте заголовок "
-                                     "Authorization: Bearer <token> (POST /auth/login)")
+            return JSONResponse(status_code=401, content={
+                "detail": "Требуется авторизация: передайте заголовок "
+                          "Authorization: Bearer <token> (POST /auth/login)"})
     request.state.user = payload.get("sub") or "?"
     request.state.role = payload["role"]
     if request.method not in ("GET", "HEAD", "OPTIONS"):
         section = auth.section_for(path)
         if section and not auth.can_write(payload["role"], section):
-            raise HTTPException(403, f"Роль «{auth.ROLES[payload['role']}» не имеет права "
-                                     f"изменять раздел «{section}»")
+            return JSONResponse(status_code=403, content={
+                "detail": f"Роль «{auth.ROLES.get(payload['role'], payload['role'])}» "
+                          f"не имеет права изменять раздел «{section}»"})
     return await call_next(request)
 
 
@@ -217,10 +236,7 @@ def auth_me(request: Request):
 @app.on_event("startup")
 def startup():
     global TELEGRAM_BOT_INFO, WHATSAPP_INFO
-    store.init_db()
-    with store.connect() as conn:
-        logistics.init_tables(conn)
-        crm.init_tables(conn)
+    _ensure_schema()
     if not auth.AUTH_PASSWORD and not auth.DEV_MODE:
         log.warning("[auth] ⚠ AUTH_PASSWORD не задан — API ЗАБЛОКИРОВАН (503 на все /api/*). "
                     "Задайте пароль в .env или включите DEV_MODE=1 для локальной разработки.")
@@ -694,7 +710,10 @@ def crm_list(coll: str):
 @app.post("/api/crm/{coll}", status_code=201)
 def crm_create(coll: str, body: dict):
     _check_coll(coll)
-    return crm.upsert(store.connect(), coll, body or {})
+    try:
+        return crm.upsert(store.connect(), coll, body or {})
+    except crm.ConflictError as e:
+        raise HTTPException(409, f"Запись «{e.rid}» уже изменена другим пользователем — обновите данные")
 
 
 @app.put("/api/crm/{coll}/{rid}")
@@ -706,7 +725,10 @@ def crm_update(coll: str, rid: str, body: dict):
     # PATCH-семантика: присланные поля поверх существующих (иначе PUT терял
     # все поля, не указанные в теле запроса)
     merged = {**existing, **(body or {}), "id": rid}
-    return crm.upsert(store.connect(), coll, merged, rid)
+    try:
+        return crm.upsert(store.connect(), coll, merged, rid)
+    except crm.ConflictError as e:
+        raise HTTPException(409, f"Запись «{e.rid}» уже изменена другим пользователем — обновите данные")
 
 
 @app.delete("/api/crm/{coll}/{rid}", status_code=204)
