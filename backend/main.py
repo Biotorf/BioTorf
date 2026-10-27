@@ -133,6 +133,7 @@ def _ensure_schema():
         logistics.init_tables(conn)
         crm.init_tables(conn)
         users.init_tables(conn)
+    _ensure_channels_schema()
 
 
 _schema_ready = [False]

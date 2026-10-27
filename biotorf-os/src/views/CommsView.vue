@@ -23,6 +23,23 @@ const chatError = ref('');
 const chatNotice = ref('');
 const newChatOpen = ref(false);
 const newChat = ref({ kind: 'telegram', handle: '', phone: '', contact: '' });
+
+// ── динамические каналы (реестр бэкенда: Instagram, VK, Авито и т.д.) ──
+import { channelsApi } from '../api/channelsClient';
+const dynChannels = ref([]);            // [{id,label,icon,color,connected}]
+async function loadChannels() {
+  if (!apiState.online) return;
+  try {
+    const res = await channelsApi.list();
+    dynChannels.value = (res.items || []).filter((c) => c.enabled && !['call', 'telegram', 'whatsapp'].includes(c.id));
+  } catch { /* оффлайн — остаёмся на статичных каналах */ }
+}
+const channelMeta = computed(() => {
+  const m = { ...KIND_META };
+  for (const ch of dynChannels.value) m[ch.id] = { label: ch.label, icon: ch.icon };
+  return m;
+});
+const connectedIds = computed(() => new Set(dynChannels.value.filter((c) => c.connected).map((c) => c.id)));
 let draftTimer = null;
 let firstLoad = true;
 
@@ -130,15 +147,18 @@ function onInput() {
   }, 700);
 }
 
+const HANDLE_KINDS = ['telegram', 'instagram', 'facebook', 'vk', 'ok'];   // каналы с ником/URL вместо номера
+
 async function startNewChat() {
   const f = newChat.value;
-  const target = f.kind === 'telegram' ? f.handle.trim() : f.phone.trim();
-  if (!target) { chatError.value = 'Укажите ник Telegram или номер телефона'; return; }
+  const byPhone = !HANDLE_KINDS.includes(f.kind);
+  const target = (byPhone ? f.phone : f.handle).trim();
+  if (!target) { chatError.value = byPhone ? 'Укажите номер телефона' : 'Укажите ник / ссылку на профиль'; return; }
   const entry = {
     kind: f.kind, dir: 'out',
     contact: f.contact.trim() || null,
-    phone: f.kind === 'whatsapp' ? target : null,
-    handle: f.kind === 'telegram' ? target.replace(/^@/, '') : null,
+    phone: byPhone ? target : null,
+    handle: !byPhone ? target.replace(/^@/, '') : null,
     text: chatInput.value.trim() || 'Новый диалог',
     read: true,
   };
@@ -165,13 +185,17 @@ const KIND_META = {
   whatsapp: { label: 'WhatsApp', icon: '◔' },
 };
 
-const FILTERS = [
+const BASE_FILTERS = [
   ['all', 'Все'],
   ['call', 'Звонки'],
   ['telegram', 'Telegram'],
   ['whatsapp', 'WhatsApp'],
-  ['unread', 'Непрочитанные'],
 ];
+const FILTERS = computed(() => [
+  ...BASE_FILTERS,
+  ...dynChannels.value.map((c) => [c.id, `${c.icon} ${c.label}`]),
+  ['unread', 'Непрочитанные'],
+]);
 
 // ── форма «зафиксировать коммуникацию» ────────────────────────────
 const showForm = ref(false);
@@ -208,8 +232,8 @@ function saveComm() {
       dir: f.dir,
       farmId: f.farmId || null,
       contact: f.contact || null,
-      phone: f.kind === 'whatsapp' ? (f.phone || null) : null,
-      handle: f.kind === 'telegram' ? (f.handle || null) : null,
+      phone: HANDLE_KINDS.includes(f.kind) ? null : (f.phone || null),
+      handle: HANDLE_KINDS.includes(f.kind) ? (f.handle || null) : null,
       text: f.text || '',
       read: true,
     });
@@ -288,7 +312,7 @@ const items = computed(() =>
     .filter((c) => {
       const f = ui.commsFilter;
       if (f === 'unread' && c.read) return false;
-      if (['call', 'telegram', 'whatsapp'].includes(f) && c.kind !== f) return false;
+      if (f !== 'all' && f !== 'unread' && c.kind !== f) return false;
       const q = ui.search.toLowerCase();
       if (!q) return true;
       const farm = c.farmId ? db.farmById(c.farmId)?.name : '';
@@ -329,6 +353,7 @@ async function tick() {
 onMounted(async () => {
   // если поднят бэкенд коммуникаций (backend/, порт 8787) — лента общая, из SQLite
   await db.syncComms();
+  await loadChannels();
   await loadChats(true);
   pollTimer = setInterval(tick, 4000);
   window.addEventListener('focus', tick);   // сразу обновляемся при возврате во вкладку
@@ -389,6 +414,7 @@ onBeforeUnmount(() => {
             <option value="call">Звонок (телефония)</option>
             <option value="telegram">Telegram</option>
             <option value="whatsapp">WhatsApp</option>
+            <option v-for="ch in dynChannels" :key="ch.id" :value="ch.id">{{ ch.icon }} {{ ch.label }}</option>
           </select>
         </div>
         <div class="field">
@@ -409,13 +435,13 @@ onBeforeUnmount(() => {
           <label>Контактное лицо</label>
           <input v-model="form.contact" class="input" placeholder="Имя / должность" />
         </div>
-        <div v-if="form.kind !== 'telegram'" class="field">
+        <div v-if="!HANDLE_KINDS.includes(form.kind)" class="field">
           <label>Номер телефона</label>
           <input v-model="form.phone" class="input" placeholder="+996 …" />
         </div>
-        <div v-if="form.kind === 'telegram'" class="field">
-          <label>Ник в Telegram</label>
-          <input v-model="form.handle" class="input" placeholder="@username" />
+        <div v-else class="field">
+          <label>{{ form.kind === 'telegram' ? 'Ник в Telegram' : 'Ник / ссылка на профиль' }}</label>
+          <input v-model="form.handle" class="input" :placeholder="form.kind === 'telegram' ? '@username' : 'например @client или https://…'" />
         </div>
         <template v-if="form.kind === 'call'">
           <div class="field">
@@ -470,10 +496,14 @@ onBeforeUnmount(() => {
           </div>
           <div v-if="newChatOpen" class="newchat">
             <select v-model="newChat.kind" class="select">
-              <option value="telegram">Telegram</option>
-              <option value="whatsapp">WhatsApp</option>
+              <option value="telegram">✈ Telegram</option>
+              <option value="whatsapp">◔ WhatsApp</option>
+              <option v-for="ch in dynChannels" :key="ch.id" :value="ch.id">{{ ch.icon }} {{ ch.label }}</option>
             </select>
-            <input v-if="newChat.kind === 'telegram'" v-model="newChat.handle" class="input" placeholder="@ник клиента" />
+            <div v-if="!connectedIds.has(newChat.kind) && newChat.kind !== 'telegram' && newChat.kind !== 'whatsapp'" class="mini muted">
+              ⚠ Аккаунт этого канала ещё не подключён — сообщения сохранятся в ленте. Привязать аккаунт можно в «Настройки → Каналы CRM».
+            </div>
+            <input v-if="HANDLE_KINDS.includes(newChat.kind)" v-model="newChat.handle" class="input" placeholder="@ник клиента / ссылка на профиль" />
             <input v-else v-model="newChat.phone" class="input" placeholder="+996 … номер" />
             <input v-model="newChat.contact" class="input" placeholder="Имя (необязательно)" />
             <textarea v-model="chatInput" class="textarea" rows="2" placeholder="Первое сообщение…"></textarea>
@@ -485,7 +515,7 @@ onBeforeUnmount(() => {
               class="chat-item" :class="{ active: c.key === activeKey, unread: c.unread }"
               @click="openChat(c)"
             >
-              <div class="avatar" :class="'av-' + c.kind">{{ KIND_META[c.kind]?.icon || '💬' }}</div>
+              <div class="avatar" :class="'av-' + c.kind">{{ channelMeta[c.kind]?.icon || '💬' }}</div>
               <div class="chat-item-main">
                 <div class="chat-item-top">
                   <span class="chat-name">{{ peerTitle(c) }}</span>
@@ -508,7 +538,7 @@ onBeforeUnmount(() => {
                 <div class="chat-head-name" :class="{ 'txt-link': !!activeChat.farmId }" @click="chatGoClient(activeChat)">
                   {{ peerTitle(activeChat) }}
                 </div>
-                <div class="mini">{{ KIND_META[activeChat.kind]?.label || activeChat.kind }} · {{ peerSub(activeChat) || 'диалог' }}</div>
+                <div class="mini">{{ channelMeta[activeChat.kind]?.label || activeChat.kind }} · {{ peerSub(activeChat) || 'диалог' }}</div>
               </div>
               <span v-if="activeChat.lastOutStatus === 'Доставлено'" class="pill green">ответ доставлен ✓</span>
               <span v-else-if="activeChat.lastOutStatus === 'В очереди'" class="pill amber">⏳ в очереди</span>
@@ -593,7 +623,7 @@ onBeforeUnmount(() => {
           >
             <td>
               <span class="comms-kind" :class="'k-' + c.kind">
-                {{ KIND_META[c.kind].icon }} {{ KIND_META[c.kind].label }}
+                {{ channelMeta[c.kind]?.icon || '💬' }} {{ channelMeta[c.kind]?.label || c.kind }}
               </span>
               <div class="mini">{{ c.dir === 'in' ? '↓ входящее' : '↑ исходящее' }}</div>
             </td>
@@ -651,7 +681,7 @@ onBeforeUnmount(() => {
       <div v-if="replyTarget" class="modal-backdrop" @click.self="replyTarget = null">
         <div class="modal" role="dialog" aria-label="Ответ клиенту">
           <div class="modal-title">
-            <h2>Ответ · {{ KIND_META[replyTarget.kind].label }}</h2>
+            <h2>Ответ · {{ channelMeta[replyTarget.kind].label }}</h2>
             <button class="btn ghost slim" @click="replyTarget = null">✕</button>
           </div>
           <div class="modal-body">
