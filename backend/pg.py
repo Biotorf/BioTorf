@@ -227,8 +227,12 @@ class Connection:
         pass
 
     def execute(self, sql, params=None):
+        # ВАЖНО: конвертация плейсхолдеров '?' -> '%s' обязательна и здесь.
+        # Cursor.execute тоже её делает, но его метод не вызывается, когда
+        # сюда приходит сырой psycopg-курсор (см. cursor()); двойная
+        # конвертация безопасна — после первой '?' в запросе не остаётся.
         cur = self.cursor()
-        cur.execute(sql, params)
+        cur.execute(qmark_to_format(sql), params)
         return cur
 
     def executescript(self, script: str):
