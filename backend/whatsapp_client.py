@@ -13,10 +13,28 @@
 """
 
 import json
+import os
 import urllib.error
 import urllib.request
 
 GRAPH_VERSION = "v21.0"
+
+# Жёсткий сетевой дедлайн (см. _open ниже и NET_TIMEOUT в main.py). Обычный
+# timeout у urlopen покрывает только чтение/запись, но НЕ TCP-connect к мёртвому
+# хосту: connect зависает на системные ~2 минуты, игнорируя timeout. Несколько
+# таких зависших вызовов занимали threadpool uvicorn — /health переставал
+# отвечать, nginx давал 502, платформа убивала контейнер («работает 20–30 с»).
+NET_TIMEOUT = float(os.environ.get("NET_TIMEOUT", "6"))
+
+
+def _open(req, timeout: float):
+    """urlopen с гарантированным дедлайном (включая стадию TCP-connect)."""
+    conn = urllib.request.urlopen(req, timeout=timeout)
+    try:
+        conn.fp._sock.settimeout(timeout)      # http.client.HTTPResponse
+    except Exception:
+        pass
+    return conn
 
 
 class WhatsAppError(Exception):
@@ -51,10 +69,10 @@ def send_message(token: str, phone_number_id: str, to: str, text: str) -> dict:
         method="POST",
     )
     try:
-        # таймаут 5с (был 15с): синхронные исходящие вызовы выполняются в
-        # threadpool uvicorn — зависшие запросы к Meta не должны блокировать
-        # рабочие потоки и приводить к 502 на всех эндпоинтах
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        # жёсткий дедлайн NET_TIMEOUT (см. _open): синхронные исходящие вызовы
+        # выполняются в threadpool uvicorn — зависшие запросы к Meta не должны
+        # блокировать рабочие потоки и приводить к 502 на всех эндпоинтах
+        with _open(req, NET_TIMEOUT) as resp:
             return json.loads(resp.read() or b"{}")
     except urllib.error.HTTPError as e:
         body = e.read().decode(errors="ignore")
@@ -80,7 +98,7 @@ def check_config(token: str, phone_number_id: str) -> dict:
     url = f"https://graph.facebook.com/{GRAPH_VERSION}/{phone_number_id}?fields=id,display_phone_number"
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:   # был 15с — см. send_text
+        with _open(req, NET_TIMEOUT) as resp:   # жёсткий дедлайн — см. _open
             data = json.loads(resp.read() or b"{}")
         return {"ok": True, "phone": data.get("display_phone_number"), "id": data.get("id")}
     except urllib.error.HTTPError as e:

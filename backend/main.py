@@ -977,6 +977,29 @@ def crm_delete(coll: str, rid: str):
 
 
 # ── исходящая отправка: ответ клиенту прямо из ленты ─────────────────────────
+# Жёсткий сетевой дедлайн для исходящих HTTP-вызовов. Обычный timeout у
+# urlopen покрывает только чтение/запись сокета, но НЕ сам TCP-connect к мёртвому
+# хосту (blackhole-маршрутизация на хостинге): connect зависает на системных
+# ~2 мин, игнорируя timeout. Все эндпоинты синхронные и выполняются в threadpool
+# uvicorn (~40 потоков): несколько зависших вызовов к api.telegram.org во время
+# сетевых проблем занимали пул, и даже /health переставал отвечать — nginx/OneReza
+# фиксировали 502 и убивали контейнер («работает 20–30 секунд и падает»).
+# settimeout после соединения покрывает И connect, и чтение одним интервалом.
+NET_TIMEOUT = float(os.environ.get("NET_TIMEOUT", "6"))
+
+
+def _open(req, timeout: float):
+    """urlopen с гарантированным дедлайном (включая стадию TCP-connect)."""
+    if isinstance(req, str):
+        req = urllib.request.Request(req)
+    conn = urllib.request.urlopen(req, timeout=timeout)
+    try:
+        conn.fp._sock.settimeout(timeout)      # http.client.HTTPResponse
+    except Exception:
+        pass
+    return conn
+
+
 def tg_api(method: str, payload: dict, token_override: str | None = None) -> dict:
     """Вызов Telegram Bot API (urllib, без внешних зависимостей).
 
@@ -990,11 +1013,10 @@ def tg_api(method: str, payload: dict, token_override: str | None = None) -> dic
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    # Короткий таймаут (5с вместо 15с): все эндпоинты синхронные и выполняются
-    # в threadpool uvicorn (всего ~40 рабочих потоков). Медленные/зависающие
-    # вызовы Telegram при опоздании сети могли занять все потоки — тогда даже
-    # /health не получал ответа и nginx отдавал 502 «Бэкенд недоступен».
-    with urllib.request.urlopen(req, timeout=5) as resp:
+    # Короткий жёсткий таймаут (см. NET_TIMEOUT): зависшие вызовы Telegram при
+    # проблемах сети не должны занимать потоки threadpool — иначе даже /health
+    # не получал ответа и nginx отдавал 502 «Бэкенд недоступен».
+    with _open(req, NET_TIMEOUT) as resp:
         return json.loads(resp.read() or b"{}")
 
 
@@ -1060,7 +1082,9 @@ def tg_send_voice(attempt: dict, media_file: str) -> dict:
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=60) as resp:
+    # sendVoice —multipart-загрузка голоса: чуть длиннее дедлайн, но всё равно
+    # жёсткий (см. NET_TIMEOUT), чтобы не вешать потоки threadpool навсегда.
+    with _open(req, max(NET_TIMEOUT, 20)) as resp:
         return json.loads(resp.read() or b"{}")
 
 
@@ -1417,7 +1441,7 @@ def download_tg_voice(file_info: dict) -> dict | None:
             log.warning("[tg-media] getFile не вернул file_path для %s…", fid[:24])
             return None
         url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{fp}"
-        with urllib.request.urlopen(url, timeout=30) as resp:
+        with _open(url, max(NET_TIMEOUT, 30)) as resp:
             data = resp.read(TG_MEDIA_MAX_BYTES + 1)
         if len(data) > TG_MEDIA_MAX_BYTES:
             log.warning("[tg-media] файл больше 20 МБ — пропущен")
