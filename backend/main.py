@@ -46,6 +46,7 @@ import farms_index
 import db as store
 import logistics
 import crm
+import users
 import whatsapp_client
 
 # Единая точка логирования вместо print(): уровень настраивается переменной
@@ -123,6 +124,7 @@ def _ensure_schema():
     with store.connect() as conn:
         logistics.init_tables(conn)
         crm.init_tables(conn)
+        users.init_tables(conn)
 
 
 _schema_ready = [False]
@@ -151,11 +153,13 @@ async def auth_middleware(request: Request, call_next):
     проходят без токена.
 
     Режимы:
-      • AUTH_PASSWORD задан   — стандартный режим: токен обязателен;
+      • в системе есть зарегистрированные сотрудники (таблица users) —
+        принимаются только токены, выпущенные этим сервером этим сотрудникам;
+      • сотрудников ещё нет и задан AUTH_PASSWORD — прежний режим общего
+        пароля (первый вошедший = временный админ до регистрации);
       • DEV_MODE=1            — локальная разработка без пароля: пустой
         Authorization трактуется как director;
-      • пароль пуст и не dev  — LOCKED: /api/* отклоняются с 503, пока админ
-        не задаст AUTH_PASSWORD (безопаснее открытого API).
+      • ничего не настроено   — LOCKED: /api/* отклоняются с 503.
     """
     path = request.url.path
     if not _schema_ready[0]:
@@ -165,13 +169,15 @@ async def auth_middleware(request: Request, call_next):
         return await call_next(request)
     if any(path.startswith(p) for p in PUBLIC_PATHS):
         return await call_next(request)
-    if not auth.AUTH_PASSWORD and not auth.DEV_MODE:
+    has_users = users.count() > 0
+    if not auth.AUTH_PASSWORD and not auth.DEV_MODE and not has_users:
         return JSONResponse(status_code=503, content={
-            "detail": "API заблокирован: задайте AUTH_PASSWORD в .env "
-                      "и перезапустите бэкенд (см. README-AUTH.md)"})
+            "detail": "API заблокирован: зарегистрируйте первого сотрудника "
+                      "(он станет генеральным директором) через экран входа "
+                      "или задайте AUTH_PASSWORD в .env"})
     hdr = request.headers.get("authorization") or ""
     token = hdr[7:].strip() if hdr.lower().startswith("bearer ") else ""
-    if not token and auth.DEV_MODE and not auth.AUTH_PASSWORD:
+    if not token and auth.DEV_MODE and not auth.AUTH_PASSWORD and not has_users:
         payload = {"sub": "dev", "role": "director"}
     else:
         payload = auth.verify_token(token) if token else None
@@ -199,31 +205,89 @@ class LoginIn(BaseModel):
     password: str = Field(min_length=1, max_length=256)
 
 
+class RegisterIn(LoginIn):
+    name: str | None = Field(None, max_length=64)
+
+
 _login_failures: dict[str, tuple[int, int]] = {}  # ip -> (число ошибок, окно до)
 _LOGIN_WINDOW = 60
 _LOGIN_MAX_FAILS = 10
+
+
+def _throttle(ip: str, ok: bool):
+    """Не более _LOGIN_MAX_FAILS неудачных попыток в минуту на IP (login/register)."""
+    now = int(time.time())
+    fails, until = _login_failures.get(ip, (0, 0))
+    if until and now < until:
+        raise HTTPException(429, "Слишком много неудачных попыток — подождите минуту")
+    if ok:
+        _login_failures.pop(ip, None)
+    else:
+        fails = fails + 1 if now < until else 1
+        _login_failures[ip] = (fails, now + _LOGIN_WINDOW if fails >= _LOGIN_MAX_FAILS else until)
 
 
 @app.post("/auth/login")
 def auth_login(body: LoginIn, request: Request):
     """Обмен учётных данных сотрудника на JWT (подпись HS256, TTL AUTH_TOKEN_TTL).
 
-    Простая защита от перебора: не более 10 неудачных попыток в минуту на IP.
+    Порядок проверки:
+      1) таблица users — персональные аккаунты сотрудников (регистрация через
+         фронтенд); первая регистрация автоматически получает роль director;
+      2) если сотрудников ещё нет, но задан общий AUTH_PASSWORD — прежний
+         режим общего пароля (первый вошедший = временный админ);
+      3) защита от перебора: не более 10 неудачных попыток в минуту на IP.
     """
     ip = request.client.host if request.client else "?"
-    now = int(time.time())
-    fails, until = _login_failures.get(ip, (0, 0))
-    if until and now < until:
-        raise HTTPException(429, "Слишком много неудачных попыток — подождите минуту")
-    res = auth.login(body.user, body.password)
+    res = users.authenticate(body.user, body.password)
+    if res is None and users.count() == 0 and auth.AUTH_PASSWORD:
+        legacy = auth.login(body.user, body.password)
+        if legacy:
+            role = legacy["role"]
+            res = {**legacy, "name": body.user.strip(), "tempAdmin": True}
     if not res:
-        fails = fails + 1 if now < until else 1
-        _login_failures[ip] = (fails, now + _LOGIN_WINDOW if fails >= _LOGIN_MAX_FAILS else until)
+        _throttle(ip, ok=False)
         log.warning("[auth] неудачный вход: user=%r ip=%s", body.user, ip)
-        raise HTTPException(401, "Неверный пароль")
-    _login_failures.pop(ip, None)
+        raise HTTPException(401, "Неверный логин или пароль")
+    if res.get("pending"):
+        log.info("[auth] вход ожидающего подтверждения: %s", res["login"])
+        return {"pending": True, "user": res["login"], "name": res["name"],
+                "role": "pending", "roleName": "Ожидает подтверждения",
+                "roles": auth.ROLES}
+    _throttle(ip, ok=True)
     log.info("[auth] вход: %s role=%s", res["user"], res["role"])
     return res
+
+
+@app.post("/auth/register", status_code=201)
+def auth_register(body: RegisterIn, request: Request):
+    """Регистрация сотрудника с фронтенда.
+
+    ПЕРВЫЙ созданный аккаунт автоматически становится генеральным директором
+    (роль director). Все последующие — роль «pending»: они могут войти, но
+    доступ к данным закрыт, пока директор не выдаст роль в разделе
+    «Сотрудники» (PUT /api/users/{login}/role).
+    """
+    ip = request.client.host if request.client else "?"
+    code, payload = users.register(body.user, body.name or "", body.password)
+    if code != 201:
+        if code == 409:          # дубликат логина — не атака, не троттлим
+            raise HTTPException(code, payload["detail"])
+        _throttle(ip, ok=False)
+        raise HTTPException(code, payload["detail"])
+    _throttle(ip, ok=True)
+    log.info("[auth] регистрация: %s role=%s%s", payload["login"], payload["role"],
+             " (ПЕРВЫЙ АККАУНТ = ГЕНЕРАЛЬНЫЙ ДИРЕКТОР)" if payload["firstAccount"] else "")
+    if payload["firstAccount"]:
+        # первый сотрудник входит сразу — токен выдаём на месте
+        return {"token": auth.make_token(payload["login"], "director"),
+                "user": payload["login"], "name": payload["name"],
+                "role": "director", "roleName": auth.ROLES["director"],
+                "roles": auth.ROLES, "firstAccount": True,
+                "expiresIn": auth.AUTH_TOKEN_TTL}
+    return {"ok": True, "firstAccount": False, "login": payload["login"],
+            "name": payload["name"], "role": "pending",
+            "roleName": "Ожидает подтверждения"}
 
 
 @app.get("/auth/me")
@@ -994,6 +1058,51 @@ def capabilities():
     }
 
 
+# ── REST: сотрудники и роли (выдача ролей — только генеральному директору) ───
+class RoleIn(BaseModel):
+    role: str = Field(min_length=2, max_length=32)
+
+
+@app.get("/api/users")
+def users_list(request: Request):
+    """Список сотрудников (без хешей паролей). Может смотреть любой
+    авторизованный, включая ожидающих подтверждения."""
+    return {"items": users.list_all(),
+            "roles": auth.ROLES,
+            "canManage": getattr(request.state, "role", "") == "director"}
+
+
+@app.put("/api/users/{login}/role")
+def users_set_role(login: str, body: RoleIn, request: Request):
+    """Выдать сотруднику роль. Право — только у «director» (генерального
+    директора); так же он может снять роль, вернув сотрудника в «pending»."""
+    if getattr(request.state, "role", "") != "director":
+        raise HTTPException(403, "Роли сотрудников выдаёт только генеральный директор")
+    role = body.role.strip()
+    if role != "pending" and role not in auth.ROLES:
+        raise HTTPException(400, f"Неизвестная роль «{role}»")
+    target = users.get(login)
+    if not target:
+        raise HTTPException(404, "Сотрудник не найден")
+    if login == request.state.user and role != "director":
+        raise HTTPException(400, "Нельзя понизить собственную роль директора")
+    updated = users.set_role(login, role)
+    log.info("%s выдал роль %s=%s", _who(request), login, role)
+    return updated
+
+
+@app.delete("/api/users/{login}", status_code=204)
+def users_delete(login: str, request: Request):
+    """Удалить аккаунт сотрудника (только директор; нельзя удалить себя)."""
+    if getattr(request.state, "role", "") != "director":
+        raise HTTPException(403, "Удалять аккаунты может только генеральный директор")
+    if login == request.state.user:
+        raise HTTPException(400, "Нельзя удалить собственный аккаунт")
+    if not users.delete(login):
+        raise HTTPException(404, "Сотрудник не найден")
+    log.info("%s удалил аккаунт %s", _who(request), login)
+
+
 @app.get("/api/stats")
 def stats():
     return store.stats()
@@ -1002,7 +1111,12 @@ def stats():
 @app.get("/health")
 def health():
     return {"ok": True, "service": "biotorf-comms", "version": app.version,
-            "db": str(store.DB_PATH), "ts": now_iso()}
+            "db": str(store.DB_PATH), "ts": now_iso(),
+            # authRequired: фронт показывает экран входа; hasUsers — что на нём
+            # предложить «зарегистрировать первого сотрудника (гендиректора)»
+            "authRequired": bool(auth.AUTH_PASSWORD) or users.count() > 0 or not auth.DEV_MODE,
+            "hasUsers": users.count() > 0,
+            "devMode": bool(auth.DEV_MODE)}
 
 
 # ── защита вебхуков ──────────────────────────────────────────────────────────
