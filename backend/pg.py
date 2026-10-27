@@ -196,18 +196,35 @@ def compat_dict_row(cursor):
 
 
 class Cursor:
-    """Обёртка psycopg-cursora: '?'-плейсхолдеры + строки-словари."""
+    """Обёртка psycopg-курсора: '?'-плейсхолдеры + строки-словари.
 
-    def __init__(self, cur):
+    Хранит ссылку на Connection-обёртку (_owner) и выполняет SQL через её
+    _run(): при «сломанном» соединении (сервер перезапустился, сеть моргнула)
+    обёртка сама подменяет raw-соединение на свежее из пула и повторяет
+    попытку — запрос не падает с 500/502.
+    """
+
+    def __init__(self, cur, owner=None):
         self._cur = cur
+        self._owner = owner
+        self._auto_release = None   # callable: вернуть соединение в пул после fetch
 
     def execute(self, sql, params=None):
-        self._cur.execute(qmark_to_format(sql), tuple(params) if params else ())
+        psql = qmark_to_format(sql)
+        args = tuple(params) if params else ()
+        if self._owner is not None:
+            self._cur = self._owner._run(psql, args, self._cur)
+        else:
+            self._cur.execute(psql, args)
         return self
 
     def executemany(self, sql, seq_of_params):
-        self._cur.executemany(qmark_to_format(sql),
-                              [tuple(p) for p in seq_of_params])
+        psql = qmark_to_format(sql)
+        args = [tuple(p) for p in seq_of_params]
+        if self._owner is not None:
+            self._cur = self._owner._run_many(psql, args, self._cur)
+        else:
+            self._cur.executemany(psql, args)
         return self
 
     # -- совместимость со sqlite3.Cursor ----------------------------------
@@ -216,19 +233,41 @@ class Cursor:
         return self._cur.rowcount
 
     def fetchone(self):
-        return self._cur.fetchone()
+        try:
+            return self._cur.fetchone()
+        finally:
+            self._release()
 
     def fetchall(self):
-        return self._cur.fetchall()
+        try:
+            return self._cur.fetchall()
+        finally:
+            self._release()
 
     def fetchmany(self, size=None):
-        return self._cur.fetchmany(size) if size else self._cur.fetchmany()
+        try:
+            return self._cur.fetchmany(size) if size else self._cur.fetchmany()
+        finally:
+            self._release()
+
+    def _release(self):
+        """Одноразово вернуть авто-соединение _AutoConn в пул после вычитки."""
+        rel, self._auto_release = self._auto_release, None
+        if rel is not None:
+            try:
+                rel()
+            except Exception:
+                pass
 
     def close(self):
+        self._release()
         self._cur.close()
 
     def __iter__(self):
-        return iter(self._cur)
+        try:
+            yield from self._cur
+        finally:
+            self._release()
 
 
 
@@ -242,16 +281,112 @@ class Connection:
       * context manager НЕ закрывает соединение, а возвращает его в пул.
     """
 
-    def __init__(self, raw, pool=None):
+    def __init__(self, raw, pool=None, conninfo=""):
         self._raw = raw
         self._pool = pool
+        self._conninfo = conninfo or getattr(raw, "dsn", "") or ""
         self._cur = None          # ленивый общий курсор соединения
+
+    def _replace_broken(self):
+        """Подменить «сломанное» raw-соединение на свежее из пула.
+
+        Работает и для прямых (непуловых) соединений: там вместо возврата в
+        пул просто открываем новое соединение по тем же параметрам conninfo.
+        """
+        if self._raw is None:
+            return False
+        if self._pool is not None:
+            try:
+                self._pool.putconn(self._raw, bad=True)  # закроет битвое, создаст новое
+            except Exception:
+                try:
+                    self._raw.close()
+                except Exception:
+                    pass
+            try:
+                self._raw = self._pool.getconn(timeout=10)
+                return True
+            except Exception:
+                self._raw = None
+                return False
+        # непущевое соединение: переподключаемся напрямую
+        try:
+            self._raw.close()
+        except Exception:
+            pass
+        try:
+            import psycopg as _ps
+            new = _ps.connect(conninfo=self._conninfo, autocommit=True,
+                              prepare_threshold=0, connect_timeout=5)
+            self._raw = new
+            return True
+        except Exception:
+            self._raw = None
+            return False
+
+    @staticmethod
+    def _is_broken(e: Exception) -> bool:
+        if not isinstance(e, (psycopg.OperationalError, psycopg.InterfaceError)):
+            return False
+        msg = str(e).lower()
+        # таймаут ожидания свободного соединения из пула — это НЕ обрыв,
+        # а исчерпание пула: переподключение тут не поможет
+        if "waiting for a connection" in msg or "timed out" in msg and "pool" in msg:
+            return False
+        return True
+
+    def _run(self, psql, args, cur):
+        """Выполнить SQL; при обрыве соединения — один раз переподключиться."""
+        for attempt in (0, 1):
+            try:
+                if cur is None or getattr(cur, "closed", True):
+                    cur = self._live_raw().cursor(row_factory=compat_dict_row)
+                cur.execute(psql, args)
+                return cur
+            except (psycopg.OperationalError, psycopg.InterfaceError) as e:
+                try:
+                    cur.close()
+                except Exception:
+                    cur = None
+                if attempt == 0 and self._is_broken(e) and self._replace_broken():
+                    cur = None
+                    continue
+                raise
+        raise RuntimeError("unreachable")
+
+    def _run_many(self, psql, seq, cur):
+        for attempt in (0, 1):
+            try:
+                if cur is None or getattr(cur, "closed", True):
+                    cur = self._live_raw().cursor(row_factory=compat_dict_row)
+                cur.executemany(psql, seq)
+                return cur
+            except (psycopg.OperationalError, psycopg.InterfaceError) as e:
+                try:
+                    cur.close()
+                except Exception:
+                    cur = None
+                if attempt == 0 and self._is_broken(e) and self._replace_broken():
+                    cur = None
+                    continue
+                raise
+        raise RuntimeError("unreachable")
+
+    def _live_raw(self):
+        """Вернуть рабочее raw-соединение; при обрыве — переподключиться."""
+        if self._raw is None:
+            if not self._replace_broken():
+                raise psycopg.OperationalError("no usable PostgreSQL connection")
+        elif self._raw.closed:
+            if not self._replace_broken():
+                raise psycopg.OperationalError("the connection is closed")
+        return self._raw
 
     def cursor(self):
         # Новый psycopg-курсор на каждый вызов: старый код местами пишет
         # store.connect().execute(...) без close() — переиспользование одного
         # ленивого курсора приводило бы к утечке курсоров внутри соединения.
-        return Cursor(self._raw.cursor(row_factory=compat_dict_row))
+        return Cursor(self._live_raw().cursor(row_factory=compat_dict_row), owner=self)
 
     def execute(self, sql, params=None):
         # Возвращаем обёртку Cursor: внутри неё уже выполняется конвертация
@@ -266,9 +401,17 @@ class Connection:
         несколькими операторами за один execute — разбиваем по ';' и
         выполняем каждый оператор отдельно в одном транзакционном блоке.
         """
-        with self._raw.transaction():
-            for stmt in split_statements(script):
-                self._raw.execute(stmt)
+        for attempt in (0, 1):
+            try:
+                raw = self._live_raw()
+                with raw.transaction():
+                    for stmt in split_statements(script):
+                        raw.execute(stmt)
+                break
+            except (psycopg.OperationalError, psycopg.InterfaceError) as e:
+                if attempt == 0 and self._is_broken(e) and self._replace_broken():
+                    continue
+                raise
         return self.cursor()
 
     def commit(self):
@@ -361,19 +504,96 @@ def check_connection() -> tuple[bool, str]:
         return False, f"{type(e).__name__}: {str(e)[:200]}"
 
 
-def connect():
-    """Вернуть PG-обёртку из пула (аналог sqlite3.connect для всего кода).
+class _AutoConn:
+    """Прокси к пуловому соединению с автовозвратом в пул.
 
-    Вызывающий код обязан закрыть соединение (with / .close()). Там, где это
-    невозможно (старые места вроде crm.register_comm(store.connect(), ...)),
-    соединение вернётся в пул автоматически по TTL (_reclaim_leaked).
+    Позволяет писать `crm.get_state(connect())` без close(): прокси берёт
+    соединение из пула на время запроса и возвращает его сразу после — так
+    пул не исчерпается даже при тысячах вызовов «утекающего» legacy-кода.
+    Явные `with connect()` / `.close()` тоже работают (закрепляют соединение
+    за собой до явного закрытия).
     """
-    _reclaim_leaked()
-    conn = Connection(get_pool().getconn(), pool=get_pool())
-    import time as _t
-    conn._born = _t.time()
-    _LEAKED.append(conn)
-    return conn
+
+    def __init__(self):
+        self._c: Connection | None = None   # закреплённое (with/close) соединение
+
+    def _get(self) -> Connection:
+        if self._c is not None:
+            return self._c
+        _reclaim_leaked()
+        return Connection(get_pool().getconn(), pool=get_pool(), conninfo=_database_url())
+
+    def _ret(self, c: Connection) -> None:
+        if c is not self._c:                 # временное соединение прокси
+            try:
+                c.close()
+            except Exception:
+                pass
+
+    def execute(self, sql, params=None):
+        c = self._get()
+        try:
+            cur = c.execute(sql, params)
+        except Exception:
+            self._ret(c)
+            raise
+        if c is not self._c:                 # временное — вернём в пул после fetch
+            cur._auto_release = lambda: self._ret(c)
+        return cur
+
+    def executescript(self, script):
+        c = self._get()
+        try:
+            return c.executescript(script)
+        finally:
+            self._ret(c)
+
+    def cursor(self):
+        c = self._get()
+        cur = c.cursor()
+        if c is not self._c:
+            cur._auto_release = lambda: self._ret(c)
+        return cur
+
+    def commit(self):
+        c = self._get()
+        try:
+            c.commit()
+        finally:
+            self._ret(c)
+
+    def rollback(self):
+        c = self._get()
+        try:
+            c.rollback()
+        finally:
+            self._ret(c)
+
+    # -- явное владение (with / close) -----------------------------------
+    def close(self):
+        if self._c is not None:
+            self._c.close()
+            self._c = None
+
+    def __enter__(self):
+        _reclaim_leaked()
+        self._c = Connection(get_pool().getconn(), pool=get_pool(), conninfo=_database_url())
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+        return False
+
+
+def connect():
+    """Вернуть PG-соединение (аналог sqlite3.connect для всего кода).
+
+    Возвращает _AutoConn: соединения из пулa берутся/возвращаются прозрачно,
+    поэтому места вида `crm.register_comm(store.connect(), ...)` (без close())
+    больше не удерживают пул. `with store.connect() as conn:` работает как
+    раньше.
+    """
+    return _AutoConn()
 
 
 def connection_factory(path: str):

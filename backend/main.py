@@ -895,18 +895,18 @@ def crm_state():
 @app.post("/api/crm/seed")
 def crm_seed(body: dict):
     """Первичное наполнение сервера демо-данными (однократно, пустые коллекции)."""
-    conn = store.connect()
-    loaded = 0
-    for coll in crm.COLLECTIONS:
-        items = (body or {}).get(coll)
-        if not isinstance(items, list):
-            continue
-        if crm.list_records(conn, coll):   # не затираем существующие данные
-            continue
-        for rec in items:
-            if rec.get("id"):
-                crm.upsert(conn, coll, rec, rec["id"])
-                loaded += 1
+    with store.connect() as conn:
+        loaded = 0
+        for coll in crm.COLLECTIONS:
+            items = (body or {}).get(coll)
+            if not isinstance(items, list):
+                continue
+            if crm.list_records(conn, coll):   # не затираем существующие данные
+                continue
+            for rec in items:
+                if rec.get("id"):
+                    crm.upsert(conn, coll, rec, rec["id"])
+                    loaded += 1
     return {"loaded": loaded}
 
 

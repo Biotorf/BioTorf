@@ -18,7 +18,17 @@ fi
 # Команда из docker-compose (например, python telegram_worker.py для tg-worker)
 # имеет приоритет; если её нет — стартуем API-сервер uvicorn.
 if [ "$#" -gt 0 ]; then
-  exec "$@"
+  # tg-worker и прочие одноразовые команды — без супервизора
+  if [ "$1" = "python" ] || [ "$1" = "python3" ]; then
+    exec "$@"
+  fi
 fi
 
-exec python -m uvicorn main:app --host 0.0.0.0 --port "${PORT:-8787}"
+# Uvicorn под супервизором: процесс перезапускается после любого падения
+# (ОOM, необработанное исключение, рестарт БД), а не уводит контейнер в unhealthy.
+while true; do
+  python -m uvicorn main:app --host 0.0.0.0 --port "${PORT:-8787}"
+  code=$?
+  echo "[entrypoint] uvicorn завершился (code=$code) — рестарт через 2с" >&2
+  sleep 2
+done
