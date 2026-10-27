@@ -256,11 +256,13 @@ def insert(item: dict) -> dict:
             vals.append(v)
     if IS_POSTGRES:
         # идемпотентность webhook'ов: пропуск дубликата по unique-индексу
-        # (source, external_id) — без TRIGGER (см. migrate_sqlite_to_pg.py)
+        # (source, external_id) — без TRIGGER (см. migrate_sqlite_to_pg.py).
+        # ON CONFLICT DO NOTHING требует целевой индекс/колонку в PG,
+        # поэтому указываем (source, external_id) явно.
         sql = (
             f"INSERT INTO comms ({', '.join(cols)}) "
             f"VALUES ({', '.join('?' for _ in cols)}) "
-            "ON CONFLICT DO NOTHING"
+            "ON CONFLICT (source, external_id) DO NOTHING"
         )
     else:
         sql = (
