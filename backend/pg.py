@@ -747,6 +747,14 @@ class _AutoConn:
     пул не исчерпается даже при тысячах вызовов «утекающего» legacy-кода.
     Явные `with connect()` / `.close()` тоже работают (закрепляют соединение
     за собой до явного закрытия).
+
+    Закреплённые соединения регистрируются в _LEAKED (со штампом «рождения»)
+    и гарантированно возвращаются в пул TTL-сборщиком — даже если код забыл
+    вызвать close() или упал с исключением посреди функции. Без этого одна
+    PUT /api/crm/state (пишущий путь через commit(), закрепляющий соединение)
+    уводила соединение из пула навсегда: 10 таких запросов — и весь пул
+    исчерпан, дальше PoolTimeout («couldn't get a connection after 3 sec»)
+    на каждом эндпоинте, включая /health → 503 → контейнер выглядел «упавшим».
     """
 
     _transient = True    # см. Cursor.execute: каждый запрос — временное соединение
@@ -754,10 +762,25 @@ class _AutoConn:
     def __init__(self):
         self._c: Connection | None = None   # закреплённое (with/close) соединение
 
+    def _pin(self, c: Connection) -> None:
+        """Закрепить пуловое соединение за прокси и поставить его под охрану
+        TTL-сборщика (_reclaim_leaked вернёт его в пул, если close() не случился)."""
+        self._c = c
+        try:
+            c._born = time.time()
+            _LEAKED.append(c)
+        except Exception:
+            pass
+
     def _get(self) -> Connection:
         if self._c is not None:
             return self._c
         _reclaim_leaked()
+        # НЕ закрепляем соединение за прокси: его вернёт в пул _auto_release
+        # курсора сразу после вычитки результата (см. execute/_run_transient).
+        # Если бы _get вызывал _pin, каждый «утекающий» store.connect() из
+        # legacy-кода main.py навсегда уводил бы соединение из пула — 10 таких
+        # запросов и весь пул исчерпан (PoolTimeout на каждом эндпоинте).
         return Connection(get_pool().getconn(), pool=get_pool(), conninfo=_database_url())
 
     def _ret(self, c: Connection) -> None:
@@ -830,7 +853,12 @@ class _AutoConn:
         try:
             return c.executescript(script)
         finally:
-            self._ret(c)
+            # Connection.executescript сам не возвращает соединение в пул —
+            # делаем это явно, иначе DDL-вызовы утаскивали бы соединения из пула
+            try:
+                c.close()
+            except Exception:
+                pass
 
     def cursor(self):
         c = self._get()
@@ -840,28 +868,25 @@ class _AutoConn:
         return cur
 
     def commit(self):
-        c = self._get()
-        try:
-            c.commit()
-        finally:
-            self._ret(c)
+        # no-op при autocommit — НЕ должны закреплять соединение из пула
+        # (раньше именно этот путь уводил соединения из пула навсегда:
+        # crm.upsert()/logistics вызывают conn.commit() на «утекающем»
+        # store.connect() без close()).
+        pass
 
     def rollback(self):
-        c = self._get()
-        try:
-            c.rollback()
-        finally:
-            self._ret(c)
+        pass
 
     # -- явное владение (with / close) -----------------------------------
     def close(self):
         if self._c is not None:
-            self._c.close()
+            self._c.close()      # Connection.close снимает его из _LEAKED
             self._c = None
 
     def __enter__(self):
         _reclaim_leaked()
-        self._c = Connection(get_pool().getconn(), pool=get_pool(), conninfo=_database_url())
+        c = Connection(get_pool().getconn(), pool=get_pool(), conninfo=_database_url())
+        self._pin(c)
         return self
 
     def __exit__(self, exc_type, exc, tb):
