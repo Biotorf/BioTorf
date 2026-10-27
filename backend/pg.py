@@ -16,12 +16,108 @@
   POSTGRES_HOST / POSTGRES_PORT / POSTGRES_DB / POSTGRES_USER / POSTGRES_PASSWORD
 """
 
+import logging
 import os
 import re
+import time
 
 import psycopg
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
+
+log = logging.getLogger("biotorf.pg")
+
+
+def _table_from_sql(sql: str) -> str:
+    """Имя таблицы из SQL — для коротких, читаемых логов ошибок."""
+    m = re.search(
+        r"\b(?:FROM|INTO|UPDATE|TABLE(?:\s+IF\s+(?:NOT\s+)?EXISTS)?|JOIN)\s+[\"`]?([\w.]+)",
+        sql or "", re.IGNORECASE)
+    return m.group(1) if m else "?"
+
+
+def is_missing_relation(e: BaseException) -> bool:
+    """True, если psycopg-ошибка — «таблица/отношение не существует» (42P01)."""
+    return getattr(e, "sqlstate", None) == "42P01"
+
+
+def _ensure_comms_table(raw) -> None:
+    """Самовосстановление: создать comms + индексы, если их нет (42P01)."""
+    raw.execute("""
+CREATE TABLE IF NOT EXISTS comms (
+    seq          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    id           TEXT NOT NULL UNIQUE,
+    kind         TEXT NOT NULL,
+    dir          TEXT NOT NULL DEFAULT 'in' CHECK (dir IN ('in','out')),
+    farm_id      TEXT,
+    contact      TEXT,
+    phone        TEXT,
+    handle       TEXT,
+    ts           TEXT NOT NULL,
+    duration     INTEGER NOT NULL DEFAULT 0,
+    status       TEXT,
+    text         TEXT,
+    note         TEXT,
+    read         INTEGER NOT NULL DEFAULT 0,
+    source       TEXT NOT NULL DEFAULT 'manual',
+    external_id  TEXT,
+    payload      TEXT,
+    peer_key     TEXT
+)""")
+    for stmt in (
+        "CREATE INDEX IF NOT EXISTS idx_comms_ts     ON comms (ts DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_comms_farm   ON comms (farm_id)",
+        "CREATE INDEX IF NOT EXISTS idx_comms_unread ON comms (read)",
+        "CREATE INDEX IF NOT EXISTS idx_comms_seq    ON comms (seq)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_comms_ext ON comms (source, external_id)",
+    ):
+        raw.execute(stmt)
+
+
+def _ensure_chat_drafts_table(raw) -> None:
+    raw.execute("""
+CREATE TABLE IF NOT EXISTS chat_drafts (
+    peer_key TEXT PRIMARY KEY,
+    draft    TEXT NOT NULL DEFAULT '',
+    updated  TEXT NOT NULL
+)""")
+
+
+# имя отношения из PG-сообщения об ошибке (relation "chat_drafts" does not exist)
+_RELATION_RE = re.compile(r'relation "([\w.]+)" does not exist')
+
+# самовосстановление после падения /health-подобных циклов: не чаще одного
+# восстановления на таблицу в PG_HEAL_COOLDOWN секунд (защита от шторма DDL)
+_HEALED: dict[str, float] = {}
+
+
+def _heal_missing_relation(raw, err_text: str) -> bool:
+    """Создать отсутствующую таблицу и вернуть True, если это удалось.
+
+    Лечим только известные нам таблицы схемы; cooldown защищает от частых
+    повторов при конкурентном доступе нескольких потоков."""
+    m = _RELATION_RE.search(err_text or "")
+    if not m:
+        return False
+    name = m.group(1)
+    now = time.time()
+    if now - _HEALED.get(name, 0.0) < float(os.environ.get("PG_HEAL_COOLDOWN", "30")):
+        return False
+    try:
+        if name == "comms":
+            _ensure_comms_table(raw)
+        elif name == "chat_drafts":
+            _ensure_chat_drafts_table(raw)
+        else:
+            return False   # неизвестную таблицу сами не создаём
+        _HEALED[name] = now
+        log.warning("[db] таблица %s отсутствовала — создана автоматически "
+                    "(схема была неполной; проверьте миграцию schema.sql)", name)
+        return True
+    except Exception as e2:
+        _HEALED[name] = now   # не крутить DDL при каждой ошибке
+        log.error("[db] не удалось восстановить таблицу %s: %s", name, e2)
+        return False
 
 
 def _database_url() -> str:
@@ -227,29 +323,45 @@ class Cursor:
     def execute(self, sql, params=None):
         psql = qmark_to_format(sql)
         args = tuple(params) if params else ()
-        if self._owner is not None:
-            transient = getattr(self._owner, "_transient", False)
-            if transient:
-                # одноразовый курсор: если владелец — авто-прокси (_AutoConn),
-                # соединение вернётся в пул сразу после вычитки результата.
-                # Долгоживущий курсор на авто-соединении оставлял бы его
-                # занятым до TTL-сборщика и при опросе фронта каждые
-                # несколько секунд исчерпывал весь пул ("waiting for a
-                # connection ... timed out" -> 502).
-                self._cur = self._owner._run_transient(psql, args)
+        try:
+            if self._owner is not None:
+                transient = getattr(self._owner, "_transient", False)
+                if transient:
+                    # одноразовый курсор: если владелец — авто-прокси (_AutoConn),
+                    # соединение вернётся в пул сразу после вычитки результата.
+                    # Долгоживущий курсор на авто-соединении оставлял бы его
+                    # занятым до TTL-сборщика и при опросе фронта каждые
+                    # несколько секунд исчерпывал весь пул ("waiting for a
+                    # connection ... timed out" -> 502).
+                    self._cur = self._owner._run_transient(psql, args)
+                else:
+                    self._cur = self._owner._run(psql, args, self._cur)
             else:
-                self._cur = self._owner._run(psql, args, self._cur)
-        else:
-            self._cur.execute(psql, args)
+                self._cur.execute(psql, args)
+        except psycopg.Error as e:
+            # Единственная точка, где все SQL-ошибки бэкенда встречаются с
+            # логом: раньше ошибка уходила в FastAPI как "Internal Server
+            # Error" без стека, и по логу нельзя было понять, какой запрос
+            # упал и на какой таблице (например, отсутствующей chat_drafts).
+            log.error(
+                "[db] SQL failed: %s | table=%s | params=%d | %.300s",
+                type(e).__name__, _table_from_sql(sql), len(args), str(e).replace("\n", " "))
+            raise
         return self
 
     def executemany(self, sql, seq_of_params):
         psql = qmark_to_format(sql)
         args = [tuple(p) for p in seq_of_params]
-        if self._owner is not None:
-            self._cur = self._owner._run_many(psql, args, self._cur)
-        else:
-            self._cur.executemany(psql, args)
+        try:
+            if self._owner is not None:
+                self._cur = self._owner._run_many(psql, args, self._cur)
+            else:
+                self._cur.executemany(psql, args)
+        except psycopg.Error as e:
+            log.error(
+                "[db] SQL(executemany) failed: %s | table=%s | rows=%d | %.300s",
+                type(e).__name__, _table_from_sql(sql), len(args), str(e).replace("\n", " "))
+            raise
         return self
 
     # -- совместимость со sqlite3.Cursor ----------------------------------
@@ -419,37 +531,53 @@ class Connection:
         return True
 
     def _run(self, psql, args, cur):
-        """Выполнить SQL; при обрыве соединения — один раз переподключиться."""
-        for attempt in (0, 1):
+        """Выполнить SQL; при обрыве соединения — один раз переподключиться.
+
+        Отдельно лечим «таблица не существует» (42P01): если инициализация
+        схемы не успела или прошла наполовину (например, упала на первой
+        же ошибке), отсутствующая таблица comms/chat_drafts создаётся на
+        месте и запрос повторяется — вместо 500-ки на каждом автосохранении
+        черновика с фронта."""
+        for attempt in (0, 1, 2):
             try:
                 if cur is None or getattr(cur, "closed", True):
                     cur = self._live_raw().cursor(row_factory=compat_dict_row)
                 cur.execute(psql, args)
                 return cur
-            except (psycopg.OperationalError, psycopg.InterfaceError) as e:
+            except psycopg.Error as e:
                 try:
                     cur.close()
                 except Exception:
                     cur = None
-                if attempt == 0 and self._is_broken(e) and self._replace_broken():
+                if attempt == 0 and is_missing_relation(e) \
+                        and _heal_missing_relation(self._live_raw(), str(e)):
+                    cur = None
+                    continue
+                if isinstance(e, (psycopg.OperationalError, psycopg.InterfaceError)) \
+                        and attempt == 0 and self._is_broken(e) and self._replace_broken():
                     cur = None
                     continue
                 raise
         raise RuntimeError("unreachable")
 
     def _run_many(self, psql, seq, cur):
-        for attempt in (0, 1):
+        for attempt in (0, 1, 2):
             try:
                 if cur is None or getattr(cur, "closed", True):
                     cur = self._live_raw().cursor(row_factory=compat_dict_row)
                 cur.executemany(psql, seq)
                 return cur
-            except (psycopg.OperationalError, psycopg.InterfaceError) as e:
+            except psycopg.Error as e:
                 try:
                     cur.close()
                 except Exception:
                     cur = None
-                if attempt == 0 and self._is_broken(e) and self._replace_broken():
+                if attempt == 0 and is_missing_relation(e) \
+                        and _heal_missing_relation(self._live_raw(), str(e)):
+                    cur = None
+                    continue
+                if isinstance(e, (psycopg.OperationalError, psycopg.InterfaceError)) \
+                        and attempt == 0 and self._is_broken(e) and self._replace_broken():
                     cur = None
                     continue
                 raise
@@ -489,19 +617,32 @@ class Connection:
 
         psycopg3 (в отличие от sqlite3) не умеет выполнять скрипт с
         несколькими операторами за один execute — разбиваем по ';' и
-        выполняем каждый оператор отдельно в одном транзакционном блоке.
-        """
-        for attempt in (0, 1):
+        выполняем каждый оператор ОТДЕЛЬНО (без общей транзакции). Раньше
+        всё шло в одном raw.transaction(): один битый оператор откатывал
+        ВЕСЬ скрипт, и база оставалась с неполной схемой (например, comms
+        создана, chat_drafts — нет → PUT /api/chat/*/draft падал в 500 на
+        каждом автосохранении черновика с фронта). CREATE ... IF NOT EXISTS
+        идемпотентны, поэтому частичное применение безопасно: повторный
+        пропуск доделывает схему."""
+        raw = self._live_raw()
+        for stmt in split_statements(script):
             try:
-                raw = self._live_raw()
-                with raw.transaction():
-                    for stmt in split_statements(script):
-                        raw.execute(stmt)
-                break
-            except (psycopg.OperationalError, psycopg.InterfaceError) as e:
-                if attempt == 0 and self._is_broken(e) and self._replace_broken():
-                    continue
-                raise
+                raw.execute(stmt)
+            except psycopg.Error as e:
+                if isinstance(e, (psycopg.OperationalError, psycopg.InterfaceError)) \
+                        and self._is_broken(e) and self._replace_broken():
+                    raw = self._live_raw()
+                    try:
+                        raw.execute(stmt)   # одна попытка на свежем соединении
+                        continue
+                    except psycopg.Error as e2:
+                        log.warning("[db] DDL skipped after reconnect: %.200s", str(e2))
+                        continue
+                # отдельный оператор не прошёл (конкурентный CREATE, права и
+                # т.п.) — остальные применяем; неполноту схемы увидит и
+                # залечит проверка _ensure_schema/_missing_pg_tables
+                log.warning("[db] DDL skipped (%s): stmt=%.120s err=%.200s",
+                            type(e).__name__, stmt.replace("\n", " "), str(e))
         return self.cursor()
 
     def commit(self):
@@ -639,33 +780,50 @@ class _AutoConn:
 
     def _run_transient(self, psql, args):
         """psycopg-курсор на временном пуловом соединении; соединение будет
-        возвращено в пул сразу после выборки результатов этого курсора."""
+        возвращено в пул сразу после выборки результатов этого курсора.
+
+        Как и Connection._run: лечим отсутствующую таблицу (42P01) — создать
+        и повторить один раз."""
         if self._c is not None:              # закреплённое with-соединение
             return self._c._live_raw().cursor(row_factory=compat_dict_row)
-        raw = get_pool().getconn()
-        try:
-            raw.autocommit = True
-            cur = raw.cursor(row_factory=compat_dict_row)
-            cur.execute(psql, args)
-        except Exception:
+        for attempt in (0, 1):
+            raw = get_pool().getconn()
             try:
-                raw.close()
-            except Exception:
-                pass
-            raise
-        def _ret():
-            try:
-                cur.close()
-            except Exception:
-                pass
-            try:
-                get_pool().putconn(raw)
-            except Exception:
+                raw.autocommit = True
+                cur = raw.cursor(row_factory=compat_dict_row)
+                cur.execute(psql, args)
+            except psycopg.Error as e:
                 try:
-                    raw.close()
+                    cur.close()
                 except Exception:
                     pass
-        return _ReleaseCursor(cur, _ret)
+                healed = (attempt == 0 and is_missing_relation(e)
+                          and _heal_missing_relation(raw, str(e)))
+                try:
+                    get_pool().putconn(raw, bad=not healed)
+                except Exception:
+                    try:
+                        raw.close()
+                    except Exception:
+                        pass
+                if healed:
+                    continue
+                raise
+            else:
+                def _ret(cur=cur, raw=raw):
+                    try:
+                        cur.close()
+                    except Exception:
+                        pass
+                    try:
+                        get_pool().putconn(raw)
+                    except Exception:
+                        try:
+                            raw.close()
+                        except Exception:
+                            pass
+                return _ReleaseCursor(cur, _ret)
+        raise RuntimeError("unreachable")
 
     def executescript(self, script):
         c = self._get()

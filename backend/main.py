@@ -135,7 +135,14 @@ def _ensure_schema():
     compose, медленный первый initdb), блокирующий executescript() вешал
     startup, uvicorn не открывал порт, health-check платформы убивал
     контейнер — и весь стек падал через 20–30 секунд после деплоя.
-    Здесь допускается временный сбой:worker повторит позже."""
+
+    Атомарность по операторам: раньше один битый оператор в schema.sql
+    откатывал всю транзакцию executescript() — база поднималась «наполовину»
+    (например, comms есть, chat_drafts нет) и каждый PUT /api/chat/.../draft
+    падал в 500, пока фоновый retry не повторял ту же ошибку. Теперь каждый
+    оператор применяется отдельно; успех = все известные таблицы созданы,
+    иначе — False и повтор. Успех логируется списком таблиц — по этой строке
+    в логах видно, что схема полная."""
     try:
         store.init_db()
         with store.connect() as conn:
@@ -143,10 +150,38 @@ def _ensure_schema():
             crm.init_tables(conn)
             users.init_tables(conn)
         _ensure_channels_schema()
+        if store.IS_POSTGRES:
+            missing = _missing_pg_tables()
+            if missing:
+                log.warning("[db] схема неполная — не созданы таблицы %s; повтор",
+                            ", ".join(missing))
+                return False
+            log.info("[db] схема готова полностью: %s", ", ".join(_PG_SCHEMA_TABLES))
         return True
     except Exception as e:
-        log.warning("[db] схема не готова (%s) — повторим в фоновом режиме", e)
+        log.warning("[db] схема не готова (%s: %s) — повторим в фоновом режиме",
+                    type(e).__name__, str(e)[:200])
         return False
+
+
+# таблицы, которые ОБЯЗАНЫ существовать после успешной инициализации схемы
+_PG_SCHEMA_TABLES = ("comms", "chat_drafts", "channels", "channel_accounts",
+                     "crm_records", "logistics_docs", "users")
+
+
+def _missing_pg_tables() -> list[str]:
+    """Какие обязательные PG-таблицы ещё не созданы (пустой список = всё ок)."""
+    try:
+        with store.connect() as conn:
+            rows = conn.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = 'public'").fetchall()
+        have = {r["table_name"] for r in rows}
+        return [t for t in _PG_SCHEMA_TABLES if t not in have]
+    except Exception:
+        # сама проверка упала (база недоступна) — считаем схему неполной,
+        # ретрай повторит позже
+        return list(_PG_SCHEMA_TABLES)
 
 
 def _schema_worker():
@@ -218,6 +253,7 @@ async def auth_middleware(request: Request, call_next):
         Authorization трактуется как director;
       • ничего не настроено   — LOCKED: /api/* отклоняются с 503.
     """
+    t0 = time.perf_counter()
     path = request.url.path
     if not _schema_ready[0]:
         # Ленивая инициализация схемы (запуск без lifespan-событий). В PG-режиме
@@ -225,6 +261,35 @@ async def auth_middleware(request: Request, call_next):
         # возвращает False, а фоновый _schema_worker повторит попытку сам.
         if _ensure_schema():
             _schema_ready[0] = True
+    try:
+        response = await _auth_middleware_inner(request, call_next, path)
+    except HTTPException:
+        # ожидаемые ошибки API (401/403/404/422) — не авария, не логируем стек
+        raise
+    except Exception as e:
+        # Раньше любое необработанное исключение внутри хендлера превращалось
+        # FastAPI в «Internal Server Error» без единой строки в логе — по
+        # одному лишь коду ответа было невозможно понять, что упало. Теперь
+        # каждый 500 попадает в лог с полным трейсбеком (видно файл/строку),
+        # а в ответе остаётся текст ошибки — его видно прямо в браузере
+        # (DevTools → Network) и в curl.
+        log.exception("[http] Unhandled %s %s", request.method, path)
+        return JSONResponse(status_code=500, content={
+            "detail": f"Внутренняя ошибка сервера: {type(e).__name__}: "
+                      f"{str(e)[:200]} — подробности в логах бэкенда"})
+    # структурированный access-log: метод, путь, код, длительность — по нему
+    # видно, какие эндпоинты деградировали и когда начались 5xx
+    ms = (time.perf_counter() - t0) * 1000
+    if response.status_code >= 500:
+        log.warning("[http] %s %s -> %d (%.0fms)",
+                    request.method, path, response.status_code, ms)
+    else:
+        log.info("[http] %s %s -> %d (%.0fms)",
+                 request.method, path, response.status_code, ms)
+    return response
+
+
+async def _auth_middleware_inner(request: Request, call_next, path: str):
     if request.method == "OPTIONS" or not path.startswith("/api/"):
         return await call_next(request)
     if any(path.startswith(p) for p in PUBLIC_PATHS):

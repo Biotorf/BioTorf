@@ -197,6 +197,29 @@ def _ensure_schema(conn) -> None:
     conn.executescript(SCHEMA)
 
 
+def _heal_chat_drafts() -> None:
+    """Создать chat_drafts, если её нет (SQLite и PostgreSQL одинаково:
+    CREATE TABLE IF NOT EXISTS идемпотентен в обоих диалектах). Гонку
+    «два потока создают одновременно» глушим: duplicate — это успех."""
+    import logging
+    log = logging.getLogger("biotorf.db")
+    try:
+        with connect() as conn:
+            conn.execute("""
+CREATE TABLE IF NOT EXISTS chat_drafts (
+    peer_key TEXT PRIMARY KEY,
+    draft    TEXT NOT NULL DEFAULT '',
+    updated  TEXT NOT NULL
+)""")
+        log.warning("[db] таблица chat_drafts отсутствовала — создана на месте "
+                    "(схема была неполной)")
+    except Exception as heal_err:
+        msg = str(heal_err).lower()
+        if "duplicate" in msg or "already exists" in msg:
+            return   # параллельный поток уже создал — отлично
+        raise
+
+
 def init_db() -> None:
     with connect() as conn:
         _ensure_schema(conn)
@@ -430,11 +453,32 @@ def mark_peer_read(peer_key: str) -> int:
 
 
 def save_draft(peer_key: str, draft: str, ts: str) -> None:
+    """Сохранить черновик. При «нет таблицы chat_drafts» (42P01 на неполной
+    схеме после сбоя миграции) — создать таблицу и повторить; это фоновая
+    автосохранялка с фронта, её падение не должно превращаться в 500."""
+    try:
+        _save_draft_once(peer_key, draft, ts)
+    except Exception as e:
+        if _is_missing_relation_err(e):
+            _heal_chat_drafts()
+            _save_draft_once(peer_key, draft, ts)
+        else:
+            raise
+
+
+def _save_draft_once(peer_key: str, draft: str, ts: str) -> None:
     with connect() as conn:
         conn.execute(
             "INSERT INTO chat_drafts (peer_key, draft, updated) VALUES (?,?,?) "
             "ON CONFLICT(peer_key) DO UPDATE SET draft=excluded.draft, updated=excluded.updated",
             (peer_key, draft, ts))
+
+
+def _is_missing_relation_err(e: BaseException) -> bool:
+    """sqlite 'no such table' / postgres 42P01 'relation does not exist'."""
+    if getattr(e, "sqlstate", None) == "42P01":
+        return True
+    return "no such table" in str(e).lower()
 
 
 def stats():
