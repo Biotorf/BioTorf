@@ -44,6 +44,7 @@ from pydantic import BaseModel, Field
 import auth
 import farms_index
 import db as store
+import psycopg   # OperationalError — «БД недоступна» в middleware (503 вместо 500)
 if store.IS_POSTGRES:
     from pg import check_connection as pg_check
 import logistics
@@ -266,6 +267,16 @@ async def auth_middleware(request: Request, call_next):
     except HTTPException:
         # ожидаемые ошибки API (401/403/404/422) — не авария, не логируем стек
         raise
+    except psycopg.OperationalError as e:
+        # База недоступна (или пул исчерпан): это штатная деградация, а не
+        # баг хендлера — отдаём 503 без трейсбека на каждый запрос фронта,
+        # иначе лог тонет в «Unhandled ... PoolTimeout», а мониторинг
+        # поднимает шум из-за 5xx.
+        log.warning("[http] %s %s -> 503 (БД недоступна: %.120s)",
+                    request.method, path, str(e))
+        return JSONResponse(status_code=503, content={
+            "detail": f"База данных временно недоступна: {type(e).__name__}: "
+                      f"{str(e)[:200]} — повторите позже"})
     except Exception as e:
         # Раньше любое необработанное исключение внутри хендлера превращалось
         # FastAPI в «Internal Server Error» без единой строки в логе — по

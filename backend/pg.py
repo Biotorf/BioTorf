@@ -23,7 +23,12 @@ import time
 
 import psycopg
 from psycopg.rows import dict_row
-from psycopg_pool import ConnectionPool
+from psycopg_pool import ConnectionPool, PoolTimeout
+
+# Ошибки ожидания пула: при недоступном PostgreSQL getconn() бросает
+# PoolTimeout (не подкласс psycopg.Error!) — ловим его везде, где берём
+# соединение, чтобы отдавать аккуратный 503 вместо падения с 500.
+_POOL_ERRORS = (psycopg.OperationalError, PoolTimeout)
 
 log = logging.getLogger("biotorf.pg")
 
@@ -304,6 +309,8 @@ class Cursor:
         self._cur = cur
         self._owner = owner
         self._auto_release = None   # callable: вернуть соединение в пул после fetch
+        self._sql = ""              # последний выполненный SQL (для возврата
+                                    # авто-соединения при INSERT/UPDATE без fetch)
 
     def _rebind(self):
         """Вернуть курсор на свежее raw-соединение (после реконнекта владельца)."""
@@ -320,9 +327,28 @@ class Cursor:
         except Exception:
             pass
 
+    @staticmethod
+    def _returns_rows(sql: str) -> bool:
+        """True, если оператор отдаёт строки (SELECT/WITH/... RETURNING/FETCH/SHOW/EXPLAIN)."""
+        m = re.search(r"\bRETURNING\b", sql or "", re.IGNORECASE)
+        if m and not re.match(r"^\s*(--|/\*)*\s*INSERT\b", sql or "", re.IGNORECASE):
+            return True          # комментарий внутри 'INSERT ...' не в счёт
+        head = re.sub(r"^\s*(?:--[^\n]*\n|/\*.*?\*/|\s)+", "", sql or "",
+                      flags=re.DOTALL).upper()
+        return head.startswith(("SELECT", "WITH", "VALUES", "TABLE", "FETCH",
+                                 "SHOW", "EXPLAIN"))
+
+    def _maybe_release_nonselect(self):
+        """INSERT/UPDATE/DELETE без RETURNING ничего не отдают на fetch — а
+        значит авто-соединение _AutoConn осталось бы занятым до TTL-сборщика.
+        Возвращаем его в пул сразу после выполнения."""
+        if self._auto_release is not None and not self._returns_rows(self._sql):
+            self._release()
+
     def execute(self, sql, params=None):
         psql = qmark_to_format(sql)
         args = tuple(params) if params else ()
+        self._sql = sql
         try:
             if self._owner is not None:
                 transient = getattr(self._owner, "_transient", False)
@@ -347,11 +373,13 @@ class Cursor:
                 "[db] SQL failed: %s | table=%s | params=%d | %.300s",
                 type(e).__name__, _table_from_sql(sql), len(args), str(e).replace("\n", " "))
             raise
+        self._maybe_release_nonselect()
         return self
 
     def executemany(self, sql, seq_of_params):
         psql = qmark_to_format(sql)
         args = [tuple(p) for p in seq_of_params]
+        self._sql = sql
         try:
             if self._owner is not None:
                 self._cur = self._owner._run_many(psql, args, self._cur)
@@ -362,6 +390,7 @@ class Cursor:
                 "[db] SQL(executemany) failed: %s | table=%s | rows=%d | %.300s",
                 type(e).__name__, _table_from_sql(sql), len(args), str(e).replace("\n", " "))
             raise
+        self._maybe_release_nonselect()
         return self
 
     # -- совместимость со sqlite3.Cursor ----------------------------------
@@ -481,6 +510,16 @@ class Connection:
         self._pool = pool
         self._conninfo = conninfo or getattr(raw, "dsn", "") or ""
         self._cur = None          # ленивый общий курсор соединения
+        self._born = time.time()  # для TTL-сборщика _reclaim_leaked
+        if pool is not None:
+            # Регистрация в списке «сирот»: обёртки, созданные connect() без
+            # with/close (legacy-код crm.put_state(store.connect(), ...) и т.п.),
+            # иначе повиснут навсегда и исчерпают пул (PoolTimeout -> 500).
+            # close()/putconn снимают регистрацию (см. close()).
+            try:
+                _LEAKED.append(self)
+            except Exception:
+                pass
 
     def _replace_broken(self):
         """Подменить «сломанное» raw-соединение на свежее из пула.
@@ -872,12 +911,54 @@ class _AutoConn:
 def connect():
     """Вернуть PG-соединение (аналог sqlite3.connect для всего кода).
 
-    Возвращает _AutoConn: соединения из пулa берутся/возвращаются прозрачно,
+    Возвращает _AutoConn: соединения из пула берутся/возвращаются прозрачно,
     поэтому места вида `crm.register_comm(store.connect(), ...)` (без close())
     больше не удерживают пул. `with store.connect() as conn:` работает как
     раньше.
+
+    Если PostgreSQL недоступен или пул исчерпан — вместо падения с 500
+    (PoolTimeout) возвращается заглушка, в которой любая попытка взять
+    соединение бросает psycopg.OperationalError: эндпоинты намеренно отдают
+    понятную ошибку, а main.py переводит её в аккуратный 503.
     """
+    try:
+        pool = get_pool()
+    except _POOL_ERRORS as e:
+        log.warning("[db] пул недоступен (%s): %s", type(e).__name__, str(e)[:160])
+        return _UnavailableConn(str(e))
+    # Проверка реальной доступности: при выключенном PostgreSQL getconn()
+    # бросает PoolTimeout через ~timeout секунд; без этой проверки он улетел
+    # бы наружу из первого же execute() как необработанная 500-ка.
+    try:
+        raw = pool.getconn(timeout=2)
+    except _POOL_ERRORS as e:
+        return _UnavailableConn(f"{type(e).__name__}: {str(e)[:160]}")
+    try:
+        pool.putconn(raw)
+    except Exception:
+        pass
     return _AutoConn()
+
+
+class _UnavailableConn:
+    """Заглушка на время недоступности БД: execute/cursor бросают
+    OperationalError (его ловят и middleware, и фоновые ретраи схемы)."""
+
+    _transient = True
+
+    def __init__(self, reason: str = ""):
+        self._reason = reason or "no usable PostgreSQL connection"
+
+    def _fail(self, *a):
+        raise psycopg.OperationalError(self._reason)
+
+    execute = executemany = executescript = cursor = commit = rollback = close = _fail
+
+    def __enter__(self):
+        self._fail()
+
+    def __exit__(self, *a):
+        return False
 
 
 def connection_factory(path: str):
