@@ -1,16 +1,19 @@
 # BIOTORF Business OS · backend (FastAPI + PostgreSQL)
 FROM python:3.12-slim
 
-# curl нужен для docker healthcheck'а (см. docker-compose.yml);
-# ffmpeg — перекодировка записей микрофона в Ogg Opus для голосовых Telegram;
-# postgresql-client — pg_dump/psql для резервных копий и миграции данных.
-RUN apt-get update && apt-get install -y --no-install-recommends curl ffmpeg postgresql-client \
+# curl нужен для docker healthcheck'а (см. docker-compose.yml).
+# ffmpeg и postgresql-client намеренно НЕ ставим: первый нужен только если
+# пользуетесь голосовыми сообщениями в Telegram, второй — только для ручных
+# дампов (pg_dump можно выполнить через `docker compose exec postgres pg_dump`).
+# Это экономит ~20 минут сборки при --no-cache и ~300 МБ размера образа.
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# psycopg[binary] содержит готовые wheel-пакеты — компиляция из исходников не нужна.
+RUN pip install --no-cache-dir --prefer-binary -r requirements.txt
 
 COPY . .
 
