@@ -196,6 +196,10 @@ async def auth_middleware(request: Request, call_next):
         if not live or not live.get("active"):
             return JSONResponse(status_code=401, content={
                 "detail": "Аккаунт отозван администратором — войдите заново"})
+        # версия токена: смена роли/удаление аккаунта аннулируют старые токены
+        if int(payload.get("tv", 0)) != int(live.get("token_version", 0)):
+            return JSONResponse(status_code=401, content={
+                "detail": "Ваша роль изменена администратором — войдите заново"})
         if live["role"] == "pending":
             return JSONResponse(status_code=403, content={
                 "detail": "Учётная запись ожидает подтверждения роли "
@@ -203,6 +207,17 @@ async def auth_middleware(request: Request, call_next):
         request.state.role = live["role"]
     else:
         request.state.role = payload["role"]
+    # профиль своего аккаунта (/api/me) доступен ЛЮБОМУ вошедшему, включая
+    # pending: он может заполнить данные о себе, пока ждёт выдачи роли
+    if path.startswith("/api/me") and request.state.user != "?":
+        return await call_next(request)
+    # реестр сотрудников: GET /api/users — только директору (остальные видят
+    # мини-профиль и не должны знать состав/логины коллег); выдача ролей и
+    # удаление проверяются в самих эндпоинтах
+    if path == "/api/users" and request.method == "GET" \
+            and getattr(request.state, "role", "") != "director":
+        return JSONResponse(status_code=403, content={
+            "detail": "Список сотрудников доступен только генеральному директору"})
     if request.method not in ("GET", "HEAD", "OPTIONS"):
         section = auth.section_for(path)
         if section and not auth.can_write(request.state.role, section):
@@ -1107,6 +1122,7 @@ def users_set_role(login: str, body: RoleIn, request: Request):
     if login == request.state.user and role != "director":
         raise HTTPException(400, "Нельзя понизить собственную роль директора")
     updated = users.set_role(login, role)
+    users.bump_token_version(login)   # старые токены недействительны сразу
     log.info("%s выдал роль %s=%s", _who(request), login, role)
     return updated
 
@@ -1121,6 +1137,52 @@ def users_delete(login: str, request: Request):
     if not users.delete(login):
         raise HTTPException(404, "Сотрудник не найден")
     log.info("%s удалил аккаунт %s", _who(request), login)
+
+
+# ── REST: профиль своего аккаунта (доступен и pending-сотрудникам) ───────────
+class ProfileIn(BaseModel):
+    name: str | None = Field(None, max_length=64)
+    position: str | None = Field(None, max_length=64)
+    phone: str | None = Field(None, max_length=32)
+    email: str | None = Field(None, max_length=64)
+    note: str | None = Field(None, max_length=500)
+
+
+@app.get("/api/me/profile")
+def me_profile(request: Request):
+    """Карточка своего сотрудника: имя, должность, телефон, e-mail, заметка."""
+    u = users.get(request.state.user)
+    if not u:
+        raise HTTPException(404, "Аккаунт не найден")
+    u.pop("pw_hash", None)
+    u["roleName"] = auth.ROLES.get(u["role"], "Ожидает подтверждения")
+    return u
+
+
+@app.patch("/api/me/profile")
+def me_profile_patch(body: ProfileIn, request: Request):
+    """Сотрудник сам заполняет данные своего профиля (PATCH-семантика)."""
+    code, payload = users.update_profile(request.state.user, body.model_dump(exclude_unset=True))
+    if code != 200:
+        raise HTTPException(code, payload.get("detail", "Ошибка"))
+    log.info("%s обновил профиль", _who(request))
+    return payload
+
+
+class PasswordIn(BaseModel):
+    old_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=8, max_length=256)
+
+
+@app.post("/api/me/password")
+def me_password(body: PasswordIn, request: Request):
+    """Смена собственного пароля (требует старый; все сессии при этом отзываються)."""
+    code, payload = users.change_password(request.state.user,
+                                          body.old_password, body.new_password)
+    if code != 200:
+        raise HTTPException(code, payload.get("detail", "Ошибка"))
+    log.info("%s сменил пароль (все токены отозваны)", _who(request))
+    return payload
 
 
 @app.get("/api/stats")

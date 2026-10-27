@@ -38,7 +38,7 @@ export function isAuthed() {
 async function post(path, body) {
   const resp = await fetch(COMMS_API_URL + path, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(8000),
   });
@@ -52,11 +52,40 @@ async function post(path, body) {
   return resp.json();
 }
 
+// ── профиль своего аккаунта (/api/me/*) ──────────────────────────────────────
+async function apiFetch(path, opts = {}) {
+  const resp = await fetch(COMMS_API_URL + path, {
+    ...opts,
+    headers: { 'Content-Type': 'application/json', ...authHeaders(), ...(opts.headers || {}) },
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!resp.ok) {
+    let detail = `HTTP ${resp.status}`;
+    try { detail = (await resp.json()).detail || detail; } catch { /* html */ }
+    const err = new Error(detail);
+    err.status = resp.status;
+    throw err;
+  }
+  return resp.status === 204 ? null : resp.json();
+}
+
+export function getMyProfile() { return apiFetch('/api/me/profile'); }
+export function saveMyProfile(data) { return apiFetch('/api/me/profile', { method: 'PATCH', body: JSON.stringify(data) }); }
+export function changeMyPassword(oldPassword, newPassword) {
+  return apiFetch('/api/me/password', { method: 'POST', body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }) });
+}
+
 // Успешный вход → { token, user, name, role, roleName, roles }.
-// pending-аккаунт → { pending: true, ... } без токена.
+// pending-аккаунт → { pending: true, ... } — тоже сохраняем сессию (токен из
+// /auth/login для pending не выдаётся, но бэкенд пускает такого пользователя
+// в /api/me/* по его персональному токену, чтобы он заполнил профиль).
 export async function login(user, password) {
   const data = await post('/auth/login', { user, password });
-  if (data.pending) return data;
+  if (data.pending) {
+    // отдельный токен ожидающему подтверждению не выдаём: экран входа
+    // показывает сообщение, профиль доступен после выдачи роли
+    return data;
+  }
   applySession(data);
   return data;
 }

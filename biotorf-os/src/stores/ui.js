@@ -79,5 +79,13 @@ export const useUiStore = defineStore('ui', {
       this.login = ''; this.name = '';
       this.role = 'director';
     },
+    logoutEverywhere() {
+      // полный выход: очищаем хранилище и перезагружаем приложение —
+      // App.vue по отсутствующему токену покажет экран входа (AuthGate)
+      localStorage.removeItem('biotorf.auth.token');
+      localStorage.removeItem('biotorf.auth.user');
+      this.clearSession();
+      location.reload();
+    },
   },
 });

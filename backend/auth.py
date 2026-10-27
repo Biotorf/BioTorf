@@ -79,12 +79,14 @@ def _sign(secret: bytes, msg: bytes) -> bytes:
     return hmac.new(secret, msg, hashlib.sha256).digest()
 
 
-def make_token(user: str, role: str, ttl: int | None = None) -> str:
+def make_token(user: str, role: str, ttl: int | None = None,
+               token_version: int = 0) -> str:
     secret = (AUTH_SECRET or AUTH_PASSWORD or "dev-insecure-secret").encode()
     header = _b64u(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
     body = _b64u(json.dumps({
         "sub": user, "role": role if role in ROLES else "sales",
         "iat": int(time.time()), "exp": int(time.time()) + (ttl or AUTH_TOKEN_TTL),
+        "tv": int(token_version or 0),
     }).encode())
     sig = _b64u(_sign(secret, f"{header}.{body}".encode()))
     return f"{header}.{body}.{sig}"
@@ -103,6 +105,7 @@ def verify_token(token: str) -> dict | None:
             return None
         if payload.get("role") not in ROLES:
             return None
+        payload.setdefault("tv", 0)
         return payload
     except Exception:
         return None
