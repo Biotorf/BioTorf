@@ -145,6 +145,8 @@ WRITE_ROUTES = (
     ("/api/logistics", "shipments"),
     ("/api/dev/", "admin"),
     ("/api/users", "users"),      # выдача ролей; право — только у director
+    ("/api/channels", "admin"),   # реестр каналов и подключение аккаунтов
+    ("/api/channel-accounts", "admin"),
 )
 
 

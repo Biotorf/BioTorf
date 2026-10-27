@@ -1,7 +1,7 @@
 """Простейкое хранилище коммуникаций: SQLite (файл comms.db рядом с backend/).
 
 Таблица comms полностью повторяет модель фронтенда (stores/db.js / CommsView.vue):
-  kind     : call | telegram | whatsapp
+  kind     : id канала из реестра channels (call|telegram|whatsapp|instagram|vk|avito|...)
   dir      : in | out
   farmId   : привязка к хозяйству (может быть NULL — непривязанные)
   contact  : имя контакта
@@ -28,7 +28,7 @@ DB_PATH = Path(os.environ.get("DB_PATH", str(Path(__file__).resolve().parent / "
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS comms (
     id         TEXT PRIMARY KEY,
-    kind       TEXT NOT NULL CHECK (kind IN ('call','telegram','whatsapp')),
+    kind       TEXT NOT NULL,
     dir        TEXT NOT NULL DEFAULT 'in' CHECK (dir IN ('in','out')),
     farm_id    TEXT,
     contact    TEXT,
@@ -57,6 +57,12 @@ CREATE TABLE IF NOT EXISTS chat_drafts (
     updated  TEXT NOT NULL
 );
 """
+
+FIELDS_SQL_COLS = [
+    "id", "kind", "dir", "farm_id", "contact", "phone", "handle",
+    "ts", "duration", "status", "text", "note", "read", "source",
+    "external_id", "payload", "peer_key",
+]
 
 FIELDS = [
     "id", "kind", "dir", "farmId", "contact", "phone", "handle",
@@ -110,14 +116,56 @@ def connect() -> sqlite3.Connection:
     return conn
 
 
+_COMMS_TABLE = """
+CREATE TABLE comms (
+    id         TEXT PRIMARY KEY,
+    kind       TEXT NOT NULL,
+    dir        TEXT NOT NULL DEFAULT 'in' CHECK (dir IN ('in','out')),
+    farm_id    TEXT,
+    contact    TEXT,
+    phone      TEXT,
+    handle     TEXT,
+    ts         TEXT NOT NULL,
+    duration   INTEGER NOT NULL DEFAULT 0,
+    status     TEXT,
+    text       TEXT,
+    note       TEXT,
+    read       INTEGER NOT NULL DEFAULT 0,
+    source     TEXT NOT NULL DEFAULT 'manual',
+    external_id TEXT,
+    payload    TEXT,
+    peer_key   TEXT
+);
+"""
+
+
 def _ensure_schema(conn) -> None:
-    """Создать схему; для старых БД — миграция: добавить колонку peer_key."""
+    """Создать схему; для старых БД — миграции:
+       * добавить колонку peer_key;
+       * снять CHECK(kind IN (...)) — каналы теперь расширяемы через реестр
+         channels (sqlite не умеет ALTER CONSTRAINT — перестройка таблицы)."""
     has_table = conn.execute(
         "SELECT name FROM sqlite_master WHERE name='comms'").fetchone()
     if has_table:
+        ddl = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='comms'").fetchone()["sql"] or ""
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(comms)")}
         if "peer_key" not in cols:
             conn.execute("ALTER TABLE comms ADD COLUMN peer_key TEXT")
+        # снять CHECK(kind IN (...)) — каналы расширяемы через реестр channels.
+        # SQLite не умеет изменять ограничения на лету → перестройка таблицы.
+        # Отдельно проверяем именно ограничение по kind, чтобы не трогать БД,
+        # где CHECK остался только на dir (это безопасно).
+        m_kind_check = re.search(r"kind\s+TEXT.*?CHECK\s*\(.*?\)", ddl, re.IGNORECASE)
+        if m_kind_check and "telegram" in m_kind_check.group(0):
+            cols_new = {r["name"] for r in conn.execute("PRAGMA table_info(comms)")}
+            conn.execute("ALTER TABLE comms RENAME TO comms_old")
+            conn.execute(_COMMS_TABLE)
+            common = [c for c in FIELDS_SQL_COLS if c in cols_new]
+            conn.execute(
+                "INSERT INTO comms (%s) SELECT %s FROM comms_old"
+                % (", ".join(common), ", ".join(common)))
+            conn.execute("DROP TABLE comms_old")
     conn.executescript(SCHEMA)
 
 

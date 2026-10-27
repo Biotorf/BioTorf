@@ -45,6 +45,7 @@ import auth
 import farms_index
 import db as store
 import logistics
+import channels
 import crm
 import users
 import whatsapp_client
@@ -115,6 +116,13 @@ def media_path(media_id: str) -> Path | None:
     return None
 
 app = FastAPI(title="BIOTORF Business OS · Comms API", version="0.2.0")
+
+
+def _ensure_channels_schema():
+    try:
+        channels.ensure_schema()
+    except Exception as e:
+        log.warning("[channels] схема не готова: %s", e)
 
 
 def _ensure_schema():
@@ -338,6 +346,7 @@ def auth_me(request: Request):
 def startup():
     global TELEGRAM_BOT_INFO, WHATSAPP_INFO
     _ensure_schema()
+    _ensure_channels_schema()
     if not auth.AUTH_PASSWORD and not auth.DEV_MODE:
         log.warning("[auth] ⚠ AUTH_PASSWORD не задан — API ЗАБЛОКИРОВАН (503 на все /api/*). "
                     "Задайте пароль в .env или включите DEV_MODE=1 для локальной разработки.")
@@ -403,7 +412,7 @@ def auto_link(phone: str | None) -> str | None:
 
 # ── модели ───────────────────────────────────────────────────────────────────
 class CommIn(BaseModel):
-    kind: str = Field(pattern="^(call|telegram|whatsapp)$")
+    kind: str
     dir: str = Field("in", pattern="^(in|out)$")
     payload: dict | None = None
     farmId: str | None = None
@@ -441,18 +450,20 @@ class CommPatch(BaseModel):
 # ── REST: лента коммуникаций ─────────────────────────────────────────────────
 @app.get("/api/comms")
 def list_comms(
-    kind: str | None = Query(None, pattern="^(call|telegram|whatsapp)$"),
+    kind: str | None = Query(None),
     farmId: str | None = None,
     unreadOnly: bool = False,
     limit: int = Query(200, le=1000),
     offset: int = 0,
 ):
+    if kind and kind not in channels.all_kinds():
+        return {"items": [], "total": 0}
     items, total = store.list_comms(kind, farmId, unreadOnly, limit, offset)
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
 @app.get("/api/comms/outbox")
-def outbox(kind: str = Query("telegram", pattern="^(telegram|whatsapp)$"), limit: int = Query(20, le=100)):
+def outbox(kind: str = Query("telegram"), limit: int = Query(20, le=100)):
     """Очередь неотправленных исходящих ответов (забирает telegram_worker)."""
     items = store.pending_outbox(kind, limit)
     return {"items": items, "count": len(items)}
@@ -640,6 +651,9 @@ def get_comm(comm_id: str):
 @app.post("/api/comms", status_code=201)
 def create_comm(body: CommIn):
     item = body.model_dump(exclude_none=True)
+    if not channels.valid_kind(item["kind"]):
+        raise HTTPException(422, f"Неизвестный или отключённый канал «{item['kind']}». "
+                                 "Подключите его в Настройках (Каналы CRM).")
     item["id"] = new_id()
     item.setdefault("ts", now_iso())
     item["source"] = "manual"
@@ -667,6 +681,111 @@ def patch_comm(comm_id: str, body: CommPatch):
 def delete_comm(comm_id: str):
     if not store.delete(comm_id):
         raise HTTPException(404, "Коммуникация не найдена")
+
+
+# ── Реестр каналов и подключённые аккаунты (CRM-настройки) ───────────────────
+@app.get("/api/channels")
+def api_channels(enabled_only: bool = Query(False)):
+    """Список каналов с подключёнными аккаунтами (секреты наружу не отдаются)."""
+    return {"items": channels.list_channels(include_disabled=not enabled_only),
+            "presets": channels.CHANNEL_PRESETS}
+
+
+@app.post("/api/channels", status_code=201)
+def api_channels_add(kind: str = Query(...), body: dict = ...):
+    try:
+        return channels.add_channel(kind, body)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    except KeyError:
+        raise HTTPException(409, "Канал уже существует")
+
+
+@app.patch("/api/channels/{kind}")
+def api_channels_patch(kind: str, body: dict):
+    try:
+        return channels.patch_channel(kind, body)
+    except KeyError:
+        raise HTTPException(404, "Канал не найден")
+
+
+@app.post("/api/channels/{kind}/accounts", status_code=201)
+def api_channel_connect(kind: str, body: dict, request: Request):
+    try:
+        acc = channels.connect_account(kind, body, who=_who(request))
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    except KeyError:
+        raise HTTPException(404, "Канал не найден. Добавьте его в списке каналов.")
+    # телеграм: проверить токен живым запросом getMe (graceful — если сети нет)
+    if kind == "telegram" and acc.get("tokenMask"):
+        threading.Thread(target=_verify_tg_account, args=(body.get("token", ""),), daemon=True).start()
+    return acc
+
+
+@app.patch("/api/channel-accounts/{account_id}")
+def api_channel_account_update(account_id: str, body: dict):
+    try:
+        return channels.update_account(account_id, body)
+    except KeyError:
+        raise HTTPException(404, "Аккаунт не найден")
+
+
+@app.delete("/api/channel-accounts/{account_id}", status_code=204)
+def api_channel_account_delete(account_id: str):
+    try:
+        channels.delete_account(account_id)
+    except KeyError:
+        raise HTTPException(404, "Аккаунт не найден")
+
+
+def _verify_tg_account(token: str):
+    try:
+        res = tg_api("getMe", {}, token_override=token)
+        if res.get("ok"):
+            log.info("[channels] telegram-аккаунт @%s подтверждён", res["result"].get("username"))
+    except Exception as e:
+        log.warning("[channels] проверка telegram-токена: %s", e)
+
+
+# generic входящий вебхук для любого канала (instagram/vk/avito/… через n8n/Zapier/скрипт)
+@app.post("/webhooks/channel/{kind}")
+async def webhook_channel(kind: str, request: Request,
+                          x_webhook_secret: str = Header(None),
+                          secret: str = Query(None)):
+    """Приём сообщений из любого канала. Тело: {kind?, dir?, contact?, handle?,
+    phone?, text, ts?, externalId?, payload?}. Секрет — заголовок X-Webhook-Secret."""
+    if not channels.valid_kind(kind):
+        raise HTTPException(404, "Канал не найден или отключён. Подключите его в Настройках.")
+    expected = channels.get_secret(kind, field="secret") or ""
+    got = x_webhook_secret or secret or ""
+    if expected and not hmac.compare_digest(expected, got):
+        raise HTTPException(401, "Неверный секрет вебхука")
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(422, "Ожидается JSON-объект")
+    item = {
+        "kind": body.get("kind") or kind,
+        "dir": body.get("dir", "in"),
+        "contact": body.get("contact"), "handle": body.get("handle"),
+        "phone": body.get("phone"), "text": body.get("text") or "",
+        "ts": body.get("ts") or now_iso(),
+        "externalId": body.get("externalId"),
+        "source": f"webhook:{kind}",
+        "payload": body.get("payload"),
+    }
+    if not item["text"]:
+        raise HTTPException(422, "Поле text обязательно")
+    item["id"] = new_id()
+    if not item.get("farmId"):
+        item["farmId"] = (auto_link(item.get("phone"))
+                          or crm.auto_link_tg(store.connect(), item.get("handle"), item.get("phone")))
+    saved = store.insert(item)
+    try:
+        crm.register_comm(store.connect(), saved)
+    except Exception as e:
+        log.warning("[crm] register_comm skip: %s", e)
+    return {"ok": True, "id": saved["id"]}
 
 
 @app.post("/api/comms/read-all")
@@ -840,9 +959,13 @@ def crm_delete(coll: str, rid: str):
 
 
 # ── исходящая отправка: ответ клиенту прямо из ленты ─────────────────────────
-def tg_api(method: str, payload: dict) -> dict:
-    """Вызов Telegram Bot API (urllib, без внешних зависимостей)."""
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}"
+def tg_api(method: str, payload: dict, token_override: str | None = None) -> dict:
+    """Вызов Telegram Bot API (urllib, без внешних зависимостей).
+
+    token_override — токен подключённого аккаунта из реестра каналов; если не
+    задан, используется TELEGRAM_BOT_TOKEN из окружения (обратная совместимость)."""
+    token = token_override or channels.get_secret("telegram") or TELEGRAM_BOT_TOKEN
+    url = f"https://api.telegram.org/bot{token}/{method}"
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode(),

@@ -73,6 +73,7 @@ const views = {
   media: markRaw(defineAsyncComponent(() => import('@/views/MediaView.vue'))),
   notifications: markRaw(defineAsyncComponent(() => import('@/views/NotificationsView.vue'))),
   employees: markRaw(defineAsyncComponent(() => import('@/views/EmployeesView.vue'))),
+  channels: markRaw(defineAsyncComponent(() => import('@/views/ChannelsView.vue'))),
 };
 
 const currentView = computed(() => views[ui.view] || views.dashboard);

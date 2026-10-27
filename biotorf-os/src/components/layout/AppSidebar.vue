@@ -36,8 +36,8 @@ const MENU = [
 ];
 
 const VIS = {
-  director: [...MENU.map((m) => m[0]), 'employees'],
-  operations: ['dashboard', 'crm', 'comms', 'pilots', 'knowledge', 'social', 'orders', 'production', 'warehouse', 'shipments', 'finance', 'tasks', 'analytics'],
+  director: [...MENU.map((m) => m[0]), 'employees', 'channels'],
+  operations: ['dashboard', 'crm', 'comms', 'pilots', 'knowledge', 'social', 'orders', 'production', 'warehouse', 'shipments', 'finance', 'tasks', 'analytics', 'channels'],
   // ... остальные роли 1:1 из исходника
 };
 
@@ -46,7 +46,7 @@ const ALWAYS = ['comms'];
 
 // «Сотрудники и роли» — виден всем, но управлять может только директор
 // (сервер всё равно проверяет право на выдачу ролей)
-const FULL_MENU = [...MENU, ['employees', '♟', 'Сотрудники и роли']];
+const FULL_MENU = [...MENU, ['employees', '♟', 'Сотрудники и роли'], ['channels', '🔌', 'Каналы CRM']];
 
 const visibleMenu = computed(() => {
   const avail = VIS[ui.role] || VIS.director;
