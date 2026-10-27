@@ -8,7 +8,7 @@ REST-хранение для раздела «Логистика» фронте�
 «акт под документы» (act): Акт приёма-передачи / ТОРГ-12 / накладная — поле act
 хранит выпущенный акт (тип, номер, дата); повторная генерация перезаписывает.
 
-Хранилище — SQLite (файл comms.db, таблица logistics_docs), чтобы все
+Хранилище — PostgreSQL (таблица logistics_docs; legacy-режим SQLite), чтобы все
 сотрудники видели общие данные.
 """
 
@@ -29,7 +29,11 @@ CREATE INDEX IF NOT EXISTS idx_log_kind ON logistics_docs (kind, updated DESC);
 KINDS = ("supply", "dispatch")
 
 
-def init_tables(conn: sqlite3.Connection) -> None:
+def init_tables(conn) -> None:
+    """В postgres-режиме схема создаётся schema.sql — здесь только SQLite."""
+    import db as _store
+    if _store.IS_POSTGRES:
+        return
     conn.executescript(SCHEMA_LOGISTICS)
 
 

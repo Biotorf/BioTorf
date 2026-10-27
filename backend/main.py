@@ -102,7 +102,7 @@ auth.DEV_MODE = os.environ["DEV_MODE"].strip().lower() in ("1", "true", "yes", "
 
 # Хранилище медиафайлов (голосовые Telegram): скачанные входящие и запись исходящих.
 # Лежит рядом с БД — в Docker это тот же volume /data, файлы переживают пересборку.
-MEDIA_DIR = Path(_env("MEDIA_DIR") or (store.DB_PATH.parent / "media"))
+MEDIA_DIR = Path(_env("MEDIA_DIR") or (store.DB_PATH.parent / "media"))  # legacy-путь; в Docker задаётся MEDIA_DIR=/data/media
 
 
 def media_path(media_id: str) -> Path | None:
@@ -473,20 +473,21 @@ def outbox(kind: str = Query("telegram"), limit: int = Query(20, le=100)):
 # ── лента событий: входящие с момента последней позиции (long-poll) ────
 @app.get("/api/comms/events")
 def comms_events(since: int = Query(0, ge=0), limit: int = Query(100, le=500)):
-    """Возвращает сообщения с rowid > since. Позиция — целая последовательная
-    ссылка SQLite, не зависит от часов клиента. Используется фронтендом для
-    надёжного получения входящих Telegram/WhatsApp без рассинхрона по ts."""
+    """Возвращает сообщения с seq > since. Позиция — целая последовательная
+    ссылка БД (PostgreSQL identity / SQLite rowid), не зависит от часов клиента.
+    Используется фронтендом для надёжного получения входящих Telegram/WhatsApp
+    без рассинхрона по ts."""
     with store.connect() as conn:
         rows = conn.execute(
-            "SELECT rowid, * FROM comms WHERE rowid > ? ORDER BY rowid ASC LIMIT ?",
+            "SELECT seq, * FROM comms WHERE seq > ? ORDER BY seq ASC LIMIT ?",
             (since, limit),
         ).fetchall()
     items = []
     for r in rows:
         d = store.to_dict(r)
-        d["seq"] = r["rowid"]
+        d["seq"] = r["seq"]
         items.append(d)
-    return {"items": items, "maxSeq": rows[-1]["rowid"] if rows else since}
+    return {"items": items, "maxSeq": rows[-1]["seq"] if rows else since}
 
 
 # ── мессенджер: чаты (диалоги с клиентами) ───────────────────────────────────
@@ -1319,7 +1320,7 @@ def stats():
 @app.get("/health")
 def health():
     return {"ok": True, "service": "biotorf-comms", "version": app.version,
-            "db": str(store.DB_PATH), "ts": now_iso(),
+            "db": os.environ.get("DATABASE_URL", str(store.DB_PATH)).split("@")[-1], "ts": now_iso(),
             # authRequired: фронт показывает экран входа; hasUsers — что на нём
             # предложить «зарегистрировать первого сотрудника (гендиректора)»
             "authRequired": bool(auth.AUTH_PASSWORD) or users.count() > 0 or not auth.DEV_MODE,

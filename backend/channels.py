@@ -18,7 +18,20 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Путь к SQLite — только legacy-режим (DB_BACKEND=sqlite); по умолчанию — PostgreSQL.
 DB_PATH = Path(os.environ.get("DB_PATH", str(Path(__file__).resolve().parent / "comms.db")))
+
+
+def _is_postgres() -> bool:
+    b = (os.environ.get("DB_BACKEND") or "").strip().lower()
+    if b in ("sqlite", "sqlite3"):
+        return False
+    if b in ("postgres", "postgresql", "pg"):
+        return True
+    return bool(os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_HOST"))
+
+
+IS_POSTGRES = _is_postgres()
 
 KIND_RE = re.compile(r"^[a-z0-9_]{2,24}$")
 
@@ -47,7 +60,10 @@ CHANNEL_PRESETS = [
 ]
 
 
-def _conn() -> sqlite3.Connection:
+def _conn():
+    if IS_POSTGRES:
+        import pg
+        return pg.connect()
     conn = sqlite3.connect(str(DB_PATH), timeout=15)
     conn.row_factory = sqlite3.Row
     return conn
@@ -84,7 +100,12 @@ CREATE TABLE IF NOT EXISTS channel_accounts (
 
 def ensure_schema():
     with _conn() as conn:
-        conn.executescript(SCHEMA)
+        if IS_POSTGRES:
+            # полная схема (включая channels/channel_accounts) применяется из
+            # schema.sql в db._ensure_schema — здесь только seed, если пусто.
+            pass
+        else:
+            conn.executescript(SCHEMA)
         n = conn.execute("SELECT COUNT(*) c FROM channels").fetchone()["c"]
         if n == 0:
             for ch in DEFAULT_CHANNELS:
