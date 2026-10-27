@@ -51,7 +51,10 @@ def send_message(token: str, phone_number_id: str, to: str, text: str) -> dict:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        # таймаут 5с (был 15с): синхронные исходящие вызовы выполняются в
+        # threadpool uvicorn — зависшие запросы к Meta не должны блокировать
+        # рабочие потоки и приводить к 502 на всех эндпоинтах
+        with urllib.request.urlopen(req, timeout=5) as resp:
             return json.loads(resp.read() or b"{}")
     except urllib.error.HTTPError as e:
         body = e.read().decode(errors="ignore")
@@ -77,7 +80,7 @@ def check_config(token: str, phone_number_id: str) -> dict:
     url = f"https://graph.facebook.com/{GRAPH_VERSION}/{phone_number_id}?fields=id,display_phone_number"
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=5) as resp:   # был 15с — см. send_text
             data = json.loads(resp.read() or b"{}")
         return {"ok": True, "phone": data.get("display_phone_number"), "id": data.get("id")}
     except urllib.error.HTTPError as e:

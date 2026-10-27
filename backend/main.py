@@ -345,24 +345,17 @@ def auth_me(request: Request):
             "roleName": auth.ROLES.get(role, None)}
 
 
-@app.on_event("startup")
-def startup():
+def _startup_checks():
+    """Проверки внешних API (Telegram getMe, WhatsApp config) — в ФОНОВОМ
+    потоке, а не в startup-хуке.
+
+    Раньше они выполнялись синхронно при старте: если api.telegram.org или
+    graph.facebook.com недоступны/зависают (заблокированная сеть на хостинге,
+    нет DNS), uvicorn не завершал startup и НЕ открывал порт — health-check
+    платформы не дожидался /health, убивал контейнер, и весь стек падал через
+    20–30 секунд после деплоя («работало и упало»). Теперь сервер поднимается
+    мгновенно, а диагностика интеграций пишется в лог по мере готовности."""
     global TELEGRAM_BOT_INFO, WHATSAPP_INFO
-    _ensure_schema()
-    _ensure_channels_schema()
-    if not auth.AUTH_PASSWORD and not auth.DEV_MODE:
-        log.warning("[auth] ⚠ AUTH_PASSWORD не задан — API ЗАБЛОКИРОВАН (503 на все /api/*). "
-                    "Задайте пароль в .env или включите DEV_MODE=1 для локальной разработки.")
-    elif auth.AUTH_PASSWORD:
-        if len(auth.AUTH_PASSWORD) < 12:
-            log.warning("[auth] AUTH_PASSWORD короче 12 символов — используйте длинный случайный пароль")
-        if not auth.AUTH_SECRET:
-            log.warning("[auth] AUTH_SECRET не задан — подпись JWT выводится из пароля; "
-                        "смените пароль = аннулируются все токены. Лучше задать отдельный AUTH_SECRET")
-    else:
-        log.info("[auth] DEV_MODE: авторизация API ослаблена (только локальная разработка!)")
-    # Проверяем токен бота сразу при старте, чтобы проблемы было видно в логах
-    # и в /health, а не только когда пользователь попытается ответить.
     if TELEGRAM_BOT_TOKEN:
         try:
             res = tg_api("getMe", {})
@@ -378,8 +371,10 @@ def startup():
     else:
         log.info("[telegram] TELEGRAM_BOT_TOKEN пуст — исходящие ответы в Telegram отключены. "
                  "Впишите токен из @BotFather в .env и выполните docker compose up -d --force-recreate")
-    # Аналогичная диагностика для WhatsApp Cloud API
-    WHATSAPP_INFO = whatsapp_client.check_config(WHATSAPP_SEND_TOKEN, WHATSAPP_PHONE_NUMBER_ID)
+    try:
+        WHATSAPP_INFO = whatsapp_client.check_config(WHATSAPP_SEND_TOKEN, WHATSAPP_PHONE_NUMBER_ID)
+    except Exception as e:
+        WHATSAPP_INFO = {"ok": False, "error": f"проверка не выполнена: {e}"}
     if WHATSAPP_INFO["ok"]:
         log.info("[whatsapp] конфигурация принята Meta: номер %s (id=%s) — исходящая отправка активна",
                  WHATSAPP_INFO.get("phone"), WHATSAPP_INFO.get("id"))
@@ -387,6 +382,25 @@ def startup():
         log.info("[whatsapp] исходящая отправка НЕ настроена: %s. "
                  "Заполните WHATSAPP_TOKEN и WHATSAPP_PHONE_NUMBER_ID в .env (см. README-WHATSAPP.md)",
                  WHATSAPP_INFO["error"])
+
+
+@app.on_event("startup")
+def startup():
+    # Только локальные операции (схема БД + быстрые запросы) — без сети.
+    _ensure_schema()
+    _ensure_channels_schema()
+    if not auth.AUTH_PASSWORD and not auth.DEV_MODE:
+        log.warning("[auth] ⚠ AUTH_PASSWORD не задан — API ЗАБЛОКИРОВАН (503 на все /api/*). "
+                    "Задайте пароль в .env или включите DEV_MODE=1 для локальной разработки.")
+    elif auth.AUTH_PASSWORD:
+        if len(auth.AUTH_PASSWORD) < 12:
+            log.warning("[auth] AUTH_PASSWORD короче 12 символов — используйте длинный случайный пароль")
+        if not auth.AUTH_SECRET:
+            log.warning("[auth] AUTH_SECRET не задан — подпись JWT выводится из пароля; "
+                        "смените пароль = аннулируются все токены. Лучше задать отдельный AUTH_SECRET")
+    else:
+        log.info("[auth] DEV_MODE: авторизация API ослаблена (только локальная разработка!)")
+    threading.Thread(target=_startup_checks, daemon=True).start()
 
 
 def now_iso() -> str:
@@ -976,7 +990,11 @@ def tg_api(method: str, payload: dict, token_override: str | None = None) -> dic
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=15) as resp:
+    # Короткий таймаут (5с вместо 15с): все эндпоинты синхронные и выполняются
+    # в threadpool uvicorn (всего ~40 рабочих потоков). Медленные/зависающие
+    # вызовы Telegram при опоздании сети могли занять все потоки — тогда даже
+    # /health не получал ответа и nginx отдавал 502 «Бэкенд недоступен».
+    with urllib.request.urlopen(req, timeout=5) as resp:
         return json.loads(resp.read() or b"{}")
 
 
