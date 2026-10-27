@@ -119,6 +119,82 @@ def split_statements(script: str):
     return [p.strip() for p in parts if p.strip()]
 
 
+class Row(dict):
+    """Строка результата: доступ по имени (row["col"], как sqlite3.Row) И по
+    позиции (row[0] — так пишет старый код в crm.py/logistics.py)."""
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return list(self.values())[key]
+        return dict.__getitem__(self, key)
+
+
+def _wrap_row(row):
+    if row is None or isinstance(row, dict):
+        return row
+    try:
+        return Row(zip(row.keys(), row))   # psycopg3 Row: dict-like + позиционный
+    except Exception:
+        return row
+
+
+class CompatRow:
+    """Обёртка строки psycopg (dict_row): доступ и по имени, и по индексу —
+    как у sqlite3.Row. Нужен потому, что legacy-код местами пишет row[0]."""
+
+    __slots__ = ("_d", "_t")
+
+    def __init__(self, d):
+        self._d = d
+        self._t = tuple(d.values())
+
+    def __getitem__(self, key):
+        return self._t[key] if isinstance(key, int) else self._d[key]
+
+    def get(self, key, default=None):
+        return self._d.get(key, default)
+
+    def keys(self):
+        return self._d.keys()
+
+    def values(self):
+        return self._d.values()
+
+    def items(self):
+        return self._d.items()
+
+    def __iter__(self):
+        return iter(self._d)
+
+    def __len__(self):
+        return len(self._d)
+
+    def __contains__(self, key):
+        return key in self._d
+
+    def __eq__(self, other):
+        if isinstance(other, CompatRow):
+            return self._d == other._d
+        if isinstance(other, dict):
+            return self._d == other
+        return NotImplemented
+
+    def __repr__(self):
+        return f"CompatRow({self._d!r})"
+
+
+def compat_dict_row(cursor):
+    """row_factory для psycopg: dict_row + позиционный доступ."""
+    from psycopg.rows import dict_row as _dr
+    mapping = _dr(cursor)
+    if mapping is None:
+        return None
+    def _f(values):
+        row = mapping(values)
+        return None if row is None else CompatRow(row)
+    return _f
+
+
 class Cursor:
     """Обёртка psycopg-cursora: '?'-плейсхолдеры + строки-словари."""
 
@@ -126,11 +202,12 @@ class Cursor:
         self._cur = cur
 
     def execute(self, sql, params=None):
-        self._cur.execute(qmark_to_format(sql), params or ())
-        c = self._cur
-        parent = getattr(self, "_parent", None)
-        if parent is not None:
-            parent._after(c)
+        self._cur.execute(qmark_to_format(sql), tuple(params) if params else ())
+        return self
+
+    def executemany(self, sql, seq_of_params):
+        self._cur.executemany(qmark_to_format(sql),
+                              [tuple(p) for p in seq_of_params])
         return self
 
     # -- совместимость со sqlite3.Cursor ----------------------------------
@@ -154,54 +231,6 @@ class Cursor:
         return iter(self._cur)
 
 
-def _split_statements(script: str) -> list[str]:
-    """Разбить SQL-скрипт на отдельные операторы по ';'.
-
-    Упрощённый разбор: достаточно для наших DDL-скриптов (schema.sql), где
-    нет хранимых процедур с телами, содержащими ';' или строковых литералов
-    с точкой с запятой. Кавычки ('...'/\"...\") учитываются, чтобы не резать
-    внутри строковых констант и идентификаторов в кавычках.
-    """
-    stmts, buf = [], []
-    in_s = in_d = False
-    i, n = 0, len(script)
-    while i < n:
-        ch = script[i]
-        if in_s:
-            buf.append(ch)
-            if ch == "'":
-                if i + 1 < n and script[i + 1] == "'":   # '' — экранированная '
-                    buf.append("'")
-                    i += 2
-                    continue
-                in_s = False
-        elif in_d:
-            buf.append(ch)
-            if ch == '"':
-                in_d = False
-        else:
-            if ch == "'":
-                in_s = True
-                buf.append(ch)
-            elif ch == '"':
-                in_d = True
-                buf.append(ch)
-            elif ch == "-" and script.startswith("--", i):
-                j = script.find("\n", i)
-                i = n if j == -1 else j
-                continue
-            elif ch == ";":
-                s = "".join(buf).strip()
-                if s:
-                    stmts.append(s)
-                buf = []
-            else:
-                buf.append(ch)
-        i += 1
-    tail = "".join(buf).strip()
-    if tail:
-        stmts.append(tail)
-    return stmts
 
 
 class Connection:
@@ -219,21 +248,16 @@ class Connection:
         self._cur = None          # ленивый общий курсор соединения
 
     def cursor(self):
-        if self._cur is None:
-            self._cur = self._raw.cursor(row_factory=dict_row)
-        return self._cur
-
-    def _after(self, executed_cur):
-        pass
+        # Новый psycopg-курсор на каждый вызов: старый код местами пишет
+        # store.connect().execute(...) без close() — переиспользование одного
+        # ленивого курсора приводило бы к утечке курсоров внутри соединения.
+        return Cursor(self._raw.cursor(row_factory=compat_dict_row))
 
     def execute(self, sql, params=None):
-        # ВАЖНО: конвертация плейсхолдеров '?' -> '%s' обязательна и здесь.
-        # Cursor.execute тоже её делает, но его метод не вызывается, когда
-        # сюда приходит сырой psycopg-курсор (см. cursor()); двойная
-        # конвертация безопасна — после первой '?' в запросе не остаётся.
-        cur = self.cursor()
-        cur.execute(qmark_to_format(sql), params)
-        return cur
+        # Возвращаем обёртку Cursor: внутри неё уже выполняется конвертация
+        # плейсхолдеров '?' -> '%s' (см. b1416d9 — без неё бэкенд падал на
+        # старте и nginx отдавал 502).
+        return self.cursor().execute(sql, params)
 
     def executescript(self, script: str):
         """Выполнить несколько операторов DDL/DML одним заходом.
@@ -254,6 +278,10 @@ class Connection:
         pass
 
     def close(self):
+        try:
+            _LEAKED.remove(self)      # перестать быть "сиротой" для TTL-сборщика
+        except ValueError:
+            pass
         raw, self._raw = self._raw, None
         cur, self._cur = self._cur, None
         if cur is not None:
@@ -275,6 +303,28 @@ class Connection:
 
 
 _POOL: ConnectionPool | None = None
+# Все выданные наружу обёртки (connect() без with/close) — сюда, для возврата
+# в пул по TTL. Иначе legacy-код main.py (store.connect() как аргумент функции)
+# удерживал бы соединения навсегда и пул исчерпывался за десятки запросов.
+_LEAKED: list["Connection"] = []
+
+
+def _reclaim_leaked(max_keep: int = 256) -> None:
+    """Вернуть в пул соединения-сироты, живущие дольше PG_LEAK_TTL секунд."""
+    import time as _t
+    ttl = float(os.environ.get("PG_LEAK_TTL", "30"))
+    now = _t.time()
+    keep = []
+    for c in _LEAKED:
+        if now - getattr(c, "_born", 0) >= ttl:
+            try:
+                c.close()
+            except Exception:
+                pass
+        else:
+            keep.append(c)
+    del _LEAKED[:]
+    _LEAKED.extend(keep[-max_keep:])   # защита от бесконечного роста списка
 
 
 def get_pool() -> ConnectionPool:
@@ -312,8 +362,18 @@ def check_connection() -> tuple[bool, str]:
 
 
 def connect():
-    """Вернуть PG-обёртку из пула (аналог sqlite3.connect для всего кода)."""
-    return Connection(get_pool().getconn(), pool=get_pool())
+    """Вернуть PG-обёртку из пула (аналог sqlite3.connect для всего кода).
+
+    Вызывающий код обязан закрыть соединение (with / .close()). Там, где это
+    невозможно (старые места вроде crm.register_comm(store.connect(), ...)),
+    соединение вернётся в пул автоматически по TTL (_reclaim_leaked).
+    """
+    _reclaim_leaked()
+    conn = Connection(get_pool().getconn(), pool=get_pool())
+    import time as _t
+    conn._born = _t.time()
+    _LEAKED.append(conn)
+    return conn
 
 
 def connection_factory(path: str):
