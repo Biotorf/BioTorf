@@ -36,18 +36,44 @@ def _database_url() -> str:
     return f"postgresql://{user}:{pw}@{host}:{port}/{db}"
 
 
-_QMARK_RE = re.compile(r"\?")
-
-
 def q(sql: str) -> str:
-    """Конвертировать sqlite-плейсхолдеры '?' в postgres '$1, $2, ...'."""
+    """Конвертировать sqlite-плейсхолдеры '?' в postgres '$1, $2, ...'.
+
+    Символы '?' внутри строковых литералов ('...') и идентификаторов в
+    двойных кавычках не являются плейсхолдерами — пропускаем их.
+    """
     n = [0]
-
-    def repl(_m):
-        n[0] += 1
-        return f"${n[0]}"
-
-    return _QMARK_RE.sub(repl, sql)
+    out = []
+    in_s = in_d = False
+    i, ln = 0, len(sql)
+    while i < ln:
+        ch = sql[i]
+        if in_s:
+            out.append(ch)
+            if ch == "'":
+                if i + 1 < ln and sql[i + 1] == "'":   # '' — экранированная '
+                    out.append("'")
+                    i += 2
+                    continue
+                in_s = False
+        elif in_d:
+            out.append(ch)
+            if ch == '"':
+                in_d = False
+        else:
+            if ch == "'":
+                in_s = True
+                out.append(ch)
+            elif ch == '"':
+                in_d = True
+                out.append(ch)
+            elif ch == "?":
+                n[0] += 1
+                out.append(f"${n[0]}")
+            else:
+                out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 class Cursor:
@@ -85,6 +111,56 @@ class Cursor:
         return iter(self._cur)
 
 
+def _split_statements(script: str) -> list[str]:
+    """Разбить SQL-скрипт на отдельные операторы по ';'.
+
+    Упрощённый разбор: достаточно для наших DDL-скриптов (schema.sql), где
+    нет хранимых процедур с телами, содержащими ';' или строковых литералов
+    с точкой с запятой. Кавычки ('...'/\"...\") учитываются, чтобы не резать
+    внутри строковых констант и идентификаторов в кавычках.
+    """
+    stmts, buf = [], []
+    in_s = in_d = False
+    i, n = 0, len(script)
+    while i < n:
+        ch = script[i]
+        if in_s:
+            buf.append(ch)
+            if ch == "'":
+                if i + 1 < n and script[i + 1] == "'":   # '' — экранированная '
+                    buf.append("'")
+                    i += 2
+                    continue
+                in_s = False
+        elif in_d:
+            buf.append(ch)
+            if ch == '"':
+                in_d = False
+        else:
+            if ch == "'":
+                in_s = True
+                buf.append(ch)
+            elif ch == '"':
+                in_d = True
+                buf.append(ch)
+            elif ch == "-" and script.startswith("--", i):
+                j = script.find("\n", i)
+                i = n if j == -1 else j
+                continue
+            elif ch == ";":
+                s = "".join(buf).strip()
+                if s:
+                    stmts.append(s)
+                buf = []
+            else:
+                buf.append(ch)
+        i += 1
+    tail = "".join(buf).strip()
+    if tail:
+        stmts.append(tail)
+    return stmts
+
+
 class Connection:
     """Лёгкая обёртка поверх соединения psycopg (из пула).
 
@@ -97,25 +173,30 @@ class Connection:
     def __init__(self, raw, pool=None):
         self._raw = raw
         self._pool = pool
+        self._cur = None          # ленивый общий курсор соединения
 
     def cursor(self):
-        cur = self._raw.cursor(row_factory=dict_row)
-        w = Cursor(cur)
-        w._parent = self
-        return w
+        if self._cur is None:
+            self._cur = self._raw.cursor(row_factory=dict_row)
+        return self._cur
 
     def _after(self, executed_cur):
-        # psycopg с autocommit=True сам закрывает предыдущий курсор при
-        # новом запросе на соединении; это нормально — держим только текущий.
-        self._last = executed_cur
+        pass
 
     def execute(self, sql, params=None):
-        return self.cursor().execute(sql, params)
+        cur = self.cursor()
+        cur.execute(sql, params)
+        return cur
 
     def executescript(self, script: str):
-        """Выполнить несколько операторов DDL/DML одним заходом."""
-        self._raw.execute(script)
-        return self.cursor("void")  # не используется, но держим API
+        """Выполнить несколько операторов DDL/DML по очереди.
+
+        psycopg3 не принимает скрипты из нескольких операторов одним execute() —
+        разбиваем по ';' и выполняем каждый отдельно (как sqlite3.executescript).
+        """
+        for st in _split_statements(script):
+            self._raw.execute(st)
+        return self.cursor()
 
     def commit(self):
         pass  # autocommit
@@ -125,6 +206,12 @@ class Connection:
 
     def close(self):
         raw, self._raw = self._raw, None
+        cur, self._cur = self._cur, None
+        if cur is not None:
+            try:
+                cur.close()
+            except Exception:
+                pass
         if raw is not None and self._pool is not None:
             self._pool.putconn(raw)
         elif raw is not None:
