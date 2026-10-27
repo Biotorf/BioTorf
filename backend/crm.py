@@ -77,9 +77,18 @@ def get_record(conn, coll: str, rid: str) -> dict | None:
 
 
 def upsert(conn, coll: str, rec: dict, rid: str | None = None) -> dict:
+    """Сохранить запись. Опциональный контроль версии (см. put_state):
+    expected_rev — сервер отклоняет замену (ConflictError → HTTP 409), если
+    текущая серверная метка updated не совпадает с ожидаемой клиентом."""
     rid = rid or rec.get("id") or _gen_id(coll)
     rec = {**rec, "id": rid}
     stamp = _now()
+    expected_rev = rec.pop("_expectedRev", None)
+    if expected_rev is not None:
+        cur = conn.execute(
+            "SELECT updated FROM crm_records WHERE coll=? AND id=?", (coll, rid)).fetchone()
+        if cur and (cur[0] or "") != expected_rev:
+            raise ConflictError(coll, rid)
     conn.execute(
         "INSERT INTO crm_records (id, coll, data, updated) VALUES (?,?,?,?) "
         "ON CONFLICT(coll,id) DO UPDATE SET data=excluded.data, updated=excluded.updated",
@@ -88,6 +97,14 @@ def upsert(conn, coll: str, rec: dict, rid: str | None = None) -> dict:
     conn.commit()
     rec["_updatedAt"] = stamp
     return rec
+
+
+class ConflictError(Exception):
+    """Оптимистичная блокировка: запись изменилась другим пользователем."""
+
+    def __init__(self, coll: str, rid: str):
+        super().__init__(f"{coll}/{rid}")
+        self.coll, self.rid = coll, rid
 
 
 def delete(conn, coll: str, rid: str) -> bool:
@@ -117,17 +134,24 @@ def get_state(conn) -> dict:
 
 
 def put_state(conn, payload: dict) -> dict:
-    """Синхронизация всего снимка с разрешения конфликтов lastWriteWins.
+    """Синхронизация всего снимка с разрешениями конфликтов lastWriteWins.
 
-    Клиент присылает { coll: [records...] } + localUpdatedAt (метка последней
+    Клиент присылает { coll: [records...] } + _syncAt (метка последней
     записи клиента). Сервер для каждой записи сравнивает метки: если клиентская
     свежее или записи на сервере нет — принимаем; иначе возвращаем серверную.
-    Удаления: запись есть на сервере, но её нет в клиентском снимке И клиентский
-    снимок новее серверного обновления записи — удаляем.
+
+    Удаления стали БЕЗОПАСНЫМИ: запись удаляется только если клиент прислал
+    полный снимок коллекции (`_fullSync.collections` содержит имя) ИЛИ в явном
+    списке `_deletedRecords`. Раньше любая неполная выгрузка клиента (например,
+    коллекция не была загружена локально) молча стирала серверные данные —
+    это был главный риск потери данных при lastWriteWins.
     """
     server_stamp = conn.execute("SELECT MAX(updated) FROM crm_records").fetchone()[0] or ""
     client_stamp = payload.get("_syncAt") or ""
-    result = {}
+    full = payload.get("_fullSync") or {}
+    full_colls = set(full.get("collections") or [])
+    explicit_deleted = set(payload.get("_deletedRecords") or [])
+    result = {"conflicts": 0}
     for coll in COLLECTIONS:
         items = payload.get(coll)
         if not isinstance(items, list):
@@ -143,16 +167,23 @@ def put_state(conn, payload: dict) -> dict:
                 "SELECT updated FROM crm_records WHERE coll=? AND id=?", (coll, rid)
             ).fetchone()
             rec_stamp = rec.get("_updatedAt") or rec.get("updatedAt") or ""
-            # если клиент прислал данные раньше/равно серверным — не перетираем
+            # если клиент прислал данные раньше/равно серверным — не перетираем,
+            # а считаем конфликт: фронт получит серверную версию и обновит UI
             if existing and (existing[0] or "") > rec_stamp and client_stamp <= (existing[0] or ""):
+                result["conflicts"] += 1
                 continue
             clean = {k: v for k, v in rec.items() if k != "_updatedAt"}
             upsert(conn, coll, clean, rid)
-        # удаления: только когда клиент явно синхронизируется позже сервера
-        if client_stamp and client_stamp > server_stamp:
+        # удаления: только когда клиент явно синхронизируется позже сервера,
+        # и только по полному снимку коллекции или явному списку удалений
+        may_delete = client_stamp and client_stamp > server_stamp and (
+            coll in full_colls or explicit_deleted)
+        if may_delete:
             rows = conn.execute("SELECT id, updated FROM crm_records WHERE coll=?", (coll,)).fetchall()
             for r in rows:
-                if r[0] not in client_ids and (r[1] or "") < client_stamp:
+                gone = (r[0] not in client_ids and coll in full_colls) or \
+                       (f"{coll}:{r[0]}" in explicit_deleted)
+                if gone and (r[1] or "") < client_stamp:
                     conn.execute("DELETE FROM crm_records WHERE coll=? AND id=?", (coll, r[0]))
         conn.commit()
         result[coll] = list_records(conn, coll)

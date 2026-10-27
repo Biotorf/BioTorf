@@ -95,8 +95,18 @@ def digits_for_key(s) -> str:
 
 
 def connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=15)
     conn.row_factory = sqlite3.Row
+    # WAL: читатели не блокируются писателем и наоборот — критично при
+    # одновременной работе API (несколько сотрудников + webhook-штормы) и
+    # telegram_worker'а с одной базой. journal_mode персистентен в файле БД,
+    # sync=NORMAL ускоряет запись, сохраняя согласованность при WAL.
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=15000")
+    except sqlite3.Error:
+        pass  # старые/закрытые БД без поддержки WAL остаются на DELETE-journal
     return conn
 
 

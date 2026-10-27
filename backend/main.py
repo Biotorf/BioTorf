@@ -22,6 +22,7 @@ REST API для ленты «Коммуникации» (звонки + Telegram
 import hashlib
 import hmac
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -40,10 +41,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+import auth
+import farms_index
 import db as store
 import logistics
 import crm
 import whatsapp_client
+
+# Единая точка логирования вместо print(): уровень настраивается переменной
+# LOG_LEVEL (по умолчанию INFO; в проде можно поставить WARNING).
+logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+                    format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+log = logging.getLogger("biotorf")
 
 # ── конфигурация ─────────────────────────────────────────────────────────────
 def _env(name: str, default: str = "") -> str:
@@ -75,6 +84,20 @@ CORS_ORIGINS = [o.strip() for o in _env(
     "CORS_ORIGINS",
     "http://localhost:5173,http://127.0.0.1:5173,null").split(",") if o.strip()]
 
+# ── авторизация (backend/auth.py): значения из окружения / .env ──
+os.environ.setdefault("AUTH_SECRET", _env("AUTH_SECRET"))
+os.environ.setdefault("AUTH_PASSWORD", _env("AUTH_PASSWORD"))
+os.environ.setdefault("AUTH_TOKEN_TTL", _env("AUTH_TOKEN_TTL", "43200"))
+os.environ.setdefault("AUTH_DEFAULT_ROLE", _env("AUTH_DEFAULT_ROLE", "director"))
+os.environ.setdefault("DEV_MODE", _env("DEV_MODE"))
+auth.AUTH_SECRET = os.environ["AUTH_SECRET"].strip()
+auth.AUTH_PASSWORD = os.environ["AUTH_PASSWORD"].strip()
+try:
+    auth.AUTH_TOKEN_TTL = int(os.environ["AUTH_TOKEN_TTL"] or 43200)
+except ValueError:
+    auth.AUTH_TOKEN_TTL = 43200
+auth.DEV_MODE = os.environ["DEV_MODE"].strip().lower() in ("1", "true", "yes", "on")
+
 # Хранилище медиафайлов (голосовые Telegram): скачанные входящие и запись исходящих.
 # Лежит рядом с БД — в Docker это тот же volume /data, файлы переживают пересборку.
 MEDIA_DIR = Path(_env("MEDIA_DIR") or (store.DB_PATH.parent / "media"))
@@ -90,7 +113,7 @@ def media_path(media_id: str) -> Path | None:
             return p
     return None
 
-app = FastAPI(title="BIOTORF Business OS · Comms API", version="0.1.0")
+app = FastAPI(title="BIOTORF Business OS · Comms API", version="0.2.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
@@ -104,6 +127,93 @@ TELEGRAM_BOT_INFO: dict | None = None  # результат getMe при ста�
 WHATSAPP_INFO: dict | None = None      # результат проверки конфигурации Cloud API при старте
 
 
+# ── аутентификация HTTP-запросов к /api/* ────────────────────────────────────
+PUBLIC_PATHS = ("/health", "/docs", "/openapi.json", "/redoc", "/webhooks/", "/auth/")
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """Единая проверка JWT для всех /api/*. Вебхуки (/webhooks/*), /health,
+    /docs и /auth/login защищены своими механизмами (секреты/подписи) и
+    проходят без токена.
+
+    Режимы:
+      • AUTH_PASSWORD задан   — стандартный режим: токен обязателен;
+      • DEV_MODE=1            — локальная разработка без пароля: пустой
+        Authorization трактуется как director;
+      • пароль пуст и не dev  — LOCKED: /api/* отклоняются с 503, пока админ
+        не задаст AUTH_PASSWORD (безопаснее открытого API).
+    """
+    path = request.url.path
+    if request.method == "OPTIONS" or not path.startswith("/api/"):
+        return await call_next(request)
+    if any(path.startswith(p) for p in PUBLIC_PATHS):
+        return await call_next(request)
+    if not auth.AUTH_PASSWORD and not auth.DEV_MODE:
+        raise HTTPException(503, "API заблокирован: задайте AUTH_PASSWORD в .env "
+                                 "и перезапустите бэкенд (см. README-AUTH.md)")
+    hdr = request.headers.get("authorization") or ""
+    token = hdr[7:].strip() if hdr.lower().startswith("bearer ") else ""
+    if not token and auth.DEV_MODE and not auth.AUTH_PASSWORD:
+        payload = {"sub": "dev", "role": "director"}
+    else:
+        payload = auth.verify_token(token) if token else None
+        if payload is None:
+            raise HTTPException(401, "Требуется авторизация: передайте заголовок "
+                                     "Authorization: Bearer <token> (POST /auth/login)")
+    request.state.user = payload.get("sub") or "?"
+    request.state.role = payload["role"]
+    if request.method not in ("GET", "HEAD", "OPTIONS"):
+        section = auth.section_for(path)
+        if section and not auth.can_write(payload["role"], section):
+            raise HTTPException(403, f"Роль «{auth.ROLES[payload['role']}» не имеет права "
+                                     f"изменять раздел «{section}»")
+    return await call_next(request)
+
+
+def _who(request: Request) -> str:
+    return f"[{getattr(request.state, 'user', '?')}/{getattr(request.state, 'role', '?')}]"
+
+
+class LoginIn(BaseModel):
+    user: str = Field(min_length=2, max_length=64)
+    password: str = Field(min_length=1, max_length=256)
+
+
+_login_failures: dict[str, tuple[int, int]] = {}  # ip -> (число ошибок, окно до)
+_LOGIN_WINDOW = 60
+_LOGIN_MAX_FAILS = 10
+
+
+@app.post("/auth/login")
+def auth_login(body: LoginIn, request: Request):
+    """Обмен учётных данных сотрудника на JWT (подпись HS256, TTL AUTH_TOKEN_TTL).
+
+    Простая защита от перебора: не более 10 неудачных попыток в минуту на IP.
+    """
+    ip = request.client.host if request.client else "?"
+    now = int(time.time())
+    fails, until = _login_failures.get(ip, (0, 0))
+    if until and now < until:
+        raise HTTPException(429, "Слишком много неудачных попыток — подождите минуту")
+    res = auth.login(body.user, body.password)
+    if not res:
+        fails = fails + 1 if now < until else 1
+        _login_failures[ip] = (fails, now + _LOGIN_WINDOW if fails >= _LOGIN_MAX_FAILS else until)
+        log.warning("[auth] неудачный вход: user=%r ip=%s", body.user, ip)
+        raise HTTPException(401, "Неверный пароль")
+    _login_failures.pop(ip, None)
+    log.info("[auth] вход: %s role=%s", res["user"], res["role"])
+    return res
+
+
+@app.get("/auth/me")
+def auth_me(request: Request):
+    return {"user": getattr(request.state, "user", "?"),
+            "role": getattr(request.state, "role", "?"),
+            "roleName": auth.ROLES.get(getattr(request.state, "role", ""), None)}
+
+
 @app.on_event("startup")
 def startup():
     global TELEGRAM_BOT_INFO, WHATSAPP_INFO
@@ -111,6 +221,17 @@ def startup():
     with store.connect() as conn:
         logistics.init_tables(conn)
         crm.init_tables(conn)
+    if not auth.AUTH_PASSWORD and not auth.DEV_MODE:
+        log.warning("[auth] ⚠ AUTH_PASSWORD не задан — API ЗАБЛОКИРОВАН (503 на все /api/*). "
+                    "Задайте пароль в .env или включите DEV_MODE=1 для локальной разработки.")
+    elif auth.AUTH_PASSWORD:
+        if len(auth.AUTH_PASSWORD) < 12:
+            log.warning("[auth] AUTH_PASSWORD короче 12 символов — используйте длинный случайный пароль")
+        if not auth.AUTH_SECRET:
+            log.warning("[auth] AUTH_SECRET не задан — подпись JWT выводится из пароля; "
+                        "смените пароль = аннулируются все токены. Лучше задать отдельный AUTH_SECRET")
+    else:
+        log.info("[auth] DEV_MODE: авторизация API ослаблена (только локальная разработка!)")
     # Проверяем токен бота сразу при старте, чтобы проблемы было видно в логах
     # и в /health, а не только когда пользователь попытается ответить.
     if TELEGRAM_BOT_TOKEN:
@@ -118,24 +239,25 @@ def startup():
             res = tg_api("getMe", {})
             if res.get("ok"):
                 TELEGRAM_BOT_INFO = res["result"]
-                print(f"[telegram] токен принят: @{TELEGRAM_BOT_INFO.get('username')} "
-                      f"(id={TELEGRAM_BOT_INFO.get('id')}) — исходящая отправка активна")
+                log.info("[telegram] токен принят: @%s (id=%s) — исходящая отправка активна",
+                         TELEGRAM_BOT_INFO.get("username"), TELEGRAM_BOT_INFO.get("id"))
             else:
-                print(f"[telegram] ОШИБКА: Telegram отверг TELEGRAM_BOT_TOKEN: "
-                      f"{res.get('description')} — ответы в TGsentиться НЕ будут")
+                log.error("[telegram] Telegram отверг TELEGRAM_BOT_TOKEN: %s — ответы в TG "
+                          "отправляться НЕ будут", res.get("description"))
         except Exception as e:
-            print(f"[telegram] ОШИБКА проверки токена ({e}) — проверьте сеть и TELEGRAM_BOT_TOKEN")
+            log.error("[telegram] ОШИБКА проверки токена (%s) — проверьте сеть и TELEGRAM_BOT_TOKEN", e)
     else:
-        print("[telegram] TELEGRAM_BOT_TOKEN пуст — исходящие ответы в Telegram отключены. "
-              "Впишите токен из @BotFather в .env и выполните docker compose up -d --force-recreate")
+        log.info("[telegram] TELEGRAM_BOT_TOKEN пуст — исходящие ответы в Telegram отключены. "
+                 "Впишите токен из @BotFather в .env и выполните docker compose up -d --force-recreate")
     # Аналогичная диагностика для WhatsApp Cloud API
     WHATSAPP_INFO = whatsapp_client.check_config(WHATSAPP_SEND_TOKEN, WHATSAPP_PHONE_NUMBER_ID)
     if WHATSAPP_INFO["ok"]:
-        print(f"[whatsapp] конфигурация принята Meta: номер {WHATSAPP_INFO.get('phone')} "
-              f"(id={WHATSAPP_INFO.get('id')}) — исходящая отправка активна")
+        log.info("[whatsapp] конфигурация принята Meta: номер %s (id=%s) — исходящая отправка активна",
+                 WHATSAPP_INFO.get("phone"), WHATSAPP_INFO.get("id"))
     else:
-        print(f"[whatsapp] исходящая отправка НЕ настроена: {WHATSAPP_INFO['error']}. "
-              "Заполните WHATSAPP_TOKEN и WHATSAPP_PHONE_NUMBER_ID в .env (см. README-WHATSAPP.md)")
+        log.info("[whatsapp] исходящая отправка НЕ настроена: %s. "
+                 "Заполните WHATSAPP_TOKEN и WHATSAPP_PHONE_NUMBER_ID в .env (см. README-WHATSAPP.md)",
+                 WHATSAPP_INFO["error"])
 
 
 def now_iso() -> str:
@@ -157,20 +279,9 @@ def auto_link(phone: str | None) -> str | None:
     Реестр клиентов живёт во фронтенде; бэкенд подтягивает snapshot farms из
     файла backend/farms.json (экспортируется фронтендом / админом). Если файла
     нет — автопривязка просто не срабатывает, запись остаётся непривязанной.
+    Чтение файла кэшируется по mtime (farms_index), см. также index по @username.
     """
-    d = digits(phone)
-    if len(d) < 6:
-        return None
-    farms_file = FARMS_FILE
-    if farms_file.exists():
-        try:
-            farms = json.loads(farms_file.read_text())
-            for f in farms:
-                if digits(f.get("phone")) == d:
-                    return f["id"]
-        except Exception:
-            pass
-    return None
+    return farms_index.link_by_phone(FARMS_FILE, phone)
 
 
 # ── модели ───────────────────────────────────────────────────────────────────
@@ -369,7 +480,7 @@ def _ffmpeg_to_oga(src: Path, dst: Path) -> bool:
         )
         return r.returncode == 0 and dst.exists() and dst.stat().st_size > 0
     except Exception as e:
-        print(f"[voice] ffmpeg failed: {e}")
+        log.warning("[voice] ffmpeg failed: %s", e)
         return False
 
 
@@ -424,7 +535,7 @@ def create_comm(body: CommIn):
     try:
         crm.register_comm(store.connect(), saved)
     except Exception as e:
-        print(f"[crm] register_comm skip: {e}")
+        log.warning("[crm] register_comm skip: %s", e)
     return saved
 
 
@@ -930,13 +1041,13 @@ def download_tg_voice(file_info: dict) -> dict | None:
         res = tg_api("getFile", {"file_id": fid})
         fp = (res.get("result") or {}).get("file_path")
         if not fp:
-            print(f"[tg-media] getFile не вернул file_path для {fid[:24]}…")
+            log.warning("[tg-media] getFile не вернул file_path для %s…", fid[:24])
             return None
         url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{fp}"
         with urllib.request.urlopen(url, timeout=30) as resp:
             data = resp.read(TG_MEDIA_MAX_BYTES + 1)
         if len(data) > TG_MEDIA_MAX_BYTES:
-            print("[tg-media] файл больше 20 МБ — пропущен")
+            log.warning("[tg-media] файл больше 20 МБ — пропущен")
             return None
         MEDIA_DIR.mkdir(parents=True, exist_ok=True)
         ext = Path(fp).suffix or ".oga"
@@ -950,7 +1061,7 @@ def download_tg_voice(file_info: dict) -> dict | None:
             "duration": file_info.get("duration"),
         }
     except Exception as e:
-        print(f"[tg-media] скачивание не удалось: {e}")
+        log.warning("[tg-media] скачивание не удалось: %s", e)
         return None
 
 
@@ -961,7 +1072,10 @@ def download_tg_voice(file_info: dict) -> dict | None:
 async def telegram_webhook(
     request: Request,
     x_bot_secret: str | None = Header(None),
-    secret: str = Query(""),
+    x_webhook_secret: str | None = Header(None, alias="X-Webhook-Secret"),
+    secret: str = Query(""),   # LEGACY: секрет в query — поддержка старых
+                               # версий воркера; секреты попадают в access-логи,
+                               # новый telegram_worker передаёт X-Bot-Secret в заголовке
 ):
     # секрет приходит либо от нашего воркера (заголовок X-Bot-Secret),
     # либо напрямую от Telegram (заголовок X-Telegram-Bot-Api-Secret-Token,
@@ -1015,7 +1129,7 @@ async def telegram_webhook(
     try:
         crm.register_comm(store.connect(), saved)
     except Exception as e:
-        print(f"[crm] register_comm skip: {e}")
+        log.warning("[crm] register_comm skip: %s", e)
     return saved
 
 
@@ -1023,21 +1137,9 @@ def auto_link_handle(handle: str | None) -> str | None:
     """Привязка входящего Telegram-сообщения к клиенту по @username.
 
     Если у клиента в реестре (farms.json) заполнено поле telegram — сообщение
-    сразу попадает в карточку клиента, даже без номера телефона."""
-    if not handle:
-        return None
-    h = handle.lstrip("@").lower()
-    if not h:
-        return None
-    try:
-        farms = json.loads(FARMS_FILE.read_text()) if FARMS_FILE.exists() else []
-        for f in farms:
-            tg = str(f.get("telegram") or "").lstrip("@").lower()
-            if tg and tg == h:
-                return f["id"]
-    except Exception:
-        pass
-    return None
+    сразу попадает в карточку клиента, даже без номера телефона. Кэш/индекс —
+    farms_index (перечитывает файл только при изменении mtime)."""
+    return farms_index.link_by_handle(FARMS_FILE, handle)
 
 
 # ── вебхук: WhatsApp Business Cloud API ──────────────────────────────────────
@@ -1077,7 +1179,7 @@ async def whatsapp_webhook(request: Request, x_hub_signature_256: str | None = H
                 try:
                     crm.register_comm(store.connect(), saved)
                 except Exception as e:
-                    print(f"[crm] register_comm skip: {e}")
+                    log.warning("[crm] register_comm skip: %s", e)
                 created.append(saved)
     return {"created": len(created)}
 
@@ -1121,8 +1223,14 @@ def normalize_cdr(c: dict) -> dict:
 
 
 @app.post("/webhooks/telephony")
-async def telephony_webhook(request: Request, token: str = Query("")):
-    check_secret(token, TELEPHONY_TOKEN, "TELEPHONY_TOKEN")
+async def telephony_webhook(
+    request: Request,
+    token: str = Query(""),   # LEGACY: токен в query (некоторые ATS умеют только URL);
+                              # предпочтительно передавать тот же секрет в заголовке
+                              # X-Webhook-Secret — query попадает в access-логи
+    x_webhook_secret: str | None = Header(None, alias="X-Webhook-Secret"),
+):
+    check_secret(x_webhook_secret or token, TELEPHONY_TOKEN, "TELEPHONY_TOKEN")
     payload = await request.json()
     calls = payload if isinstance(payload, list) else payload.get("calls", [payload])
     created = []
@@ -1134,7 +1242,7 @@ async def telephony_webhook(request: Request, token: str = Query("")):
         try:
             crm.register_comm(store.connect(), saved)
         except Exception as e:
-            print(f"[crm] register_comm skip: {e}")
+            log.warning("[crm] register_comm skip: %s", e)
         created.append(saved)
     return {"created": len(created)}
 
