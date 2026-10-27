@@ -211,6 +211,8 @@ class Cursor:
 
     def _rebind(self):
         """Вернуть курсор на свежее raw-соединение (после реконнекта владельца)."""
+        if getattr(self._owner, "_transient", False):
+            return   # временный курсор: соединение живёт до конца этого запроса
         try:
             if self._owner is not None and self._cur is not None \
                     and self._cur.connection is not self._owner._raw:
@@ -226,7 +228,17 @@ class Cursor:
         psql = qmark_to_format(sql)
         args = tuple(params) if params else ()
         if self._owner is not None:
-            self._cur = self._owner._run(psql, args, self._cur)
+            transient = getattr(self._owner, "_transient", False)
+            if transient:
+                # одноразовый курсор: если владелец — авто-прокси (_AutoConn),
+                # соединение вернётся в пул сразу после вычитки результата.
+                # Долгоживущий курсор на авто-соединении оставлял бы его
+                # занятым до TTL-сборщика и при опросе фронта каждые
+                # несколько секунд исчерпывал весь пул ("waiting for a
+                # connection ... timed out" -> 502).
+                self._cur = self._owner._run_transient(psql, args)
+            else:
+                self._cur = self._owner._run(psql, args, self._cur)
         else:
             self._cur.execute(psql, args)
         return self
@@ -297,6 +309,50 @@ class Cursor:
 
 
 
+
+class _ReleaseCursor:
+    """Прокси psycopg-курсора: после fetch*/итерации автоматически закрывает
+    курсор и возвращает его соединение в пул."""
+
+    __slots__ = ("_cur", "_release")
+
+    def __init__(self, cur, release):
+        self._cur = cur
+        self._release = release
+
+    @property
+    def rowcount(self):
+        return self._cur.rowcount
+
+    def fetchone(self):
+        r = self._cur.fetchone()
+        self._done()
+        return r
+
+    def fetchall(self):
+        r = self._cur.fetchall()
+        self._done()
+        return r
+
+    def fetchmany(self, size=None):
+        r = self._cur.fetchmany(size) if size else self._cur.fetchmany()
+        self._done()
+        return r
+
+    def _done(self):
+        rel, self._release = self._release, None
+        if rel:
+            rel()
+
+    def close(self):
+        self._done()
+
+    def __iter__(self):
+        rows = self._cur.fetchall()
+        self._done()
+        return iter(rows)
+
+
 class Connection:
     """Лёгкая обёртка поверх соединения psycopg (из пула).
 
@@ -305,6 +361,8 @@ class Connection:
       * commit()/rollback() — no-op (безопасно для старого кода);
       * context manager НЕ закрывает соединение, а возвращает его в пул.
     """
+
+    _transient = False   # см. Cursor.execute: у Connection SQL идёт через _run
 
     def __init__(self, raw, pool=None, conninfo=""):
         self._raw = raw
@@ -396,6 +454,13 @@ class Connection:
                     continue
                 raise
         raise RuntimeError("unreachable")
+
+    def _run_transient(self, psql, args):
+        """Выполнить SQL на временном курсоре владельца (для _AutoConn)."""
+        run = getattr(self._owner, "_run_transient", None)
+        if run is not None:
+            return run(psql, args)
+        return self._owner._run(psql, args, self._cur)
 
     def _live_raw(self):
         """Вернуть рабочее raw-соединение; при обрыве — переподключиться."""
@@ -539,6 +604,8 @@ class _AutoConn:
     за собой до явного закрытия).
     """
 
+    _transient = True    # см. Cursor.execute: каждый запрос — временное соединение
+
     def __init__(self):
         self._c: Connection | None = None   # закреплённое (with/close) соединение
 
@@ -565,6 +632,36 @@ class _AutoConn:
         if c is not self._c:                 # временное — вернём в пул после fetch
             cur._auto_release = lambda: self._ret(c)
         return cur
+
+    def _run_transient(self, psql, args):
+        """psycopg-курсор на временном пуловом соединении; соединение будет
+        возвращено в пул сразу после выборки результатов этого курсора."""
+        if self._c is not None:              # закреплённое with-соединение
+            return self._c._live_raw().cursor(row_factory=compat_dict_row)
+        raw = get_pool().getconn()
+        try:
+            raw.autocommit = True
+            cur = raw.cursor(row_factory=compat_dict_row)
+            cur.execute(psql, args)
+        except Exception:
+            try:
+                raw.close()
+            except Exception:
+                pass
+            raise
+        def _ret():
+            try:
+                cur.close()
+            except Exception:
+                pass
+            try:
+                get_pool().putconn(raw)
+            except Exception:
+                try:
+                    raw.close()
+                except Exception:
+                    pass
+        return _ReleaseCursor(cur, _ret)
 
     def executescript(self, script):
         c = self._get()

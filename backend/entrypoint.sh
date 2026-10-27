@@ -26,9 +26,14 @@ fi
 
 # Uvicorn под супервизором: процесс перезапускается после любого падения
 # (ОOM, необработанное исключение, рестарт БД), а не уводит контейнер в unhealthy.
+# Ограниченный backoff: частые падения (битый конфиг/БД) не должны превращать
+# контейнер в вечный цикл рестартов — после 10 падений подряд ждём минуту.
+fails=0
 while true; do
   python -m uvicorn main:app --host 0.0.0.0 --port "${PORT:-8787}"
   code=$?
-  echo "[entrypoint] uvicorn завершился (code=$code) — рестарт через 2с" >&2
-  sleep 2
+  fails=$((fails+1))
+  if [ $fails -ge 10 ]; then delay=60; else delay=2; fi
+  echo "[entrypoint] uvicorn завершился (code=$code, падений подряд: $fails) — рестарт через ${delay}с" >&2
+  sleep "$delay"
 done
