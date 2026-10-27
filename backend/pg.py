@@ -311,6 +311,27 @@ class Cursor:
         self._auto_release = None   # callable: вернуть соединение в пул после fetch
         self._sql = ""              # последний выполненный SQL (для возврата
                                     # авто-соединения при INSERT/UPDATE без fetch)
+        self._closed = False        # явный флаг close(): сырой psycopg-курсор
+                                    # после .close() НЕ выбрасывает исключение
+                                    # при повторном закрытии, поэтому `finally:
+                                    # self.close()` в executescript зацикливался
+                                    # и никогда не вызывал _unpin_release
+                                    # (инцидент PoolTimeout 2026-10-28 00:40)
+
+    @staticmethod
+    def _close_raw(cur_obj):
+        """Закрыть настоящий psycopg-курсор (или цепочку прокси _ReleaseCursor)."""
+        seen = set()
+        while cur_obj is not None and id(cur_obj) not in seen:
+            seen.add(id(cur_obj))
+            try:
+                cur_obj.close()
+                return
+            except Exception:
+                nxt = getattr(cur_obj, "_cur", None)
+                if nxt is cur_obj or nxt is None:
+                    return
+                cur_obj = nxt
 
     def _rebind(self):
         """Вернуть курсор на свежее raw-соединение (после реконнекта владельца)."""
@@ -339,11 +360,48 @@ class Cursor:
                                  "SHOW", "EXPLAIN"))
 
     def _maybe_release_nonselect(self):
-        """INSERT/UPDATE/DELETE без RETURNING ничего не отдают на fetch — а
-        значит авто-соединение _AutoConn осталось бы занятым до TTL-сборщика.
-        Возвращаем его в пул сразу после выполнения."""
-        if self._auto_release is not None and not self._returns_rows(self._sql):
-            self._release()
+        """INSERT/UPDATE/DELETE без RETURNING ничего не отдают на fetch.
+
+        Если соединение закреплено за прокси (_AutoConn._c) и это последний
+        открытый курсор этого соединения — снимаем закрепку и возвращаем
+        соединение в пул немедленно (putconn). Иначе «пустой» write держал бы
+        соединение до явного close()/TTL-сборщика, а при опросе фронта каждые
+        несколько секунд это забивало весь пул (PoolTimeout -> 503, инцидент
+        2026-10-28 00:40).
+
+        Курсор при этом НЕ закрываем: вызывающий код может ещё обратиться к
+        rowcount/lastrowid; соединение освободится после закрытия курсора
+        (см. Connection.close -> _close_open_cursors)."""
+        if self._returns_rows(self._sql):
+            return
+        owner = self._owner                       # Cursor -> Connection
+        proxy = getattr(owner, "_owner", None)    # Connection -> _AutoConn
+        if proxy is None or getattr(proxy, "_c", None) is not owner:
+            return                                # не наше закреплённое соединение
+        if getattr(proxy, "_in_with", False):
+            return                                # with-блок:release в __exit__
+        try:
+            rc = self._cur.rowcount               # -1: строки есть (RETURNING) — ждём fetch
+        except Exception:
+            return
+        if rc == -1:
+            return
+        if any(c is not None and c is not self._cur and not c.closed
+               for c in getattr(owner, "_open_cursors", ())):
+            return                                # конкурентный курсор ещё жив
+        proxy._unpin_release()
+
+    @property
+    def closed(self):
+        # ВАЖНО: сырой psycopg-курсор после .close() НЕ бросает исключение при
+        # повторном закрытии — полагаться только на self._cur.closed нельзя,
+        # иначе `finally: self.close()` (executescript) не срабатывал никогда.
+        if self._closed:
+            return True
+        try:
+            return bool(self._cur.closed)
+        except Exception:
+            return True
 
     def execute(self, sql, params=None):
         psql = qmark_to_format(sql)
@@ -439,7 +497,12 @@ class Cursor:
 
     def close(self):
         self._release()
-        self._cur.close()
+        if not self._closed:
+            self._closed = True
+            try:
+                self._cur.close()
+            except Exception:
+                pass
 
     def __iter__(self):
         try:
@@ -505,19 +568,35 @@ class Connection:
 
     _transient = False   # см. Cursor.execute: у Connection SQL идёт через _run
 
-    def __init__(self, raw, pool=None, conninfo=""):
+    def __init__(self, raw, pool=None, conninfo="", registered=True):
         self._raw = raw
         self._pool = pool
         self._conninfo = conninfo or getattr(raw, "dsn", "") or ""
         self._cur = None          # ленивый общий курсор соединения
         self._born = time.time()  # для TTL-сборщика _reclaim_leaked
-        if pool is not None:
+        self._registered = False
+        self._released = False    # сырое соединение уже возвращено в пул
+                                  # (putconn) — повторный возврат запрещён
+        # Все открытые psycopg-курсоры этого соединения. Нужны, чтобы:
+        #   1) close() гарантированно доcloseивал ВСЕ курсоры перед putconn
+        #      (psycopg иначе считает соединение занятым и оно навсегда
+        #      выпадает из available -> PoolTimeout, инцидент 2026-10-28);
+        #   2) _maybe_release_nonselect не отпускал соединение, пока другой
+        #      курсор ещё жив.
+        self._open_cursors: list = []
+        self._owner = None        # _AutoConn, породивший это соединение (см. _pin)
+        if pool is not None and registered:
             # Регистрация в списке «сирот»: обёртки, созданные connect() без
             # with/close (legacy-код crm.put_state(store.connect(), ...) и т.п.),
             # иначе повиснут навсегда и исчерпают пул (PoolTimeout -> 500).
             # close()/putconn снимают регистрацию (см. close()).
+            # registered=False — для курсоров с авто-возвратом (_AutoConn):
+            # они отпускаются сами в fetch/finally, а по TTL сборщик вернул бы
+            # в пул соединение, которое ЭТО ЖЕ курсор ещё читает (двойной
+            # putconn -> PoolTimeout при живом PostgreSQL).
             try:
                 _LEAKED.append(self)
+                self._registered = True
             except Exception:
                 pass
 
@@ -526,7 +605,15 @@ class Connection:
 
         Работает и для прямых (непуловых) соединений: там вместо возврата в
         пул просто открываем новое соединение по тем же параметрам conninfo.
+
+        Перед заменой закрываем ВСЕ курсоры старого соединения: иначе они
+        навсегда повиснут внутри мёртвого raw-соединения (утечка памяти и
+        открытых сокетов на стороне сервера при частых обрывах).
         """
+        try:
+            self._close_open_cursors()
+        except Exception:
+            pass
         if self._raw is None:
             return False
         if self._pool is not None:
@@ -576,11 +663,21 @@ class Connection:
         схемы не успела или прошла наполовину (например, упала на первой
         же ошибке), отсутствующая таблица comms/chat_drafts создаётся на
         месте и запрос повторяется — вместо 500-ки на каждом автосохранении
-        черновика с фронта."""
+        черновика с фронта.
+
+        ВАЖНО (инцидент PoolTimeout 2026-10-28 00:40): перед созданием нового
+        курсора старый ОБЯЗАТЕЛЬНО закрывается. psycopg при putconn() ждёт
+        закрытия всех курсоров соединения; незакрытый курсор после REPLACE
+        (SELECT ... RETURNING / INSERT ... ON CONFLICT DO UPDATE — их rowcount
+        равен -1, см. Cursor._maybe_release_nonselect) оставлял соединение
+        «занятым навсегда», и пул из 10 соединений забивался за минуту при
+        обычном опросе фронта -> PoolTimeout -> 503 на всех эндпоинтах."""
         for attempt in (0, 1, 2):
             try:
                 if cur is None or getattr(cur, "closed", True):
-                    cur = self._live_raw().cursor(row_factory=compat_dict_row)
+                    if cur is not None:      # мёртвый курсор — доcloseить
+                        Cursor._close_raw(cur)
+                    cur = self._new_cursor()
                 cur.execute(psql, args)
                 return cur
             except psycopg.Error as e:
@@ -599,11 +696,36 @@ class Connection:
                 raise
         raise RuntimeError("unreachable")
 
+    def _new_cursor(self):
+        """Новый psycopg-курсор; регистрируется в _open_cursors, чтобы close()
+        гарантированно закрыл ВСЕ курсоры перед putconn (иначе соединение
+        навсегда останется «занятым» — PoolTimeout, инцидент 2026-10-28)."""
+        cur = self._live_raw().cursor(row_factory=compat_dict_row)
+        lst = self._open_cursors
+        # чистим уже закрытые, чтобы список не рос бесконечно
+        if len(lst) > 4:
+            try:
+                self._open_cursors = lst = [c for c in lst if not c.closed]
+            except Exception:
+                pass
+        lst.append(cur)
+        return cur
+
+    def _close_open_cursors(self):
+        for c in self._open_cursors:
+            try:
+                c.close()
+            except Exception:
+                pass
+        self._open_cursors = []
+
     def _run_many(self, psql, seq, cur):
         for attempt in (0, 1, 2):
             try:
                 if cur is None or getattr(cur, "closed", True):
-                    cur = self._live_raw().cursor(row_factory=compat_dict_row)
+                    if cur is not None:      # см. _run: доcloseить мёртвый курсор
+                        Cursor._close_raw(cur)
+                    cur = self._new_cursor()
                 cur.executemany(psql, seq)
                 return cur
             except psycopg.Error as e:
@@ -643,7 +765,7 @@ class Connection:
         # Новый psycopg-курсор на каждый вызов: старый код местами пишет
         # store.connect().execute(...) без close() — переиспользование одного
         # ленивого курсора приводило бы к утечке курсоров внутри соединения.
-        return Cursor(self._live_raw().cursor(row_factory=compat_dict_row), owner=self)
+        return Cursor(self._new_cursor(), owner=self)
 
     def execute(self, sql, params=None):
         # Возвращаем обёртку Cursor: внутри неё уже выполняется конвертация
@@ -682,7 +804,12 @@ class Connection:
                 # залечит проверка _ensure_schema/_missing_pg_tables
                 log.warning("[db] DDL skipped (%s): stmt=%.120s err=%.200s",
                             type(e).__name__, stmt.replace("\n", " "), str(e))
-        return self.cursor()
+        # Возвращаем ЗАКРЫТЫЙ курсор-обёртку: вызывающий код db.py пишет
+        # `finally: cur.close()` и ожидает идемпотентного закрытия. Открытый
+        # курсор здесь оставил бы соединение «занятым» в пуле (см. close()).
+        done = Cursor(None, owner=self)
+        done._closed = True
+        return done
 
     def commit(self):
         pass  # autocommit
@@ -691,10 +818,6 @@ class Connection:
         pass
 
     def close(self):
-        try:
-            _LEAKED.remove(self)      # перестать быть "сиротой" для TTL-сборщика
-        except ValueError:
-            pass
         raw, self._raw = self._raw, None
         cur, self._cur = self._cur, None
         if cur is not None:
@@ -702,9 +825,24 @@ class Connection:
                 cur.close()
             except Exception:
                 pass
-        if raw is not None and self._pool is not None:
+        # КРИТИЧНО (инцидент PoolTimeout 2026-10-28): до putconn закрыть ВСЕ
+        # открытые курсоры соединения. psycopg не считает соединение свободным,
+        # пока у него живы курсоры — такое соединение «навсегда» выпадает из
+        # available и пул исчерпывается за минуту при опросе фронта.
+        try:
+            self._close_open_cursors()
+        except Exception:
+            pass
+        if self._registered:
+            try:
+                _LEAKED.remove(self)  # перестать быть "сиротой" для TTL-сборщика
+            except ValueError:
+                pass
+            self._registered = False
+        if raw is not None and self._pool is not None and not self._released:
+            self._released = True
             self._pool.putconn(raw)
-        elif raw is not None:
+        elif raw is not None and self._pool is None:
             raw.close()
 
     def __enter__(self):
@@ -720,24 +858,52 @@ _POOL: ConnectionPool | None = None
 # в пул по TTL. Иначе legacy-код main.py (store.connect() как аргумент функции)
 # удерживал бы соединения навсегда и пул исчерпывался за десятки запросов.
 _LEAKED: list["Connection"] = []
+import threading as _threading
+_LEAK_LOCK = _threading.Lock()
 
 
 def _reclaim_leaked(max_keep: int = 256) -> None:
-    """Вернуть в пул соединения-сироты, живущие дольше PG_LEAK_TTL секунд."""
+    """Вернуть в пул соединения-сироты, живущие дольше PG_LEAK_TTL секунд.
+
+    Поток-безопасность: снимаем обёртки из списка ПОД замком и закрываем
+    (putconn) уже вне его — close() может блокироваться на сетке с PostgreSQL.
+    Повторный putconn исключён флагом _released в Connection.close().
+
+    Адаптивный TTL: при высокой загрузке пула (>=80% занятых) сироты старше
+    5 секунд回收ятся сразу — legacy-код держит соединения без close(), и при
+    опросе фронта каждые несколько секунд обычный TTL=30 не успевал бы
+    освобождать пул между пиками (инцидент PoolTimeout 2026-10-28)."""
     import time as _t
     ttl = float(os.environ.get("PG_LEAK_TTL", "30"))
+    busy, mx = _pool_pressure()
+    if mx and busy >= mx * 0.8:
+        ttl = min(ttl, 5.0)
     now = _t.time()
-    keep = []
-    for c in _LEAKED:
-        if now - getattr(c, "_born", 0) >= ttl:
-            try:
-                c.close()
-            except Exception:
-                pass
-        else:
-            keep.append(c)
-    del _LEAKED[:]
-    _LEAKED.extend(keep[-max_keep:])   # защита от бесконечного роста списка
+    with _LEAK_LOCK:
+        expired = []
+        keep = []
+        for c in _LEAKED:
+            if now - getattr(c, "_born", 0) >= ttl:
+                expired.append(c)
+            else:
+                keep.append(c)
+        del _LEAKED[:]
+        _LEAKED.extend(keep[-max_keep:])   # защита от бесконечного роста списка
+    for c in expired:
+        try:
+            c.close()
+        except Exception:
+            pass
+
+
+def _pool_pressure() -> tuple[int, int]:
+    """(занятых в пуле, max_size) — для адаптивного TTL ниже."""
+    try:
+        st = get_pool().get_stats()
+        busy = int(st.get("pool_size", 0)) - int(st.get("pool_available", 0))
+        return busy, int(st.get("pool_max", 10)) or 10
+    except Exception:
+        return 0, 10
 
 
 def get_pool() -> ConnectionPool:
@@ -792,15 +958,47 @@ class _AutoConn:
 
     def __init__(self):
         self._c: Connection | None = None   # закреплённое (with/close) соединение
+        self._in_with = False               # внутри with-блока (release в __exit__)
 
     def _get(self) -> Connection:
         if self._c is not None:
             return self._c
         _reclaim_leaked()
-        return Connection(get_pool().getconn(), pool=get_pool(), conninfo=_database_url())
+        # ЕДИНСТВЕННЫЙ владелец пулового соединения — сама обёртка Connection
+        # (зарегистрирована в _LEAKED; TTL-сборщик закрывает сироты, close()
+        # снимает регистрацию). Прежняя схема «временная обёртка + _ret»
+        # роняла пул: на каждом запросе создавалась новая обёртка с новым
+        # курсором, старый курсор оставался открытым внутри raw-соединения,
+        # putconn не возвращал его в available (psycopg ждёт закрытия курсоров),
+        # и за минуту 8 потоков заполняли весь пул «висячими» соединениями
+        # (PoolTimeout при живом PostgreSQL, инцидент 2026-10-28 00:40).
+        c = Connection(get_pool().getconn(), pool=get_pool(), conninfo=_database_url())
+        c._owner = self                     # для _maybe_release_nonselect
+        return c
+
+    def _pin(self, c: Connection) -> None:
+        """Закрепить соединение за прокси до конца операции (см. execute())."""
+        old = self._c
+        if old is not None and old is not c:   # прежнее закреплённое освободить
+            try:
+                old.close()
+            except Exception:
+                pass
+        self._c = c
+        if c is not None:
+            c._owner = self                    # для _maybe_release_nonselect
+
+    def _unpin_release(self) -> None:
+        """Снять закрепку и вернуть соединение в пул (см. _maybe_release_nonselect)."""
+        c, self._c = self._c, None
+        if c is not None:
+            try:
+                c.close()
+            except Exception:
+                pass
 
     def _ret(self, c: Connection) -> None:
-        if c is not self._c:                 # временное соединение прокси
+        if c is not self._c:                 # чужое/уже откреплённое — не трогаем
             try:
                 c.close()
             except Exception:
@@ -813,69 +1011,92 @@ class _AutoConn:
         except Exception:
             self._ret(c)
             raise
-        if c is not self._c:                 # временное — вернём в пул после fetch
-            cur._auto_release = lambda: self._ret(c)
+        # Закрепляем соединение за прокси: все курсоры этого соединения
+        # переиспользуются (см. Connection._run), а возврат в пул произойдёт
+        # либо при явном close(), либо TTL-сборщиком (_LEAKED) — но никогда
+        # посреди незавершённой операции вызывающего кода.
+        self._pin(c)
         return cur
 
     def _run_transient(self, psql, args):
-        """psycopg-курсор на временном пуловом соединении; соединение будет
-        возвращено в пул сразу после выборки результатов этого курсора.
+        """Выполнить SQL на текущем закреплённом соединении прокси.
 
-        Как и Connection._run: лечим отсутствующую таблицу (42P01) — создать
-        и повторить один раз."""
-        if self._c is not None:              # закреплённое with-соединение
-            return self._c._live_raw().cursor(row_factory=compat_dict_row)
-        for attempt in (0, 1):
-            raw = get_pool().getconn()
+        ВАЖНО: раньше здесь шёл прямой getconn() из пула с putconn в замыкании
+        _ReleaseCursor — но этот путь вызывается из Cursor.execute при
+        owner=_AutoConn, т.е. соединение УЖЕ взято в _get(), и повторный
+        getconn() на каждый запрос удваивал нагрузку на пул (инцидент
+        PoolTimeout 2026-10-28 00:40). Теперь запрос выполняется на том же
+        соединении через Connection._run (переиспользование курсора, лечение
+        42P01/обрывов); возврат в пул — по close()/TTL-сборщику.
+        """
+        if self._c is not None:
+            return self._c._run(psql, args, None)
+        # без закреплённого соединения (страховочный путь): одноразовое
+        # временное соединение с гарантированным putconn после вычитки
+        raw = get_pool().getconn()
+        try:
+            raw.autocommit = True
+            cur = raw.cursor(row_factory=compat_dict_row)
+            cur.execute(psql, args)
+        except psycopg.Error:
             try:
-                raw.autocommit = True
-                cur = raw.cursor(row_factory=compat_dict_row)
-                cur.execute(psql, args)
-            except psycopg.Error as e:
+                cur.close()
+            except Exception:
+                pass
+            try:
+                get_pool().putconn(raw, bad=True)
+            except Exception:
                 try:
-                    cur.close()
+                    raw.close()
                 except Exception:
                     pass
-                healed = (attempt == 0 and is_missing_relation(e)
-                          and _heal_missing_relation(raw, str(e)))
+            raise
+        def _ret(cur=cur, raw=raw):
+            try:
+                cur.close()
+            except Exception:
+                pass
+            try:
+                get_pool().putconn(raw)
+            except Exception:
                 try:
-                    get_pool().putconn(raw, bad=not healed)
+                    raw.close()
                 except Exception:
-                    try:
-                        raw.close()
-                    except Exception:
-                        pass
-                if healed:
-                    continue
-                raise
-            else:
-                def _ret(cur=cur, raw=raw):
-                    try:
-                        cur.close()
-                    except Exception:
-                        pass
-                    try:
-                        get_pool().putconn(raw)
-                    except Exception:
-                        try:
-                            raw.close()
-                        except Exception:
-                            pass
-                return _ReleaseCursor(cur, _ret)
-        raise RuntimeError("unreachable")
+                    pass
+        return _ReleaseCursor(cur, _ret)
+
+    def _release_after_ddl(self, c: Connection) -> None:
+        """executescript не возвращает строк — после применения DDL снимаем
+        закрепку и возвращаем соединение в пул немедленно (иначе каждый шаг
+        инициализации схемы держал бы по соединению из 10 до TTL-сборщика;
+        инцидент PoolTimeout 2026-10-28 00:40)."""
+        if self._in_with:
+            return                           # with-блок: release в __exit__
+        if c is self._c:
+            self._unpin_release()
+        else:
+            try:
+                c.close()
+            except Exception:
+                pass
 
     def executescript(self, script):
         c = self._get()
+        self._pin(c)                         # закрепляем ДО выполнения: при
+                                             # падении mid-script соединение всё
+                                             # равно будет закрыто в except
         try:
-            return c.executescript(script)
-        finally:
-            self._ret(c)
+            res = c.executescript(script)
+        except Exception:
+            self._ret(c)                     # если ещё закреплено — открепить+close
+            raise
+        self._release_after_ddl(c)
+        return res
 
     def cursor(self):
         c = self._get()
         cur = c.cursor()
-        if c is not self._c:
-            cur._auto_release = lambda: self._ret(c)
+        self._pin(c)
         return cur
 
     def commit(self):
@@ -900,10 +1121,19 @@ class _AutoConn:
 
     def __enter__(self):
         _reclaim_leaked()
-        self._c = Connection(get_pool().getconn(), pool=get_pool(), conninfo=_database_url())
+        # registered=False: обёртки, создаваемые в with-блоке, закрываются
+        # гарантированно в __exit__ (даже при исключении). Если оставить их в
+        # _LEAKED, то при медленном теле with (>TTL) сборщик вернул бы сырое
+        # соединение в пул ДО выхода из блока — двойной putconn и повреждение
+        # пула (PoolTimeout при живом PostgreSQL, см. инцидент 2026-10-28).
+        self._c = Connection(get_pool().getconn(), pool=get_pool(),
+                             conninfo=_database_url(), registered=False)
+        self._c._owner = self
+        self._in_with = True
         return self
 
     def __exit__(self, exc_type, exc, tb):
+        self._in_with = False
         self.close()
         return False
 
