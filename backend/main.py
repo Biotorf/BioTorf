@@ -26,6 +26,7 @@ import logging
 import mimetypes
 import os
 import re
+import secrets
 import shutil
 import tempfile
 import threading
@@ -345,6 +346,12 @@ async def _auth_middleware_inner(request: Request, call_next, path: str):
     # живым реестром: снятая директором роль или удалённый аккаунт отзывают
     # доступ немедленно, не дожидаясь истечения TTL токена
     if has_users:
+        # сервисный суб «worker» (внутренний tg-воркер) не создаётся при
+        # регистрации — заводим его сами один раз; иначе middleware всегда
+        # отклоняет токены воркера с 401 («Аккаунт отозван администратором»),
+        # и чаты Telegram не работают.
+        if request.state.user == "worker" and not users.get("worker"):
+            _ensure_worker_account()
         live = users.get(request.state.user)
         if not live or not live.get("active"):
             return JSONResponse(status_code=401, content={
@@ -529,10 +536,48 @@ def _startup_checks():
 
 
 def _internal_service_token() -> str:
-    """Сервисный JWT для внутренних контейнеров (tg-worker): суб «worker»,
-    роль director, TTL 10 минут. Подписывается тем же секретом, что и токены
-    пользователей (AUTH_SECRET/AUTH_PASSWORD), поэтому проходит middleware."""
+    """Сервисный JWT для внутренних контейнеров (tg-worker): суб «worker».
+
+    ВАЖНО: роль берётся из живого реестра пользователей так же, как у обычных
+    сотрудников. Если в системе есть зарегистрированные сотрудники, middleware
+    сверяет токен с таблицей users — фиктивная учётка «worker» отсутствовала бы
+    там и каждый запрос воркера получал 401 («Аккаунт отозван администратором»).
+    Поэтому при наличии сотрудников выдаём токен только если в users заведена
+    сервисная запись login == "worker" (её создаёт самовосстановление ниже);
+    роль — director этой записи. Пока сотрудников нет, работает прежний режим
+    пароля/DEV_MODE, где произвольный sub проходит проверку подписи."""
+    live = users.get("worker") if users.count() > 0 else None
+    if live and live.get("active"):
+        return auth.make_token("worker", live.get("role") or "director",
+                               ttl=600,
+                               token_version=live.get("token_version", 0))
     return auth.make_token("worker", "director", ttl=600)
+
+
+def _ensure_worker_account() -> None:
+    """Самовосстановление сервисной учётки «worker» в таблице users.
+
+    Нужна, когда в CRM уже зарегистрированы сотрудники: middleware сверяет
+    каждый токен с живым реестром, и без записи «worker» внутренний tg-воркер
+    гарантированно получает 401. Пароль генерируется случайный и нигде не
+    хранится — вход по нему невозможен, авторизация воркера идёт только через
+    /api/internal/worker-token (доступен исключительно из docker-сети)."""
+    try:
+        if users.count() == 0:
+            return
+        if users.get("worker"):
+            return
+        with store.connect() as conn:
+            conn.execute(
+                "INSERT INTO users (login, name, role, pw_hash, created_at, active) "
+                "VALUES (?,?,?,?,?,1)",
+                ("worker", "Сервисный аккаунт (tg-worker)", "director",
+                 users.hash_password(secrets.token_hex(32)),
+                 datetime.now(timezone.utc).isoformat(timespec="seconds")),
+            )
+        log.info("[auth] создана сервисная учётка «worker» для внутреннего tg-воркера")
+    except Exception as e:
+        log.warning("[auth] не удалось создать сервисную учётку worker: %s", e)
 
 
 def _refresh_channel_status():
