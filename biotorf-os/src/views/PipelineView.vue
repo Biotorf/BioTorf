@@ -1,12 +1,15 @@
 <script setup>
 // «Сделки и воронка» (руководство v0.9 §2, §3 шаг 4): канбан по стадиям +
 // таблица сделок; клик — карточка сделки (§5), переход в сквозной процесс.
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
 import { useFormatters } from '@/composables/useFormatters';
 import StatusPill from '@/components/ui/StatusPill.vue';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
+import CrmImportModal from '@/components/CrmImportModal.vue';
+
+const importColl = ref('');   // непусто — открыта модалка импорта
 
 const db = useDbStore();
 const ui = useUiStore();
@@ -50,6 +53,7 @@ function move(d, dir) {
       <BackendBadge collection="deals" />
       </div>
       <input :value="ui.search" @input="ui.search = $event.target.value" class="input" style="max-width:260px" placeholder="Поиск по сделкам…" />
+      <button class="btn slim" @click="importColl = 'deals'" title="Загрузить сделки из CSV/JSON">⇪ Импорт</button>
     </div>
 
     <!-- Канбан -->
@@ -87,6 +91,8 @@ function move(d, dir) {
         </tbody>
       </table>
     </section>
+
+    <CrmImportModal v-if="importColl" :coll="importColl" @close="importColl = ''" />
   </div>
 </template>
 

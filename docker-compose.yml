@@ -52,6 +52,17 @@ services:
       # WhatsApp Cloud API — исходящая отправка из ленты (см. README-WHATSAPP.md):
       WHATSAPP_TOKEN: ${WHATSAPP_TOKEN:-}
       WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+      # Авторизация API (вкладка «Вход»): AUTH_PASSWORD — общий пароль,
+      # AUTH_SECRET — ключ подписи JWT; DEV_MODE=1 ослабляет авторизацию
+      # (только локальная разработка). Без них /api/* закрыт (503/401),
+      # а внутренний tg-воркер не сможет читать очередь исходящих.
+      AUTH_PASSWORD: ${AUTH_PASSWORD:-}
+      AUTH_SECRET: ${AUTH_SECRET:-}
+      AUTH_TOKEN_TTL: ${AUTH_TOKEN_TTL:-}
+      AUTH_DEFAULT_ROLE: ${AUTH_DEFAULT_ROLE:-}
+      DEV_MODE: ${DEV_MODE:-}
+      # Ключ шифрования секретов каналов в БД (secrets_store)
+      SECRET_KEY: ${SECRET_KEY:-}
     volumes:
       # farms.json и голосовые медиа живут в volume /data (создаётся автоматически).
       # Сама БД — в PostgreSQL (volume pgdata), а не в этом каталоге.
@@ -100,11 +111,15 @@ services:
         condition: service_healthy
     command: ["python", "telegram_worker.py", "--api", "http://backend:8787"]
     environment:
-      # токен и секрет берутся из подключённого аккаунта Telegram в CRM
-      # («Каналы → Telegram»); эти переменные — необязательный fallback
+      # Токен бота и секрет вебхука — ИЗ ФАЙЛА .env (прежняя схема до вкладки
+      # «Каналы CRM»): заполните TELEGRAM_BOT_TOKEN и TELEGRAM_WEBHOOK_SECRET.
       COMMS_API: http://backend:8787
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
+      # AUTH_PASSWORD нужен воркеру для обращений к /api/comms/outbox
+      # (получение исходящих ответов и отметка о доставке).
+      AUTH_PASSWORD: ${AUTH_PASSWORD:-}
+      AUTH_SECRET: ${AUTH_SECRET:-}
 
 volumes:
   pgdata:

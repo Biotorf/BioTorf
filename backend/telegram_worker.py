@@ -4,12 +4,15 @@ Telegram не даёт webhook без публичного HTTPS, поэтому
 хоста: long-poll через getUpdates -> пересылка апдейтов в POST /webhooks/telegram.
 
 Запуск:
+    TELEGRAM_BOT_TOKEN=<токен из @BotFather> \
     TELEGRAM_WEBHOOK_SECRET=<тот же секрет, что в .env> \
     python telegram_worker.py [--api http://127.0.0.1:8787]
 
-Токен бота берётся из подключённого аккаунта Telegram («Настройки → Каналы»,
-хранится в БД); переменная окружения TELEGRAM_BOT_TOKEN — необязательный
-fallback для локальной разработки.
+Токен бота и секрет вебхука берутся ИЗ ФАЙЛА .env (TELEGRAM_BOT_TOKEN,
+TELEGRAM_WEBHOOK_SECRET) — как в ранней версии, когда отдельной вкладки
+«Каналы CRM» ещё не было. Никаких обращений к CRM за секретами: тот механизм
+(worker-token / with_token / сервисная учётка «worker») нестабильно проходил
+авторизацию middleware и порождал вечные 401 — удалён полностью.
 
 Чтобы бот получал сообщения с телефонами контактов:
     @BotFather -> /setprivacy -> Disable  (или используйте личные чаты)
@@ -40,48 +43,19 @@ def _normalize_api(url: str) -> str:
 
 
 API = _normalize_api(API)
-ENV_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()  # fallback для локальной разработки
-WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
-API_KEY = os.environ.get("CRM_API_KEY", "").strip()   # явный сервисный токен (необязателен)
+ENV_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()  # основной источник токена (.env)
+WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")    # секрет вебхука (.env)
+API_KEY = os.environ.get("CRM_API_KEY", "").strip()  # необязательный статический ключ (legacy-режим)
 OFFSET = 0
-_TOKEN_CACHE = {"tok": "", "exp": 0.0}
 
 
-def service_token() -> str:
-    """Сервисный JWT для обращений воркера к CRM API.
-
-    Порядок: 1) явный CRM_API_KEY из env; 2) внутренний эндпоинт
-    GET /api/internal/worker-token (доступен только из docker-сети),
-    кэшируется до истечения TTL."""
-    if API_KEY:
-        return API_KEY
-    now = time.time()
-    # прошлый токен принимаем только если он реально ещё жив (запас 30 сек),
-    # иначе при смене AUTH_SECRET/перезапуске бэкенда вечно получаем 401
-    if _TOKEN_CACHE["tok"] and _TOKEN_CACHE["exp"] - 30 > now:
-        return _TOKEN_CACHE["tok"]
-    try:
-        with urllib.request.urlopen(
-                f"{API.rstrip('/')}/api/internal/worker-token", timeout=10) as resp:
-            tok = (json.loads(resp.read() or b"{}").get("token") or "").strip()
-        if tok:
-            _TOKEN_CACHE["tok"] = tok
-            _TOKEN_CACHE["exp"] = now + 540  # TTL 10 мин, обновляем за 9
-            return tok
-    except urllib.error.URLError as e:
-        # DNS/соединение: чаще всего неверный COMMS_API/--api (например,
-        # http://127.0.0.1:8787 внутри контейнера = сам воркер, а не бэкенд)
-        print(f"[tg-worker] worker-token недоступен ({API}): {e.reason} — "
-              f"проверьте, что контейнер backend запущен и доступен по имени «backend»",
-              file=sys.stderr)
-    except Exception as e:
-        print(f"[tg-worker] worker-token недоступен ({API}): {e}", file=sys.stderr)
-    return ""
-
-
-def _auth_headers() -> dict:
-    tok = service_token()
-    return {"Authorization": f"Bearer {tok}"} if tok else {}
+# ── токен бота и секрет вебхука — строго из файла .env (как в ранней версии) ──
+# Механизм получения секретов из CRM через вкладку «Каналы» (эндпоинт
+# /api/internal/worker-token, сервисная учётка «worker», with_token=1) удалён:
+# он зависел от JWT-middleware и порождал вечные 401 у tg-воркера. Воркер
+# больше НИКОГДА не запрашивает секреты у CRM; для обращений к /api/*
+# используется Authorization, который middleware принимает в режиме общего
+# пароля AUTH_PASSWORD (или DEV_MODE=1).
 
 
 def _wait_backend(timeout_s: float = 60.0) -> bool:
@@ -109,6 +83,49 @@ def _wait_backend(timeout_s: float = 60.0) -> bool:
     return False
 
 
+def _auth_headers() -> dict:
+    """Заголовок Authorization для /api/* CRM.
+
+    Ранняя схема: воркер работает в режиме общего пароля — middleware бэкенда
+    принимает любой непустой Bearer-токен, когда сотрудники ещё не
+    зарегистрированы, либо токен сотрудника, выданный POST /auth/login по
+    AUTH_PASSWORD. Поэтому: 1) явный CRM_API_KEY из .env; 2) штатный логин
+    worker@biotorf.local c паролем AUTH_PASSWORD (если задан); 3) fallback —
+    сам AUTH_PASSWORD (старое поведение legacy-воркера)."""
+    if API_KEY:
+        return {"Authorization": f"Bearer {API_KEY}"}
+    pw = os.environ.get("AUTH_PASSWORD", "").strip()
+    if not pw:
+        return {}
+    tok = _login_for_password(pw)
+    return {"Authorization": f"Bearer {tok}"} if tok else {}
+
+
+_LOGIN_CACHE = {"tok": "", "exp": 0.0}
+
+
+def _login_for_password(pw: str) -> str:
+    """Получить штатный JWT через POST /auth/login (кэш ~9 мин из TTL 12 ч)."""
+    now = time.time()
+    if _LOGIN_CACHE["tok"] and _LOGIN_CACHE["exp"] > now:
+        return _LOGIN_CACHE["tok"]
+    try:
+        body = json.dumps({"login": "worker@biotorf.local", "password": pw}).encode()
+        req = urllib.request.Request(
+            f"{API.rstrip('/')}/auth/login", data=body, method="POST",
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            tok = (json.loads(resp.read() or b"{}").get("token") or "").strip()
+        if tok:
+            _LOGIN_CACHE["tok"] = tok
+            _LOGIN_CACHE["exp"] = now + 540
+            return tok
+    except Exception as e:
+        print(f"[tg-worker] /auth/login не выполнен ({e}) — использую пароль как Bearer",
+              file=sys.stderr)
+    return pw  # legacy-режим: режим общего пароля принимает любой Bearer
+
+
 def _get_json_auth(path: str) -> dict:
     for attempt in (1, 2, 3):
         req = urllib.request.Request(
@@ -117,11 +134,11 @@ def _get_json_auth(path: str) -> dict:
             with urllib.request.urlopen(req, timeout=15) as resp:
                 return json.loads(resp.read() or b"{}")
         except urllib.error.HTTPError as e:
-            if e.code == 401 and attempt < 3:
-                # сервисный токен протух/пуст (перезапуск бэкенда, смена
-                # секрета или гонка при старте) — берём свежий и повторяем
-                _TOKEN_CACHE["tok"] = ""
-                _TOKEN_CACHE["exp"] = 0.0
+            if e.code in (401, 403) and attempt < 3:
+                # токен протух/пуст (перезапуск бэкенда, смена AUTH_SECRET или
+                # гонка при старте) — сбрасываем кэш логина, ждём backend, повторяем
+                _LOGIN_CACHE["tok"] = ""
+                _LOGIN_CACHE["exp"] = 0.0
                 if attempt == 2:
                     _wait_backend()
                 continue
@@ -130,39 +147,18 @@ def _get_json_auth(path: str) -> dict:
             # DNS/соединение: backend ещё не поднялся — подождём и повторим
             if attempt < 3:
                 _wait_backend()
-                _TOKEN_CACHE["tok"] = ""
-                _TOKEN_CACHE["exp"] = 0.0
                 continue
             raise
     return {}
 
 
 def resolve_webhook_secret() -> str:
-    """Секрет вебхука Telegram: привязанный аккаунт из CRM
-    (GET /api/channels/telegram/secrets, доступен только сервисному субу
-    «worker»), затем env-fallback TELEGRAM_WEBHOOK_SECRET."""
-    try:
-        data = _get_json_auth("/api/channels/telegram/secrets")
-        sec = (data.get("secret") or "").strip()
-        if sec:
-            return sec
-    except Exception as e:
-        print(f"[tg-worker] не удалось получить секрет из CRM ({e}) — пробую env",
-              file=sys.stderr)
+    """Секрет вебхука Telegram — из TELEGRAM_WEBHOOK_SECRET в .env."""
     return WEBHOOK_SECRET
 
 
 def resolve_bot_token() -> str:
-    """Токен бота: сначала аккаунт Telegram из CRM (GET /api/channels/telegram/accounts,
-    токен отдаётся только с авторизацией), затем env-fallback."""
-    try:
-        data = _get_json_auth("/api/channels/telegram/accounts?with_token=1")
-        for acc in (data.get("items") or data.get("accounts") or []):
-            tok = (acc.get("token") or "").strip()
-            if tok and acc.get("status", "active") == "active":
-                return tok
-    except Exception as e:
-        print(f"[tg-worker] не удалось получить токен из CRM ({e}) — пробую env", file=sys.stderr)
+    """Токен бота — из TELEGRAM_BOT_TOKEN в .env."""
     return ENV_BOT_TOKEN
 
 
@@ -313,33 +309,24 @@ def main():
     args.api = API
 
     # ждём подъёма backend: DNS-имя «backend» появляется только когда его
-    # контейнер запущен; без этого первые resolve_* падают и воркер
+    # контейнер запущен; без этого первые попытки падают и воркер
     # выходил с кодом 1 в restart-шторм
     _wait_backend()
 
-    # токен и секрет берём из подключённого аккаунта Telegram в CRM
-    # («Настройки → Каналы»), env — только fallback для локальной разработки
-    BOT_TOKEN = ""
-    WEBHOOK_SECRET = ""
-    for attempt in range(5):
-        try:
-            BOT_TOKEN = resolve_bot_token()
-            WEBHOOK_SECRET = resolve_webhook_secret()
-        except Exception as e:
-            print(f"[tg-worker] CRM недоступен (попытка {attempt + 1}/5): {e}", file=sys.stderr)
-        if BOT_TOKEN and WEBHOOK_SECRET:
-            break
-        time.sleep(3)
+    # токен бота и секрет вебхука — из файла .env (TELEGRAM_BOT_TOKEN,
+    # TELEGRAM_WEBHOOK_SECRET), как в ранней версии проекта
+    BOT_TOKEN = resolve_bot_token()
+    WEBHOOK_SECRET = resolve_webhook_secret()
 
     if not BOT_TOKEN:
         sys.exit(
-            "[tg-worker] ОШИБКА: токен бота не найден. Подключите аккаунт Telegram "
-            "в CRM («Каналы → Telegram → Подключить») или задайте TELEGRAM_BOT_TOKEN "
-            "и CRM_API_KEY в .env, затем: docker compose --profile tg up -d --force-recreate telegram-worker"
+            "[tg-worker] ОШИБКА: TELEGRAM_BOT_TOKEN не задан. Впишите токен из "
+            "@BotFather в переменную TELEGRAM_BOT_TOKEN файла .env, затем: "
+            "docker compose --profile tg up -d --force-recreate telegram-worker"
         )
     if not WEBHOOK_SECRET:
-        sys.exit("[tg-worker] ОШИБКА: не задан секрет вебхука (секрет аккаунта Telegram в CRM "
-                 "или TELEGRAM_WEBHOOK_SECRET в .env)")
+        sys.exit("[tg-worker] ОШИБКА: не задан секрет вебхука — заполните "
+                 "TELEGRAM_WEBHOOK_SECRET в .env")
     print(f"[tg-worker] старт, токен выглядит как {BOT_TOKEN[:12]}...{BOT_TOKEN[-4:]}")
 
     # Сбрасываем webhook, если он был назначен ранее — иначе getUpdates вернёт ошибку 409.

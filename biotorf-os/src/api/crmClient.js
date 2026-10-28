@@ -26,4 +26,8 @@ export const crmApi = {
   update: (coll, id, patch) => req(`/api/crm/${coll}/${id}`, { method: 'PUT', body: JSON.stringify(patch) }),
   remove: (coll, id) => req(`/api/crm/${coll}/${id}`, { method: 'DELETE' }),
   journeyProcess: (journeyId) => req(`/api/crm/journeys/${journeyId}/process`),
+  // массовая загрузка таблицы (CSV-импорт): mode = merge | replace
+  importCollection: (coll, records, mode = 'merge') =>
+    req(`/api/crm/${coll}/import`, { method: 'POST', body: JSON.stringify({ records, mode }) }),
+  wipeCollection: (coll) => req(`/api/crm/${coll}`, { method: 'DELETE' }),
 };

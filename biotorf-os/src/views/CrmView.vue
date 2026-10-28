@@ -6,6 +6,9 @@ import { usePermissions } from '@/composables/usePermissions';
 import { useFormatters } from '@/composables/useFormatters';
 import StatusPill from '@/components/ui/StatusPill.vue';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
+import CrmImportModal from '@/components/CrmImportModal.vue';
+
+const importColl = ref('');   // непусто — открыта модалка импорта этой таблицы
 
 const db = useDbStore();
 const ui = useUiStore();
@@ -51,6 +54,8 @@ const commsUnread = (farmId) => db.comms.filter((c) => c.farmId === farmId && !c
         <div class="subtitle">Реестр хозяйств, контактов и входящих лидов</div>
       </div>
       <BackendBadge collection="farms" />
+      <button class="btn slim" @click="importColl = 'farms'" title="Загрузить хозяйства из CSV/JSON">⇪ Импорт · Хозяйства</button>
+      <button class="btn slim" @click="importColl = 'leads'" title="Загрузить лиды из CSV/JSON">⇪ Импорт · Лиды</button>
       <button class="btn primary slim" @click="ui.go('journey')">＋ Создать · Лид</button>
     </div>
 
@@ -134,5 +139,7 @@ const commsUnread = (farmId) => db.comms.filter((c) => c.farmId === farmId && !c
         </tbody>
       </table>
     </div>
+
+    <CrmImportModal v-if="importColl" :coll="importColl" @close="importColl = ''" />
   </div>
 </template>

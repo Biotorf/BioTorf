@@ -194,6 +194,50 @@ def put_state(conn, payload: dict) -> dict:
     return {"version": 3, "serverTime": _now(), **result}
 
 
+# ── Массовые операции над таблицами (импорт CSV / сброс данных) ─────
+
+def import_collection(conn, coll: str, records: list, mode: str = "merge") -> dict:
+    """Массовая загрузка записей коллекции из внешнего источника (CSV-импорт
+    во фронтенде). Режимы:
+      merge  — апсерт по id (или генерация нового id), существующие не затираются
+               пустыми значениями;
+      replace — сначала полное удаление коллекции, затем загрузка.
+    Возвращает {'created', 'updated', 'total'}.
+    """
+    if coll not in COLLECTIONS:
+        raise ValueError(f"Неизвестная коллекция: {coll}")
+    removed = 0
+    if mode == "replace":
+        cur = conn.execute("DELETE FROM crm_records WHERE coll=?", (coll,))
+        removed = cur.rowcount
+    created = updated = 0
+    for raw in records or []:
+        if not isinstance(raw, dict):
+            continue
+        rec = {k: v for k, v in raw.items() if k not in ("_updatedAt", "_expectedRev")}
+        rid = rec.get("id")
+        if rid and get_record(conn, coll, rid):
+            existing = get_record(conn, coll, rid)
+            merged = {**existing, **rec, "id": rid}
+            upsert(conn, coll, merged, rid)
+            updated += 1
+        else:
+            upsert(conn, coll, rec, rid or None)
+            created += 1
+    conn.commit()
+    return {"created": created, "updated": updated, "removed": removed,
+            "total": len(list_records(conn, coll))}
+
+
+def wipe_collection(conn, coll: str) -> int:
+    """Полностью очистить одну таблицу CRM. Возвращает число удалённых записей."""
+    if coll not in COLLECTIONS:
+        raise ValueError(f"Неизвестная коллекция: {coll}")
+    cur = conn.execute("DELETE FROM crm_records WHERE coll=?", (coll,))
+    conn.commit()
+    return cur.rowcount
+
+
 # ── Сборка сквозного процесса (руководство §3) ──────────────────────
 
 def build_process(conn, journey_id: str) -> dict | None:

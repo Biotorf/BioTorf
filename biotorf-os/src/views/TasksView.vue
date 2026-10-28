@@ -7,6 +7,9 @@ import { useUiStore } from '@/stores/ui';
 import { useFormatters } from '@/composables/useFormatters';
 import StatusPill from '@/components/ui/StatusPill.vue';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
+import CrmImportModal from '@/components/CrmImportModal.vue';
+
+const importColl = ref('');   // непусто — открыта модалка импорта
 
 const db = useDbStore();
 const ui = useUiStore();
@@ -57,6 +60,7 @@ function create() {
         <div class="subtitle">Поручения с исполнителем, сроком и статусом · просрочено: <b :style="lateCount ? 'color:#c62828' : ''">{{ lateCount }}</b></div>
       <BackendBadge collection="tasks" />
       </div>
+      <button class="btn slim" @click="importColl = 'tasks'" title="Загрузить задачи из CSV/JSON">⇪ Импорт</button>
       <button class="btn primary slim" @click="showNew = !showNew">＋ Создать задачу</button>
     </div>
 
@@ -96,6 +100,8 @@ function create() {
         </tbody>
       </table>
     </section>
+
+    <CrmImportModal v-if="importColl" :coll="importColl" @close="importColl = ''" />
   </div>
 </template>
 

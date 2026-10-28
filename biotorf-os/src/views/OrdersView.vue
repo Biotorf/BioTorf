@@ -6,6 +6,9 @@ import { useUiStore } from '@/stores/ui';
 import { useFormatters } from '@/composables/useFormatters';
 import StatusPill from '@/components/ui/StatusPill.vue';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
+import CrmImportModal from '@/components/CrmImportModal.vue';
+
+const importColl = ref('');   // непусто — открыта модалка импорта
 
 const db = useDbStore();
 const ui = useUiStore();
@@ -38,6 +41,7 @@ const skuName = (id) => db.skuById(id)?.name || id;
     <div class="toolbar">
       <input :value="ui.search" @input="ui.search = $event.target.value" class="input" style="max-width:320px" placeholder="Поиск по заказам…" />
       <select v-model="statusFilter" class="select" style="max-width:220px"><option v-for="s in STATUSES" :key="s">{{ s }}</option></select>
+      <button class="btn slim" @click="importColl = 'orders'" title="Загрузить заказы из CSV/JSON">⇪ Импорт</button>
     </div>
 
     <section class="panel">
@@ -58,6 +62,8 @@ const skuName = (id) => db.skuById(id)?.name || id;
         </tbody>
       </table>
     </section>
+
+    <CrmImportModal v-if="importColl" :coll="importColl" @close="importColl = ''" />
   </div>
 </template>
 

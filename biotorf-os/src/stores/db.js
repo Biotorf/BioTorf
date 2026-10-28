@@ -534,6 +534,73 @@ export const useDbStore = defineStore('db', {
     },
 
     // ── Синхронизация CRM-состояния с сервером (backend /api/crm/state) ──
+
+    // ── Наполнение таблиц: CSV/JSON-импорт и очистка ───────────────────
+    // Вызывается из UI («Импорт» в табличных разделах). records — массив
+    // объектов [{col: value}]; заголовки CSV используются как имена полей.
+    parseCsv(text) {
+      const rows = [];
+      let row = [], field = '', inQ = false;
+      for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        if (inQ) {
+          if (ch === '"' && text[i + 1] === '"') { field += '"'; i++; }
+          else if (ch === '"') inQ = false;
+          else field += ch;
+        } else if (ch === '"') inQ = true;
+        else if (ch === ',' || ch === ';') { row.push(field); field = ''; }
+        else if (ch === '\n' || ch === '\r') {
+          if (ch === '\r' && text[i + 1] === '\n') i++;
+          row.push(field); field = '';
+          if (row.some((c) => c.trim() !== '')) rows.push(row);
+          row = [];
+        } else field += ch;
+      }
+      row.push(field);
+      if (row.some((c) => c.trim() !== '')) rows.push(row);
+      return rows;
+    },
+    csvToRecords(csvText) {
+      const rows = this.parseCsv(String(csvText || '').replace(/^\uFEFF/, ''));
+      if (!rows.length) return [];
+      const headers = rows[0].map((h) => h.trim());
+      return rows.slice(1).map((r) => {
+        const o = {};
+        headers.forEach((h, i) => { if (h) o[h] = (r[i] ?? '').trim(); });
+        return o;
+      }).filter((o) => Object.values(o).some((v) => v !== ''));
+    },
+    async importCollection(coll, records, mode = 'merge') {
+      if (!SYNC_COLLECTIONS.includes(coll)) throw new Error('Неизвестная таблица: ' + coll);
+      if (!Array.isArray(records) || !records.length) throw new Error('Пустой набор данных для импорта');
+      const res = apiOn()
+        ? await crmApi.importCollection(coll, records, mode)
+        : null;
+      if (mode === 'replace') this.data[coll] = [];
+      const byId = new Map((this.data[coll] || []).map((r) => [r.id, r]));
+      let created = 0, updated = 0;
+      for (const raw of records) {
+        const rec = { ...raw };
+        if (!rec.id) rec.id = `${coll.slice(0, 2).toUpperCase()}-${String(Date.now()).slice(-8)}-${Math.floor(Math.random() * 900 + 100)}`;
+        const ex = byId.get(rec.id);
+        if (ex) { Object.assign(ex, rec); updated++; } else { (this.data[coll] ??= []).push(rec); created++; }
+      }
+      this.save(`Импорт ${coll}: +${created}/${updated}`, coll);
+      return res || { created, updated, total: (this.data[coll] || []).length };
+    },
+    async importCsvFile(coll, file, mode = 'merge') {
+      const text = await file.text();
+      return this.importCollection(coll, this.csvToRecords(text), mode);
+    },
+    async wipeCollection(coll) {
+      if (!SYNC_COLLECTIONS.includes(coll)) throw new Error('Неизвестная таблица: ' + coll);
+      const n = (this.data[coll] || []).length;
+      this.data[coll] = [];
+      if (apiOn()) await crmApi.wipeCollection(coll);
+      this.save(`Очищена таблица ${coll} (${n} записей)`, coll);
+      return { removed: n };
+    },
+
     queueCrmSync() {
       if (!apiOn()) return;
       if (this._crmSyncTimer) clearTimeout(this._crmSyncTimer);

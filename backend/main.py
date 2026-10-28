@@ -91,15 +91,16 @@ WHATSAPP_PHONE_NUMBER_ID = (_env("WHATSAPP_PHONE_NUMBER_ID") or "").strip()  # i
 
 
 def tg_token() -> str:
-    """Токен Telegram-бота: аккаунт канала из UI (приоритет), иначе env-фолбэк."""
-    return (channels.get_secret("telegram") or _env("TELEGRAM_BOT_TOKEN") or "").strip()
+    """Токен Telegram-бота: берётся из .env (TELEGRAM_BOT_TOKEN) — как в ранней
+    версии проекта. Привязка через вкладку «Каналы» удалена: она зависела от
+    внутреннего worker-token и порождала 401 у tg-воркера."""
+    return _env("TELEGRAM_BOT_TOKEN").strip()
 
 
 def wa_send_creds() -> tuple[str, str]:
-    """(token, phone_number_id) для WhatsApp Cloud API: сначала аккаунт канала
-    из UI, затем fallback из .env."""
-    t, pid = channels.wa_credentials()
-    return (t or WHATSAPP_SEND_TOKEN), (pid or WHATSAPP_PHONE_NUMBER_ID)
+    """(token, phone_number_id) для WhatsApp Cloud API — из .env
+    (WHATSAPP_TOKEN / WHATSAPP_PHONE_NUMBER_ID), прежняя схема до «Каналов»."""
+    return WHATSAPP_SEND_TOKEN, WHATSAPP_PHONE_NUMBER_ID
 
 CORS_ORIGINS = [o.strip() for o in _env(
     "CORS_ORIGINS",
@@ -346,20 +347,23 @@ async def _auth_middleware_inner(request: Request, call_next, path: str):
     # живым реестром: снятая директором роль или удалённый аккаунт отзывают
     # доступ немедленно, не дожидаясь истечения TTL токена
     if has_users:
-        # сервисный суб «worker» (внутренний tg-воркер) не создаётся при
-        # регистрации — заводим его сами один раз; иначе middleware всегда
-        # отклоняет токены воркера с 401 («Аккаунт отозван администратором»),
-        # и чаты Telegram не работают.
-        if request.state.user == "worker" and not users.get("worker"):
-            _ensure_worker_account()
-        live = users.get(request.state.user)
-        if not live or not live.get("active"):
-            return JSONResponse(status_code=401, content={
-                "detail": "Аккаунт отозван администратором — войдите заново"})
-        # версия токена: смена роли/удаление аккаунта аннулируют старые токены
-        if int(payload.get("tv", 0)) != int(live.get("token_version", 0)):
-            return JSONResponse(status_code=401, content={
-                "detail": "Ваша роль изменена администратором — войдите заново"})
+        # Внутренний tg-воркер (sub == "worker") — служебный процесс docker-стека,
+        # а не сотрудник: его токен (/api/internal/worker-token) живёт 10 минут и
+        # не может «войти заново», поэтому сверка с реестром users к нему НЕ
+        # применяется. Это лечит вечные 401 у воркера («Аккаунт отозван
+        # администратором»), из-за которых чаты Telegram не работали. Роль у
+        # токена — director, но доступ воркера ограничен эндпоинтами outbox /
+        # delivered / media; наружу worker-token не выдаётся (только из
+        # внутренней docker-сети).
+        if request.state.user != "worker":
+            live = users.get(request.state.user)
+            if not live or not live.get("active"):
+                return JSONResponse(status_code=401, content={
+                    "detail": "Аккаунт отозван администратором — войдите заново"})
+            # версия токена: смена роли/удаление аккаунта аннулируют старые токены
+            if int(payload.get("tv", 0)) != int(live.get("token_version", 0)):
+                return JSONResponse(status_code=401, content={
+                    "detail": "Ваша роль изменена администратором — войдите заново"})
     if payload["role"] == "pending":
         return JSONResponse(status_code=403, content={
             "detail": "Учётная запись ожидает подтверждения роли "
@@ -538,46 +542,19 @@ def _startup_checks():
 def _internal_service_token() -> str:
     """Сервисный JWT для внутренних контейнеров (tg-worker): суб «worker».
 
-    ВАЖНО: роль берётся из живого реестра пользователей так же, как у обычных
-    сотрудников. Если в системе есть зарегистрированные сотрудники, middleware
-    сверяет токен с таблицей users — фиктивная учётка «worker» отсутствовала бы
-    там и каждый запрос воркера получал 401 («Аккаунт отозван администратором»).
-    Поэтому при наличии сотрудников выдаём токен только если в users заведена
-    сервисная запись login == "worker" (её создаёт самовосстановление ниже);
-    роль — director этой записи. Пока сотрудников нет, работает прежний режим
-    пароля/DEV_MODE, где произвольный sub проходит проверку подписи."""
-    live = users.get("worker") if users.count() > 0 else None
-    if live and live.get("active"):
-        return auth.make_token("worker", live.get("role") or "director",
-                               ttl=600,
-                               token_version=live.get("token_version", 0))
+    Middleware НЕ сверяет суб «worker» с реестром сотрудников (см.
+    _auth_middleware_inner) — учётка в users не требуется, самовосстановление
+    сервисного аккаунта удалено вместе с привязкой секретов к вкладке «Каналы»:
+    токен бота и секрет вебхука воркер берёт из .env."""
     return auth.make_token("worker", "director", ttl=600)
 
 
 def _ensure_worker_account() -> None:
-    """Самовосстановление сервисной учётки «worker» в таблице users.
+    """УСТАРЕЛО: сервисная учётка «worker» в users больше не нужна.
 
-    Нужна, когда в CRM уже зарегистрированы сотрудники: middleware сверяет
-    каждый токен с живым реестром, и без записи «worker» внутренний tg-воркер
-    гарантированно получает 401. Пароль генерируется случайный и нигде не
-    хранится — вход по нему невозможен, авторизация воркера идёт только через
-    /api/internal/worker-token (доступен исключительно из docker-сети)."""
-    try:
-        if users.count() == 0:
-            return
-        if users.get("worker"):
-            return
-        with store.connect() as conn:
-            conn.execute(
-                "INSERT INTO users (login, name, role, pw_hash, created_at, active) "
-                "VALUES (?,?,?,?,?,1)",
-                ("worker", "Сервисный аккаунт (tg-worker)", "director",
-                 users.hash_password(secrets.token_hex(32)),
-                 datetime.now(timezone.utc).isoformat(timespec="seconds")),
-            )
-        log.info("[auth] создана сервисная учётка «worker» для внутреннего tg-воркера")
-    except Exception as e:
-        log.warning("[auth] не удалось создать сервисную учётку worker: %s", e)
+    Оставлена как no-op — на неё были ссылки из middleware; теперь внутренний
+    tg-воркер опознаётся по sub токена напрямую."""
+    return None
 
 
 def _refresh_channel_status():
@@ -1209,6 +1186,35 @@ def crm_list(coll: str):
     return {"items": crm.list_records(store.connect(), coll)}
 
 
+@app.post("/api/crm/{coll}/import", status_code=200)
+def crm_import(coll: str, body: dict):
+    """Массовая загрузка таблицы (CSV-импорт из UI).
+
+    Тело: {"records": [...], "mode": "merge"|"replace"} (mode по умолчанию merge).
+    merge  — апсерт по id без удаления существующих;
+    replace — таблица очищается, затем загружается присланный набор.
+    """
+    _check_coll(coll)
+    records = (body or {}).get("records")
+    if not isinstance(records, list):
+        raise HTTPException(422, "Ожидается {\"records\": [...]}")
+    mode = (body or {}).get("mode") or "merge"
+    if mode not in ("merge", "replace"):
+        raise HTTPException(422, "mode должен быть merge или replace")
+    try:
+        return crm.import_collection(store.connect(), coll, records, mode)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.delete("/api/crm/{coll}")
+def crm_wipe(coll: str):
+    """Полностью очистить одну таблицу CRM (для ручного наполнения с нуля)."""
+    _check_coll(coll)
+    removed = crm.wipe_collection(store.connect(), coll)
+    return {"coll": coll, "removed": removed}
+
+
 @app.post("/api/crm/{coll}", status_code=201)
 def crm_create(coll: str, body: dict):
     _check_coll(coll)
@@ -1760,16 +1766,11 @@ async def telegram_webhook(
     # секрет приходит либо от нашего воркера (заголовок X-Bot-Secret),
     # либо напрямую от Telegram (заголовок X-Telegram-Bot-Api-Secret-Token,
     # заданный через setWebhook) — принимаем любой из них.
-    # Ожидаемый секрет: TELEGRAM_WEBHOOK_SECRET из .env, либо секрет
-    # подключённого телеграм-аккаунта из CRM (привязка без .env).
+    # Ожидаемый секрет: TELEGRAM_WEBHOOK_SECRET из .env (прежняя схема до
+    # вкладки «Каналы»; привязка секретов к CRM-аккаунтам удалена).
     provided = x_bot_secret or request.headers.get("x-telegram-bot-api-secret-token") or secret
     expected = TELEGRAM_SECRET
-    if not expected:
-        try:
-            expected = channels.get_secret("telegram", field="secret") or ""
-        except Exception:
-            expected = ""
-    check_secret(provided, expected, "TELEGRAM_WEBHOOK_SECRET / секрет аккаунта Telegram")
+    check_secret(provided, expected, "TELEGRAM_WEBHOOK_SECRET")
     payload = await request.json()
     msg = payload.get("message") or payload.get("channel_post")
     if not msg:
