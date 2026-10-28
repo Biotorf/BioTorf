@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue';
 import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
 import { apiState, COMMS_API_URL, caps, commsApi } from '@/api/commsClient';
@@ -9,10 +9,15 @@ import BackendBadge from '@/components/ui/BackendBadge.vue';
 const db = useDbStore();
 const ui = useUiStore();
 
-// ── режим страницы: мессенджер (чаты) / лента ─────────────────────
+// ── режим страницы: только мессенджер (лента «все сообщения» убрана по требованию) ──
 const MODE_KEY = 'biotorf_comms_mode';
-const mode = ref(localStorage.getItem(MODE_KEY) || 'chats');   // 'chats' | 'feed'
+const mode = ref('chats');
+localStorage.setItem(MODE_KEY, 'chats');
 function setMode(m) { mode.value = m; localStorage.setItem(MODE_KEY, m); }
+
+// фильтр сети (канала) прямо в списке чатов
+const chatKindFilter = ref(localStorage.getItem('biotorf_chat_kind') || 'all');
+function setChatKind(k) { chatKindFilter.value = k; localStorage.setItem('biotorf_chat_kind', k); }
 
 // ── состояние чатов (как в Telegram) ─────────────────────────────
 const chatList = ref([]);          // [{key,kind,farmId,contact,phone,handle,unread,lastMessage,draft,messages}]
@@ -67,9 +72,16 @@ function dayGap(list, i) {
 }
 
 const activeChat = computed(() => chatList.value.find((c) => c.key === activeKey.value) || null);
+// чат может вестись в нескольких сетях (например, клиент пишет и в ТГ, и в WhatsApp)
+function chatKinds(c) {
+  const set = new Set([c.kind]);
+  for (const m of c.messages || []) if (m.kind) set.add(m.kind);
+  return [...set];
+}
 const sortedChats = computed(() =>
   [...chatList.value].sort((a, b) => (a.lastTs < b.lastTs ? 1 : -1))
     .filter((c) => {
+      if (chatKindFilter.value !== 'all' && !chatKinds(c).includes(chatKindFilter.value)) return false;
       const q = ui.search.toLowerCase();
       if (!q) return true;
       return [peerTitle(c), c.contact, c.handle, c.phone, c.lastMessage?.text]
@@ -77,7 +89,18 @@ const sortedChats = computed(() =>
     })
 );
 const totalUnread = computed(() => chatList.value.reduce((s, c) => s + (c.unread || 0), 0));
-const chatMessages = computed(() => (activeChat.value?.messages || []).slice(-300));
+// сообщения открытого диалога: все или только выбранной сети (переключатель в шапке чата)
+const chatMessages = computed(() => {
+  const msgs = (activeChat.value?.messages || []).slice(-300);
+  if (!activeChat.value) return [];
+  const kinds = chatKinds(activeChat.value);
+  if (msgKindFilter.value !== 'all' && kinds.includes(msgKindFilter.value)) {
+    return msgs.filter((m) => m.kind === msgKindFilter.value);
+  }
+  return msgs;
+});
+const msgKindFilter = ref('all');
+watch(activeKey, () => { msgKindFilter.value = 'all'; });
 
 async function loadChats(quiet = false) {
   if (!apiState.online) return;
@@ -120,7 +143,13 @@ async function sendChat() {
   chatSending.value = true;
   chatError.value = '';
   try {
-    const res = await commsApi.sendToChat(c.key, text);
+    // сеть ответа: выбранная в шапке чата, либо канал последнего входящего сообщения
+    let kind = msgKindFilter.value !== 'all' ? msgKindFilter.value : null;
+    if (!kind) {
+      const lastIn = [...(c.messages || [])].reverse().find((m) => m.dir === 'in' && m.kind !== 'call');
+      kind = lastIn?.kind || c.kind || null;
+    }
+    const res = await commsApi.sendToChat(c.key, text, kind);
     chatNotice.value = res.sent
       ? '✅ Доставлено'
       : '⏳ Отправлено — уйдёт клиенту, как только канал будет готов';
@@ -191,12 +220,6 @@ const BASE_FILTERS = [
   ['telegram', 'Telegram'],
   ['whatsapp', 'WhatsApp'],
 ];
-const FILTERS = computed(() => [
-  ...BASE_FILTERS,
-  ...dynChannels.value.map((c) => [c.id, `${c.icon} ${c.label}`]),
-  ['unread', 'Непрочитанные'],
-]);
-
 // ── форма «зафиксировать коммуникацию» ────────────────────────────
 const showForm = ref(false);
 const form = ref({
@@ -243,102 +266,6 @@ function saveComm() {
   form.value.note = '';
 }
 
-// ── быстрая запись ответа в ленте ────────────────────────────────
-const replyTarget = ref(null);   // объект comms, которому отвечаем
-const replyText = ref('');
-const sendingReply = ref(false);
-const replyError = ref('');
-const replyNotice = ref('');     // «ушёл в очередь» и т.п.
-
-function startReply(c) {
-  replyTarget.value = c;
-  replyText.value = '';
-  replyError.value = '';
-}
-
-async function sendReply() {
-  const c = replyTarget.value;
-  if (!c || !replyText.value.trim()) return;
-  const text = replyText.value.trim();
-  // С сервером — реальный ответ клиенту в Telegram (sendMessage через бэкенд/воркер).
-  // Без сервера или для WhatsApp — ответ фиксируется в ленте как исходящая запись.
-  if (apiState.online && c.kind === 'telegram') {
-    sendingReply.value = true;
-    replyError.value = '';
-    try {
-      const res = await db.sendCommReply(c.id, text);
-      replyNotice.value = res.sent
-        ? '✅ Ответ доставлен клиенту в Telegram'
-        : '⏳ Ответ принят и уйдёт клиенту, как только бот получит соединение';
-      // если ушёл в очередь — сразу подтянем ленту: воркер забирает ответы
-      // пачками раз в несколько секунд, статус «Доставлено» появится сам
-      if (!res.sent) setTimeout(() => db.syncComms(true), 1500);
-      setTimeout(() => { replyTarget.value = null; replyText.value = ''; replyNotice.value = ''; }, 1200);
-      return;
-    } catch (e) {
-      replyError.value = e.message || 'Сервер отклонил отправку';
-      return;
-    } finally {
-      sendingReply.value = false;
-    }
-  }
-  db.addComm({
-    kind: c.kind,
-    dir: 'out',
-    farmId: c.farmId,
-    contact: c.contact,
-    phone: c.phone,
-    handle: c.handle,
-    text,
-    read: true,
-  });
-  replyTarget.value = null;
-  replyText.value = '';
-}
-
-// ── привязка неизвестного контакта к клиенту ─────────────────────
-const linkingId = ref(null);
-function linkFarm(c, farmId) {
-  db.linkCommToFarm(c.id, farmId);
-  linkingId.value = null;
-}
-
-// ── фильтры и поиск ──────────────────────────────────────────────
-const unreadCount = computed(() => db.comms.filter((c) => !c.read).length);
-
-const items = computed(() =>
-  [...db.comms]
-    .sort((a, b) => (a.ts < b.ts ? 1 : -1))
-    .filter((c) => {
-      const f = ui.commsFilter;
-      if (f === 'unread' && c.read) return false;
-      if (f !== 'all' && f !== 'unread' && c.kind !== f) return false;
-      const q = ui.search.toLowerCase();
-      if (!q) return true;
-      const farm = c.farmId ? db.farmById(c.farmId)?.name : '';
-      return [farm, c.contact, c.phone, c.handle, c.text, c.note]
-        .filter(Boolean).join(' ').toLowerCase().includes(q);
-    })
-);
-
-function fmtTs(iso) {
-  const d = new Date(iso);
-  const today = new Date().toISOString().slice(0, 10);
-  const time = d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
-  return d.toISOString().slice(0, 10) === today ? `Сегодня ${time}` : `${d.toLocaleDateString('ru-RU')} ${time}`;
-}
-
-function fmtDur(sec) {
-  if (!sec) return '—';
-  const m = Math.floor(sec / 60), s = sec % 60;
-  return `${m}:${String(s).padStart(2, '0')} мин`;
-}
-
-function open(c) {
-  if (!c.read) db.markCommRead(c.id);
-  if (c.farmId) ui.openClient(c.farmId);
-}
-
 // ── автообновление ленты: входящие сообщения и статусы доставки ответов
 // подтягиваются с сервера сами, без ручного F5 ──────────────────────
 const autoRefresh = ref(true);
@@ -381,8 +308,8 @@ onBeforeUnmount(() => {
         <label class="mini" style="display:flex;align-items:center;gap:6px;cursor:pointer" title="Лента и статусы доставки подтягиваются с сервера каждые 4 секунды">
           <input type="checkbox" v-model="autoRefresh" /> автообновление
         </label>
-        <button class="btn slim ghost" @click="db.markAllCommsRead()" :disabled="!unreadCount">
-          Прочитано всё ({{ unreadCount }})
+        <button class="btn slim ghost" @click="db.markAllCommsRead()" :disabled="!totalUnread">
+          Прочитано всё ({{ totalUnread }})
         </button>
         <button class="btn primary" @click="showForm = !showForm">＋ Зафиксировать</button>
       </div>
@@ -474,11 +401,8 @@ onBeforeUnmount(() => {
     </div>
 
     <div class="chips toolbar" style="margin-bottom:14px">
-      <button class="chip" :class="{ selected: mode === 'chats' }" :style="mode === 'chats' ? 'background:#27b95a;color:#fff' : ''" @click="setMode('chats')">
+      <button class="chip selected" style="background:#27b95a;color:#fff" @click="setMode('chats')">
         💬 Чаты<template v-if="totalUnread"> · {{ totalUnread }}</template>
-      </button>
-      <button class="chip" :class="{ selected: mode === 'feed' }" :style="mode === 'feed' ? 'background:#27b95a;color:#fff' : ''" @click="setMode('feed')">
-        📋 Лента (все коммуникации)
       </button>
     </div>
 
@@ -493,6 +417,19 @@ onBeforeUnmount(() => {
           <div class="chat-side-head">
             <span class="panel-title">Чаты</span>
             <button class="btn slim primary" @click="newChatOpen = !newChatOpen">＋ Диалог</button>
+          </div>
+          <div class="chat-kind-filter">
+            <button class="chip mini-chip" :class="{ selected: chatKindFilter === 'all' }"
+                    :style="chatKindFilter === 'all' ? 'background:#27b95a;color:#fff' : ''"
+                    @click="setChatKind('all')">Все</button>
+            <button v-for="[key, label] in BASE_FILTERS.filter(([k]) => k !== 'all')" :key="key"
+                    class="chip mini-chip" :class="{ selected: chatKindFilter === key }"
+                    :style="chatKindFilter === key ? 'background:#27b95a;color:#fff' : ''"
+                    @click="setChatKind(key)">{{ label }}</button>
+            <button v-for="ch in dynChannels" :key="ch.id"
+                    class="chip mini-chip" :class="{ selected: chatKindFilter === ch.id }"
+                    :style="chatKindFilter === ch.id ? 'background:#27b95a;color:#fff' : ''"
+                    @click="setChatKind(ch.id)">{{ ch.icon }} {{ ch.label }}</button>
           </div>
           <div v-if="newChatOpen" class="newchat">
             <select v-model="newChat.kind" class="select">
@@ -540,6 +477,11 @@ onBeforeUnmount(() => {
                 </div>
                 <div class="mini">{{ channelMeta[activeChat.kind]?.label || activeChat.kind }} · {{ peerSub(activeChat) || 'диалог' }}</div>
               </div>
+              <!-- выбор сети, в которую идёт ответ (если диалог ведётся в нескольких) -->
+              <select v-if="chatKinds(activeChat).length > 1" v-model="msgKindFilter" class="select kind-select" title="Сеть для ответа">
+                <option value="all">Все сети</option>
+                <option v-for="k in chatKinds(activeChat)" :key="k" :value="k">{{ channelMeta[k]?.icon || '💬' }} {{ channelMeta[k]?.label || k }}</option>
+              </select>
               <span v-if="activeChat.lastOutStatus === 'Доставлено'" class="pill green">ответ доставлен ✓</span>
               <span v-else-if="activeChat.lastOutStatus === 'В очереди'" class="pill amber">⏳ в очереди</span>
               <span v-else-if="activeChat.lastOutStatus === 'Ошибка доставки'" class="pill red">✕ ошибка</span>
@@ -568,6 +510,11 @@ onBeforeUnmount(() => {
               <div v-if="chatError" class="mini comms-error" style="padding:0 14px">{{ chatError }}</div>
               <div v-if="chatNotice" class="mini comms-ok" style="padding:0 14px">{{ chatNotice }}</div>
               <div class="chat-input-row">
+                <!-- явная выбор сети, из которой идёт сообщение -->
+                <select v-model="msgKindFilter" class="select kind-select send-kind" title="Сеть отправки">
+                  <option v-for="k in chatKinds(activeChat)" :key="k" :value="k">{{ channelMeta[k]?.icon || '💬' }} {{ channelMeta[k]?.label || k }}</option>
+                  <template v-if="chatKinds(activeChat).length > 1"><option value="all">Авто (последняя входящая)</option></template>
+                </select>
                 <textarea
                   v-model="chatInput" class="textarea chat-textarea" rows="1"
                   :placeholder="caps.telegramSend || caps.whatsappSend ? 'Сообщение… (Enter — отправить)' : 'Сохранится в ленте; отправка не настроена на сервере'"
@@ -589,137 +536,7 @@ onBeforeUnmount(() => {
       </template>
     </div>
 
-    <!-- ═══ ЛЕНТА (прежний табличный вид) ═══ -->
-    <template v-if="mode === 'feed'">
-    <div class="chips toolbar">
-      <button
-        v-for="[key, label] in FILTERS"
-        :key="key"
-        class="chip"
-        :class="{ warn: key === 'unread' && unreadCount, selected: ui.commsFilter === key }"
-        :style="ui.commsFilter === key ? 'background:#27b95a;color:#fff' : ''"
-        @click="ui.commsFilter = key"
-      >{{ label }}<template v-if="key === 'unread' && unreadCount"> · {{ unreadCount }}</template></button>
-    </div>
 
-    <div class="table-wrap">
-      <table class="table">
-        <thead>
-          <tr>
-            <th>Канал</th>
-            <th>Клиент</th>
-            <th>Контакт</th>
-            <th>Содержание</th>
-            <th>Когда</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="c in items"
-            :key="c.id"
-            :class="{ actionable: !!c.farmId, 'comms-unread': !c.read }"
-            @click="open(c)"
-          >
-            <td>
-              <span class="comms-kind" :class="'k-' + c.kind">
-                {{ channelMeta[c.kind]?.icon || '💬' }} {{ channelMeta[c.kind]?.label || c.kind }}
-              </span>
-              <div class="mini">{{ c.dir === 'in' ? '↓ входящее' : '↑ исходящее' }}</div>
-            </td>
-            <td>
-              <template v-if="c.farmId">
-                <span class="txt-link">{{ db.farmById(c.farmId)?.name || c.farmId }}</span>
-              </template>
-              <template v-else>
-                <span class="pill amber">не привязано</span>
-                <div class="mini">{{ c.phone || c.handle || 'неизвестный контакт' }}</div>
-              </template>
-            </td>
-            <td>
-              <div>{{ c.contact || '—' }}</div>
-              <div class="mini mono">{{ c.phone || c.handle || '' }}</div>
-            </td>
-            <td style="white-space:normal;max-width:420px">
-              <template v-if="c.kind === 'call'">
-                <StatusPill :status="c.status" />
-                <span class="mini"> · {{ fmtDur(c.duration) }}</span>
-                <div class="mini" style="margin-top:3px">{{ c.note }}</div>
-              </template>
-              <template v-else>
-                <div class="comms-bubble" :class="{ out: c.dir === 'out' }">{{ c.text }}</div>
-                <div v-if="c.source === 'reply'" class="mini" style="margin-top:3px">
-                  ↩ ответ на сообщение клиента
-                  <span v-if="c.status === 'В очереди'" class="pill amber">⏳ в очереди на отправку</span>
-                  <span v-else-if="c.status === 'Доставлено'" class="pill green">✓ доставлено</span>
-                  <span v-else-if="c.status === 'Ошибка доставки'" class="pill red">✕ ошибка доставки</span>
-                </div>
-              </template>
-            </td>
-            <td class="mini">{{ fmtTs(c.ts) }}</td>
-            <td @click.stop>
-              <div class="actionbar" style="justify-content:flex-end">
-                <button v-if="c.kind !== 'call' && c.dir === 'in'" class="btn slim ghost" @click="startReply(c)">Ответить</button>
-                <button v-if="!c.farmId" class="btn slim" @click="linkingId = linkingId === c.id ? null : c.id">Привязать</button>
-              </div>
-              <div v-if="linkingId === c.id" style="margin-top:6px">
-                <select class="select" @change="linkFarm(c, $event.target.value)">
-                  <option value="">Выберите клиента…</option>
-                  <option v-for="f in db.farms" :key="f.id" :value="f.id">{{ f.name }}</option>
-                </select>
-              </div>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-      <div v-if="!items.length" class="empty">Записей нет — измените фильтр или зафиксируйте коммуникацию</div>
-    </div>
-    </template>
-
-    <!-- панель быстрого ответа -->
-    <Teleport to="body">
-      <div v-if="replyTarget" class="modal-backdrop" @click.self="replyTarget = null">
-        <div class="modal" role="dialog" aria-label="Ответ клиенту">
-          <div class="modal-title">
-            <h2>Ответ · {{ channelMeta[replyTarget.kind].label }}</h2>
-            <button class="btn ghost slim" @click="replyTarget = null">✕</button>
-          </div>
-          <div class="modal-body">
-            <div class="mini" style="margin-bottom:4px">Сообщение клиента · {{ fmtTs(replyTarget.ts) }}</div>
-            <div class="comms-bubble" style="margin-bottom:12px">{{ replyTarget.text }}</div>
-            <textarea v-model="replyText" class="textarea" rows="4" placeholder="Ваш ответ… (Ctrl+Enter — отправить)" autofocus
-                      @keydown.ctrl.enter.prevent="sendReply"></textarea>
-            <div v-if="apiState.online && replyTarget.kind === 'telegram' && caps.telegramSend" class="mini comms-ok" style="margin-top:8px">
-              ✉ Сообщение будет реально отправлено клиенту в Telegram от имени бота{{ caps.telegramBot ? ' @' + caps.telegramBot : '' }}
-            </div>
-            <div v-else-if="apiState.online && replyTarget.kind === 'telegram'" class="mini comms-warn" style="margin-top:8px">
-              ⚠ Отправка через бота не настроена на сервере (TELEGRAM_BOT_TOKEN пуст или отвергнут Telegram) —
-              ответ сохранится только в ленте. Впишите токен из @BotFather в .env и выполните
-              <code>docker compose --profile tg up -d --force-recreate</code>. Подробности: <code>docker logs biotorf-backend</code>.
-            </div>
-            <div v-else-if="apiState.online && replyTarget.kind === 'whatsapp' && caps.whatsappSend" class="mini comms-ok" style="margin-top:8px">
-              ✉ Сообщение будет реально отправлено клиенту в WhatsApp с бизнес-номера{{ caps.whatsappPhone ? ' ' + caps.whatsappPhone : '' }}
-            </div>
-            <div v-else-if="apiState.online && replyTarget.kind === 'whatsapp'" class="mini comms-warn" style="margin-top:8px">
-              ⚠ Отправка в WhatsApp не настроена на сервере{{ caps.whatsappError ? ': ' + caps.whatsappError : '' }} —
-              ответ сохранится только в ленте. Заполните WHATSAPP_TOKEN и WHATSAPP_PHONE_NUMBER_ID в .env и выполните
-              <code>docker compose up -d --force-recreate backend</code>. Подробности: README-WHATSAPP.md.
-            </div>
-            <div v-if="replyError" class="mini comms-error" style="margin-top:8px">{{ replyError }}</div>
-            <div v-if="replyNotice" class="mini comms-ok" style="margin-top:8px">{{ replyNotice }}</div>
-            <div v-else class="mini" style="margin-top:8px">
-              Адресат: {{ replyTarget.contact || replyTarget.phone || replyTarget.handle || '—' }}
-            </div>
-          </div>
-          <div class="modal-foot">
-            <button class="btn ghost" @click="replyTarget = null">Отмена</button>
-            <button class="btn primary" :disabled="!replyText.trim() || sendingReply" @click="sendReply">
-              {{ sendingReply ? 'Отправка…' : 'Отправить' }}
-            </button>
-          </div>
-        </div>
-      </div>
-    </Teleport>
   </div>
 </template>
 
@@ -742,6 +559,11 @@ onBeforeUnmount(() => {
 .messenger { display:flex; gap:0; border:1px solid #e2e8e0; border-radius:14px; overflow:hidden; height:min(640px, calc(100vh - 260px)); background:#fff; box-shadow:0 1px 3px rgba(20,40,30,.06); }
 .chat-side { width:320px; min-width:260px; border-right:1px solid #e7ece8; display:flex; flex-direction:column; background:#fbfdfb; }
 .chat-side-head { display:flex; align-items:center; justify-content:space-between; padding:12px 14px; border-bottom:1px solid #e7ece8; }
+.chat-kind-filter { display:flex; flex-wrap:wrap; gap:6px; padding:10px 12px; border-bottom:1px solid #e7ece8; background:#fff; }
+.mini-chip { font-size:11.5px; padding:3px 9px; border-radius:9px; border:1px solid #dfe7df; background:#f6f9f6; cursor:pointer; }
+.mini-chip.selected { border-color:#27b95a; }
+.kind-select { width:auto; min-width:150px; font-size:12.5px; padding:6px 8px; }
+.send-kind { flex-shrink:0; align-self:flex-end; }
 .newchat { display:flex; flex-direction:column; gap:8px; padding:12px 14px; border-bottom:1px solid #e7ece8; background:#f4faf5; }
 .chat-list { flex:1; overflow-y:auto; }
 .chat-item { display:flex; gap:10px; padding:11px 12px; cursor:pointer; border-bottom:1px solid #eef2ee; align-items:center; }

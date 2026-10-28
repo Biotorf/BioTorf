@@ -84,5 +84,5 @@ export const commsApi = {
   chat: (peerKey) => req(`/api/chat/${encodeURIComponent(peerKey)}`),
   markChatRead: (peerKey) => req(`/api/chat/${encodeURIComponent(peerKey)}/read`, { method: 'POST' }),
   saveDraft: (peerKey, draft) => req(`/api/chat/${encodeURIComponent(peerKey)}/draft`, { method: 'PUT', body: JSON.stringify({ draft }) }),
-  sendToChat: (peerKey, text) => req(`/api/chat/${encodeURIComponent(peerKey)}/send`, { method: 'POST', body: JSON.stringify({ text }) }),
+  sendToChat: (peerKey, text, kind = null) => req(`/api/chat/${encodeURIComponent(peerKey)}/send`, { method: 'POST', body: JSON.stringify({ text, kind }) }),
 };

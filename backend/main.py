@@ -741,17 +741,28 @@ def chat_draft(peer_key: str, body: DraftIn):
     return {"ok": True}
 
 
-def chat_send_core(peer_key: str, text: str, media_file: str | None = None):
+def chat_send_core(peer_key: str, text: str, media_file: str | None = None, kind: str | None = None):
     """Ядро отправки в чат: ищем адресата чата и доставляем через нужный канал;
-    если доставка невозможна прямо сейчас — уходит в outbox воркера."""
+    если доставка невозможна прямо сейчас — уходит в outbox воркера.
+
+    kind — сеть, выбранная оператором в окне чата (telegram/whatsapp/…). Если
+    в диалоге есть входящее сообщение этой сети — отвечаем именно в неё; иначе
+    берём последнего входящего адресата в любой сети (прежнее поведение)."""
     chats = [g for g in store.chats() if g["key"] == peer_key]
     if not chats:
         raise HTTPException(404, "Чат не найден — отправьте первое сообщение через /api/comms")
     target = None
-    for m in reversed(chats[0]["messages"]):
-        if m["dir"] == "in" and m["kind"] != "call":
-            target = m
-            break
+    msgs = chats[0]["messages"]
+    if kind:
+        for m in reversed(msgs):
+            if m["dir"] == "in" and m["kind"] == kind:
+                target = m
+                break
+    if target is None:
+        for m in reversed(msgs):
+            if m["dir"] == "in" and m["kind"] != "call":
+                target = m
+                break
     if target is None:  # исходящих нет? берём любую входящую не-звонковую
         raise HTTPException(422, "В чате нет входящего сообщения-адресата для ответа")
     if media_file and target["kind"] != "telegram":
@@ -760,10 +771,16 @@ def chat_send_core(peer_key: str, text: str, media_file: str | None = None):
     return res
 
 
+class SendChatIn(BaseModel):
+    text: str
+    kind: str | None = None
+
+
 @app.post("/api/chat/{peer_key}/send")
-def chat_send(peer_key: str, body: "SendIn"):
-    """Отправить сообщение в чат напрямую (из окна диалога мессенджера)."""
-    return chat_send_core(peer_key, body.text)
+def chat_send(peer_key: str, body: "SendChatIn"):
+    """Отправить сообщение в чат напрямую (из окна диалога мессенджера).
+    body.kind — выбранная оператором сеть ответа (необязательно)."""
+    return chat_send_core(peer_key, body.text, kind=body.kind)
 
 
 # ── голосовые сообщения (Telegram) ───────────────────────────────────────────
