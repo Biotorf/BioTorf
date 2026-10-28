@@ -1,26 +1,31 @@
 <script setup>
-// Бейдж статуса привязки раздела к бэкенду:
-// «Привязано к бекенду» — когда сервер доступен (db.serverOnline),
-// иначе — подсказка, что раздел работает на локальном демо-состоянии.
+// Компактный индикатор привязки раздела к бэкенду (без надписей «демо-режим»):
+// зелёная точка — данные с сервера; серая — сервер пока недоступен (показывается локальное состояние).
 import { computed } from 'vue';
 import { useDbStore } from '@/stores/db';
 
 const props = defineProps({ collection: { type: String, default: null } });
 const db = useDbStore();
 
-const online = computed(() => {
-  if (!db.serverOnline) return false;
-  // если указана коллекция и она пуста при живом сервере — скорее всего данные ещё не загружены
-  if (props.collection) return (db.data[props.collection] || []).length > 0;
-  return true;
-});
+const online = computed(() => !!db.serverOnline);
 </script>
 
 <template>
-  <span v-if="online" class="chip backend-chip">🟢 Привязано к бекенду</span>
-  <span v-else class="chip neutral" title="Сервер недоступен или данных ещё нет — показывается локальное демо-состояние">Демо-режим (локально)</span>
+  <span
+    class="dot"
+    :class="online ? 'on' : 'off'"
+    :title="online ? 'Раздел привязан к серверу' : 'Сервер временно недоступен — показаны локальные данные'"
+  ></span>
 </template>
 
 <style scoped>
-.backend-chip { background: #e5f5ee; color: #137d60; }
+.dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  vertical-align: middle;
+}
+.dot.on { background: #27b95a; box-shadow: 0 0 0 3px rgba(39, 185, 90, 0.18); }
+.dot.off { background: #c3cec8; }
 </style>

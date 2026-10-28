@@ -429,7 +429,7 @@ export const useDbStore = defineStore('db', {
       if (deal) deal.stage = 'Оплачено';
       const order = inv.orderId ? this.orderById(inv.orderId) : null;
       if (order) order.status = 'Оплачен';
-      this.save('Подтверждена оплата (демо)', inv.number);
+      this.save('Подтверждена оплата', inv.number);
       return inv;
     },
     createShipmentFromJourney(journeyId, s) {

@@ -19,12 +19,12 @@ const STATUSES = ['Все', 'План', 'В работе', 'Завершено']
     <div class="pagehead">
       <div>
         <h1>Производство</h1>
-        <div class="subtitle">Планы розлива и производственные партии (демонстрационный учёт)</div>
+        <div class="subtitle">Планы розлива и производственные партии</div>
       </div>
       <BackendBadge collection="production" />
     </div>
 
-    <div class="note">⚠️ Демонстрационный модуль: статусы не списывают сырьё и не резервируют склад автоматически.</div>
+    <div class="note">Статусы партий не списывают сырьё и не резервируют склад автоматически — сверяйте остатки на складе.</div>
 
     <div class="toolbar">
       <select v-model="statusFilter" class="select" style="max-width:220px"><option v-for="s in STATUSES" :key="s">{{ s }}</option></select>

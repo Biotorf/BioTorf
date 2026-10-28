@@ -26,7 +26,7 @@ const info = computed(() => {
   ).length;
 
   return [
-    ['Выручка по демо-заказам', money(revenue), 'Не подтвержденная выручка компании'],
+    ['Выручка по оплаченным заказам', money(revenue), 'Не подтвержденная выручка компании'],
     ['Продано BIOTORF', num(liters) + ' л', 'Условные оплаченные/отгруженные заказы'],
     ['Открытая воронка', money(pipeline), 'Оценка потенциала сделок'],
     ['Активные пилоты', pilots, 'С учетом протоколов'],
@@ -55,9 +55,6 @@ const pilotControl = computed(() =>
       </div>
     </div>
 
-    <div class="note">
-      <b>Демонстрационный режим.</b> Данные сохраняются только в этом браузере.
-    </div>
 
     <div class="stats">
       <StatCard v-for="[label, value, foot] in info" :key="label" :label="label" :value="value" :foot="foot" />

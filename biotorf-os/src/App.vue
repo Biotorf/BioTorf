@@ -99,7 +99,7 @@ const currentView = computed(() => views[ui.view] || views.dashboard);
 </style>
         </Suspense>
         <footer class="app-footer">
-          BIOTORF Business OS · Vue 3 · демонстрационные показатели
+          BIOTORF Business OS · рабочая система
         </footer>
       </div>
     </main>

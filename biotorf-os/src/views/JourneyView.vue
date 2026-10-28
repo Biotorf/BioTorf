@@ -265,7 +265,7 @@ function fmtTs(iso) { return new Date(iso).toLocaleString('ru-RU', { day: '2-dig
           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
             <button v-if="!quote" class="btn slim ghost" :disabled="!deal" @click="openQuote">Создать КП</button>
             <button v-if="quote && !order" class="btn slim ghost" @click="confirmOrder">Подтвердить заказ (перенос из КП)</button>
-            <button v-if="order && !invoice?.paid" class="btn slim ghost" @click="payInvoice">Подтвердить оплату (демо, вручную)</button>
+            <button v-if="order && !invoice?.paid" class="btn slim ghost" @click="payInvoice">Подтвердить оплату вручную</button>
             <button v-if="invoice?.paid && !shipment" class="btn slim ghost" @click="openShip">Создать отгрузку</button>
             <button v-if="shipment && !shipment.received" class="btn slim ghost" @click="openRec">Подтвердить получение</button>
             <span v-if="shipment?.received" class="pill">Доставлено · маршрут в сопровождении</span>

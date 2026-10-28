@@ -35,7 +35,7 @@ const funnel = computed(() => {
     <div class="pagehead">
       <div>
         <h1>Аналитика</h1>
-        <div class="subtitle">Сводные показатели продаж, агрономии и финансов (демонстрационные данные)</div>
+        <div class="subtitle">Сводные показатели продаж, агрономии и финансов</div>
       </div>
       <BackendBadge />
     </div>

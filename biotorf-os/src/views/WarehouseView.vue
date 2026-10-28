@@ -24,7 +24,7 @@ const totals = computed(() => ({
     <div class="pagehead">
       <div>
         <h1>Склад</h1>
-        <div class="subtitle">Остатки продукции и резервы под заказы (демонстрационный учёт)</div>
+        <div class="subtitle">Остатки продукции и резервы под заказы</div>
       </div>
       <BackendBadge collection="warehouse" />
     </div>

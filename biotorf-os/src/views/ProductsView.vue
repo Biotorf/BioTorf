@@ -29,7 +29,7 @@ const lines = computed(() => {
       <BackendBadge collection="skus" />
     </div>
 
-    <div class="note">⚠️ Демонстрационная модель. Цены и калькуляция — допущения ({{ cost.source || '—' }}), не утверждённый прайс.</div>
+    <div class="note">Цены и калькуляция — рабочие допущения ({{ cost.source || '—' }}), не утверждённый прайс.</div>
 
     <section class="panel" style="margin-bottom:16px">
       <div class="panel-title" style="margin-bottom:12px">SKU продукции</div>

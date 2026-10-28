@@ -1,11 +1,23 @@
 <script setup>
 import { computed } from 'vue';
 import { useUiStore } from '@/stores/ui';
+import { useDbStore } from '@/stores/db';
 import { usePermissions } from '@/composables/usePermissions';
 import { logout } from '@/api/authClient';
 
 const ui = useUiStore();
+const db = useDbStore();
 const { ROLES } = usePermissions();
+
+// Разделы, полностью привязанные к бэкенду (данные читаются/пишутся через API).
+const BACKEND_VIEWS = new Set([
+  'crm', 'comms', 'pipeline', 'journey', 'pilots', 'orders', 'shipments',
+  'finance', 'tasks', 'knowledge', 'warehouse', 'production', 'products',
+  'social', 'media', 'analytics', 'calendar', 'notifications',
+  'employees', 'channels',
+]);
+// Живой ли сервер — для цветовой отметки в меню.
+const online = computed(() => db.serverOnline);
 
 function onLogout() {
   logout();
@@ -72,6 +84,12 @@ const visibleMenu = computed(() => {
         @click="ui.go(key)"
       >
         <b>{{ icon }}</b>{{ label }}
+        <span
+          v-if="BACKEND_VIEWS.has(key)"
+          class="live-dot"
+          :class="online ? 'on' : 'off'"
+          :title="online ? 'Раздел работает с сервером' : 'Сервер недоступен — локальные данные'"
+        ></span>
       </button>
     </nav>
     <div class="side-bottom">
@@ -88,3 +106,16 @@ const visibleMenu = computed(() => {
     </div>
   </aside>
 </template>
+
+<style scoped>
+.nav button { position: relative; }
+.live-dot {
+  margin-left: auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+.live-dot.on { background: #35d07f; box-shadow: 0 0 6px rgba(53, 208, 127, 0.7); }
+.live-dot.off { background: #7c8f86; }
+</style>

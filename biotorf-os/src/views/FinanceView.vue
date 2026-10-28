@@ -28,7 +28,7 @@ const orderFarm = (orderId) => {
     <div class="pagehead">
       <div>
         <h1>Финансы</h1>
-        <div class="subtitle">Счета, оплаты и дебиторская задолженность (демонстрационный учёт)</div>
+        <div class="subtitle">Счета, оплаты и дебиторская задолженность</div>
       </div>
       <BackendBadge collection="invoices" />
     </div>
