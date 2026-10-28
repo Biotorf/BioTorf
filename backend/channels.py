@@ -168,6 +168,40 @@ def _accounts_for(channel: str, conn_safe=None) -> list[dict]:
             conn.close()
 
 
+def _enc(value: str | None):
+    """Зашифровать секрет для хранения в БД (если доступен secrets_store)."""
+    if not value:
+        return None
+    try:
+        import secrets_store
+        return secrets_store.encrypt(value)
+    except Exception:
+        return value
+
+
+def list_accounts(kind: str, reveal: bool = False) -> list[dict]:
+    """Аккаунты канала; reveal=True добавляет расшифрованный токен (только для
+    внутреннего tg-воркера, эндпоинт проверяет сервисный суб «worker»)."""
+    items = _accounts_for(kind)
+    if not reveal:
+        return items
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT id, token FROM channel_accounts WHERE channel=?", (kind,)).fetchall()
+    toks = {}
+    for r in rows:
+        v = r["token"]
+        try:
+            import secrets_store
+            v = secrets_store.decrypt(v)
+        except Exception:
+            pass
+        toks[r["id"]] = v or ""
+    for it in items:
+        it["token"] = toks.get(it["id"], "")
+    return items
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -251,7 +285,7 @@ def connect_account(kind: str, data: dict, who: str = "") -> dict:
             "INSERT INTO channel_accounts (id,channel,login,display_name,farm_id,token,secret,status,created_by,created_at,updated_at) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (aid, kind, login, data.get("displayName") or login or kind,
-             data.get("farmId"), token or None, secret or None,
+             data.get("farmId"), _enc(token), _enc(secret),
              data.get("status", "active"), who, now, now),
         )
         r = conn.execute("SELECT * FROM channel_accounts WHERE id=?", (aid,)).fetchone()
@@ -265,9 +299,9 @@ def update_account(account_id: str, data: dict) -> dict:
         if src in data and data[src] is not None:
             fields[col] = data[src]
     if (data.get("token") or "").strip():
-        fields["token"] = data["token"].strip()
+        fields["token"] = _enc(data["token"].strip())
     if (data.get("secret") or "").strip():
-        fields["secret"] = data["secret"].strip()
+        fields["secret"] = _enc(data["secret"].strip())
     sets = ", ".join(f"{k}=?" for k in fields)
     with _conn() as conn:
         if not conn.execute("SELECT 1 FROM channel_accounts WHERE id=?", (account_id,)).fetchone():
@@ -287,10 +321,47 @@ def delete_account(account_id: str) -> None:
 
 
 def get_secret(kind: str, field: str = "token") -> str | None:
-    """Секрет активного аккаунта канала — для воркеров отправки."""
+    """Секрет активного аккаунта канала — для воркеров отправки.
+
+    Значения хранятся в БД зашифрованными (secrets_store); при чтении
+    расшифровываем, старые незашифрованные записи отдаём как есть."""
     col = "token" if field == "token" else "secret"
     with _conn() as conn:
         r = conn.execute(
             f"SELECT {col} v FROM channel_accounts WHERE channel=? AND status='active' "
             f"AND {col} IS NOT NULL ORDER BY updated_at DESC LIMIT 1", (kind,)).fetchone()
-    return r["v"] if r else None
+    if not r or not r["v"]:
+        return None
+    try:
+        import secrets_store
+        return secrets_store.decrypt(r["v"])
+    except Exception:
+        return r["v"]
+
+
+def wa_credentials() -> tuple[str | None, str | None]:
+    """Учётные данные WhatsApp Cloud API: (access_token, phone_number_id).
+
+    Приоритет — аккаунт канала «whatsapp», подключённый из UI («Настройки →
+    Каналы»): токен в поле token, phone_number_id — в login либо в secret.
+    Если аккаунт не подключён — None (вызывающий может использовать env-фолбэк)."""
+    token = get_secret("whatsapp", "token")
+    if not token:
+        return None, None
+    pid = None
+    with _conn() as conn:
+        r = conn.execute(
+            "SELECT login, secret FROM channel_accounts WHERE channel='whatsapp' "
+            "AND status='active' AND token IS NOT NULL ORDER BY updated_at DESC LIMIT 1"
+        ).fetchone()
+    if r:
+        login = (r["login"] or "").strip()
+        if re.fullmatch(r"\d{6,20}", login):
+            pid = login
+        elif r["secret"]:
+            try:
+                import secrets_store
+                pid = (secrets_store.decrypt(r["secret"]) or "").strip() or None
+            except Exception:
+                pid = (r["secret"] or "").strip() or None
+    return token, pid

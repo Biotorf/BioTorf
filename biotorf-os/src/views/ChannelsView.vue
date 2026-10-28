@@ -208,7 +208,7 @@ const groups = computed(() => {
 
     <!-- модалка подключения -->
     <div v-if="connectFor" class="overlay" @click.self="closeConnect">
-      <div class="modal card">
+      <div class="modal">
         <h3 style="margin-top:0">{{ connectFor.icon }} Подключение · {{ connectFor.label }}</h3>
         <label class="field"><span>Логин / номер / название аккаунта</span>
           <input v-model="form.login" class="input" placeholder="@biotorf_bot / 770123456 / аккаунт Авито" /></label>
@@ -252,8 +252,12 @@ const groups = computed(() => {
 .preset-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip { border: 1px dashed rgba(127,127,127,.45); background: transparent; border-radius: 999px; padding: 6px 14px; cursor: pointer; font-size: 13px; }
 .chip:hover { border-color: var(--accent, #2aabee); }
-.overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; z-index: 100; }
-.modal { width: min(460px, 92vw); padding: 16px; background: var(--bg-card, #fff); }
+.overlay { position: fixed; inset: 0; background: rgba(10, 14, 18, .72); backdrop-filter: none; display: flex; align-items: center; justify-content: center; z-index: 100; }
+.modal { width: min(460px, 92vw); padding: 16px; background: #ffffff; color: #1c2430; border: 1px solid rgba(127,127,127,.35); box-shadow: 0 18px 48px rgba(0,0,0,.35); opacity: 1; }
+.modal .input { background: #f4f6f8; color: #1c2430; }
+.modal .btn { background: #eef1f4; color: #1c2430; }
+.modal .btn-primary { background: var(--accent, #2aabee); color: #fff; border-color: transparent; }
+.modal .mini.muted { opacity: 1; color: #5b6675; }
 .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; font-size: 12px; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .add-card { margin-top: 12px; padding: 12px; }

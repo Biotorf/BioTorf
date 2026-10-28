@@ -81,10 +81,25 @@ FARMS_FILE = Path(_env("FARMS_FILE", str(Path(__file__).resolve().parent / "farm
 TELEGRAM_SECRET = _env("TELEGRAM_WEBHOOK_SECRET")          # X-Bot-Secret для TG-воркера
 WHATSAPP_TOKEN = _env("WHATSAPP_APP_SECRET")               # секрет Meta для проверки подписи
 TELEPHONY_TOKEN = _env("TELEPHONY_TOKEN")                  # ?token= для телефонии
-TELEGRAM_BOT_TOKEN = (_env("TELEGRAM_BOT_TOKEN") or "").strip()  # токен бота — исходящая отправка из ленты
+
 # ── WhatsApp Cloud API (исходящая отправка из ленты) ──
+# Fallback-значения из .env; основной источник — аккаунты каналов, подключённые
+# из UI («Настройки → Каналы»), см. channels.get_secret / wa_credentials.
 WHATSAPP_SEND_TOKEN = (_env("WHATSAPP_TOKEN") or "").strip()               # постоянный Access Token Meta
 WHATSAPP_PHONE_NUMBER_ID = (_env("WHATSAPP_PHONE_NUMBER_ID") or "").strip()  # id бизнес-номера
+
+
+def tg_token() -> str:
+    """Токен Telegram-бота: аккаунт канала из UI (приоритет), иначе env-фолбэк."""
+    return (channels.get_secret("telegram") or _env("TELEGRAM_BOT_TOKEN") or "").strip()
+
+
+def wa_send_creds() -> tuple[str, str]:
+    """(token, phone_number_id) для WhatsApp Cloud API: сначала аккаунт канала
+    из UI, затем fallback из .env."""
+    t, pid = channels.wa_credentials()
+    return (t or WHATSAPP_SEND_TOKEN), (pid or WHATSAPP_PHONE_NUMBER_ID)
+
 CORS_ORIGINS = [o.strip() for o in _env(
     "CORS_ORIGINS",
     "http://localhost:5173,http://127.0.0.1:5173,null").split(",") if o.strip()]
@@ -479,7 +494,8 @@ def _startup_checks():
     20–30 секунд после деплоя («работало и упало»). Теперь сервер поднимается
     мгновенно, а диагностика интеграций пишется в лог по мере готовности."""
     global TELEGRAM_BOT_INFO, WHATSAPP_INFO
-    if TELEGRAM_BOT_TOKEN:
+    tok = tg_token()
+    if tok:
         try:
             res = tg_api("getMe", {})
             if res.get("ok"):
@@ -487,15 +503,19 @@ def _startup_checks():
                 log.info("[telegram] токен принят: @%s (id=%s) — исходящая отправка активна",
                          TELEGRAM_BOT_INFO.get("username"), TELEGRAM_BOT_INFO.get("id"))
             else:
-                log.error("[telegram] Telegram отверг TELEGRAM_BOT_TOKEN: %s — ответы в TG "
+                TELEGRAM_BOT_INFO = None
+                log.error("[telegram] Telegram отверг токен бота: %s — ответы в TG "
                           "отправляться НЕ будут", res.get("description"))
         except Exception as e:
-            log.error("[telegram] ОШИБКА проверки токена (%s) — проверьте сеть и TELEGRAM_BOT_TOKEN", e)
+            TELEGRAM_BOT_INFO = None
+            log.error("[telegram] ОШИБКА проверки токена (%s) — проверьте сеть и токен канала", e)
     else:
-        log.info("[telegram] TELEGRAM_BOT_TOKEN пуст — исходящие ответы в Telegram отключены. "
-                 "Впишите токен из @BotFather в .env и выполните docker compose up -d --force-recreate")
+        log.info("[telegram] токен бота не задан — исходящие ответы в Telegram отключены. "
+                 "Подключите аккаунт Telegram в «Настройки → Каналы» (или задайте "
+                 "TELEGRAM_BOT_TOKEN в .env) и выполните docker compose up -d --force-recreate")
+    wa_tok, wa_pid = wa_send_creds()
     try:
-        WHATSAPP_INFO = whatsapp_client.check_config(WHATSAPP_SEND_TOKEN, WHATSAPP_PHONE_NUMBER_ID)
+        WHATSAPP_INFO = whatsapp_client.check_config(wa_tok, wa_pid)
     except Exception as e:
         WHATSAPP_INFO = {"ok": False, "error": f"проверка не выполнена: {e}"}
     if WHATSAPP_INFO["ok"]:
@@ -503,8 +523,22 @@ def _startup_checks():
                  WHATSAPP_INFO.get("phone"), WHATSAPP_INFO.get("id"))
     else:
         log.info("[whatsapp] исходящая отправка НЕ настроена: %s. "
-                 "Заполните WHATSAPP_TOKEN и WHATSAPP_PHONE_NUMBER_ID в .env (см. README-WHATSAPP.md)",
+                 "Подключите аккаунт WhatsApp в «Настройки → Каналы» (токен + phone_number_id) "
+                 "или заполните WHATSAPP_TOKEN/WHATSAPP_PHONE_NUMBER_ID в .env (см. README-WHATSAPP.md)",
                  WHATSAPP_INFO["error"])
+
+
+def _internal_service_token() -> str:
+    """Сервисный JWT для внутренних контейнеров (tg-worker): суб «worker»,
+    роль director, TTL 10 минут. Подписывается тем же секретом, что и токены
+    пользователей (AUTH_SECRET/AUTH_PASSWORD), поэтому проходит middleware."""
+    return auth.make_token("worker", "director", ttl=600)
+
+
+def _refresh_channel_status():
+    """Перепроверить Telegram/WhatsApp после подключения/изменения аккаунтов
+    из UI — фоновый поток, чтобы сетевые вызовы не блокировали HTTP-запрос."""
+    threading.Thread(target=_startup_checks, daemon=True).start()
 
 
 @app.on_event("startup")
@@ -606,6 +640,24 @@ def list_comms(
         return {"items": [], "total": 0}
     items, total = store.list_comms(kind, farmId, unreadOnly, limit, offset)
     return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+
+@app.get("/api/internal/worker-token")
+def internal_worker_token(request: Request):
+    """Сервисный JWT для внутреннего tg-воркера (суб «worker», TTL 10 мин).
+
+    Выдаётся ТОЛЬКО запросам из внутренней docker-сети (127.0.0.0/8,
+    10/8, 172.16/12, 192.168/16) — браузер пользователя сюда не пройдёт,
+    поэтому воркеру не нужен внешний CRM_API_KEY в .env."""
+    ip = request.client.host if request.client else ""
+    internal = (
+        ip.startswith("127.") or ip == "::1"
+        or ip.startswith("10.") or ip.startswith("192.168.")
+        or (ip.startswith("172.") and 16 <= int(ip.split(".")[1] or 0) <= 31)
+    )
+    if not internal:
+        raise HTTPException(403, "Только для внутренних контейнеров")
+    return {"token": _internal_service_token()}
 
 
 @app.get("/api/comms/outbox")
@@ -856,8 +908,33 @@ def api_channels_patch(kind: str, body: dict):
         raise HTTPException(404, "Канал не найден")
 
 
+@app.get("/api/channels/{kind}/accounts")
+def api_channel_accounts(kind: str, request: Request, with_token: bool = Query(False)):
+    """Аккаунты канала. Полные токены (with_token=1) отдаются только внутреннему
+    tg-воркеру (суб «worker», сервисный токен) — браузеру всегда приходит маска."""
+    if not channels.valid_kind(kind):
+        raise HTTPException(404, "Канал не найден")
+    items = channels.list_accounts(kind)
+    if with_token and getattr(request.state, "user", "") == "worker":
+        items = channels.list_accounts(kind, reveal=True)
+    return {"items": items}
+
+
+@app.get("/api/channels/{kind}/secrets")
+def api_channel_secrets(kind: str, request: Request):
+    """Секрет вебхука подключённого аккаунта канала — только внутреннему
+    tg-воркеру (суб «worker»). Браузеру всегда 403."""
+    if not channels.valid_kind(kind):
+        raise HTTPException(404, "Канал не найден")
+    if getattr(request.state, "user", "") != "worker":
+        raise HTTPException(403, "Доступно только сервисному воркеру")
+    return {"secret": channels.get_secret(kind, field="secret") or ""}
+
+
 @app.post("/api/channels/{kind}/accounts", status_code=201)
 def api_channel_connect(kind: str, body: dict, request: Request):
+    if getattr(request.state, "role", "") != "director":
+        raise HTTPException(403, "Подключать аккаунты каналов может только генеральный директор")
     try:
         acc = channels.connect_account(kind, body, who=_who(request))
     except ValueError as e:
@@ -867,15 +944,19 @@ def api_channel_connect(kind: str, body: dict, request: Request):
     # телеграм: проверить токен живым запросом getMe (graceful — если сети нет)
     if kind == "telegram" and acc.get("tokenMask"):
         threading.Thread(target=_verify_tg_account, args=(body.get("token", ""),), daemon=True).start()
+    elif kind == "whatsapp":
+        _refresh_channel_status()
     return acc
 
 
 @app.patch("/api/channel-accounts/{account_id}")
 def api_channel_account_update(account_id: str, body: dict):
     try:
-        return channels.update_account(account_id, body)
+        acc = channels.update_account(account_id, body)
     except KeyError:
         raise HTTPException(404, "Аккаунт не найден")
+    _refresh_channel_status()
+    return acc
 
 
 @app.delete("/api/channel-accounts/{account_id}", status_code=204)
@@ -884,13 +965,19 @@ def api_channel_account_delete(account_id: str):
         channels.delete_account(account_id)
     except KeyError:
         raise HTTPException(404, "Аккаунт не найден")
+    _refresh_channel_status()
 
 
 def _verify_tg_account(token: str):
+    global TELEGRAM_BOT_INFO
     try:
         res = tg_api("getMe", {}, token_override=token)
         if res.get("ok"):
-            log.info("[channels] telegram-аккаунт @%s подтверждён", res["result"].get("username"))
+            TELEGRAM_BOT_INFO = res["result"]
+            log.info("[channels] telegram-аккаунт @%s подтверждён — исходящая отправка активна",
+                     res["result"].get("username"))
+        else:
+            log.warning("[channels] Telegram отверг токен аккаунта: %s", res.get("description"))
     except Exception as e:
         log.warning("[channels] проверка telegram-токена: %s", e)
 
@@ -1132,9 +1219,9 @@ def _open(req, timeout: float):
 def tg_api(method: str, payload: dict, token_override: str | None = None) -> dict:
     """Вызов Telegram Bot API (urllib, без внешних зависимостей).
 
-    token_override — токен подключённого аккаунта из реестра каналов; если не
-    задан, используется TELEGRAM_BOT_TOKEN из окружения (обратная совместимость)."""
-    token = token_override or channels.get_secret("telegram") or TELEGRAM_BOT_TOKEN
+    token_override — явный токен; иначе активный аккаунт Telegram из UI,
+    иначе env-фолбэк TELEGRAM_BOT_TOKEN (обратная совместимость)."""
+    token = token_override or tg_token()
     url = f"https://api.telegram.org/bot{token}/{method}"
     req = urllib.request.Request(
         url,
@@ -1157,11 +1244,20 @@ def send_telegram(item: dict, text: str, media_file: str | None = None) -> dict:
     Адресат берётся из payload.chatId исходной входящей записи; если чата ещё
     нет — пробуем username / userIndex (бот напишет первым, как только клиент
     начнёт диалог, сообщение доставится)."""
-    if not TELEGRAM_BOT_TOKEN:
-        raise HTTPException(503, "TELEGRAM_BOT_TOKEN пуст в .env — впишите токен из @BotFather и выполните docker compose up -d --force-recreate")
+    global TELEGRAM_BOT_INFO
+    tok = tg_token()
+    if not tok:
+        raise HTTPException(503, "Токен Telegram не настроен — подключите аккаунт канала в «Настройки → Каналы» (или задайте TELEGRAM_BOT_TOKEN в .env)")
     if TELEGRAM_BOT_INFO is None:
-        # токен задан, но Telegram его не принял (проверка getMe при старте)
-        raise HTTPException(503, "Telegram отверг TELEGRAM_BOT_TOKEN (getMe вернул ошибку) — проверьте токен у @BotFather; подробности в docker logs biotorf-backend")
+        # токен есть, но Telegram его не принял (getMe) — перепроверим на этот запрос
+        try:
+            res = tg_api("getMe", {}, token_override=tok)
+        except Exception as e:
+            raise HTTPException(503, f"Сбой проверки токена Telegram: {e}")
+        if res.get("ok"):
+            TELEGRAM_BOT_INFO = res["result"]
+        else:
+            raise HTTPException(503, "Telegram отверг токен бота (getMe вернул ошибку) — проверьте токен у @BotFather; подробности в docker logs biotorf-backend")
     payload = item.get("payload") or {}
     chat_id = payload.get("chatId")
     attempts = []
@@ -1192,7 +1288,7 @@ def send_telegram(item: dict, text: str, media_file: str | None = None) -> dict:
 
 def tg_send_voice(attempt: dict, media_file: str) -> dict:
     """multipart-вызов Bot API sendVoice (JSON-методы getFile/upload не принимают)."""
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVoice"
+    url = f"https://api.telegram.org/bot{tg_token()}/sendVoice"
     boundary = "----biotorf" + os.urandom(8).hex()
     fname = Path(media_file).name
     data = Path(media_file).read_bytes()
@@ -1224,14 +1320,15 @@ def send_whatsapp(item: dict, text: str) -> dict:
     если у получателя нет WhatsApp или прошёл >24ч без его сообщения —
     ошибку видно в логах и в payload записи-ответа (sendError).
     """
-    if not WHATSAPP_SEND_TOKEN or not WHATSAPP_PHONE_NUMBER_ID:
-        raise HTTPException(503, "WhatsApp не настроен: заполните WHATSAPP_TOKEN и WHATSAPP_PHONE_NUMBER_ID в .env "
-                                 "и выполните docker compose up -d --force-recreate")
+    wa_tok, wa_pid = wa_send_creds()
+    if not wa_tok or not wa_pid:
+        raise HTTPException(503, "WhatsApp не настроен: подключите аккаунт канала в «Настройки → Каналы» "
+                                 "(токен + phone_number_id) или заполните WHATSAPP_TOKEN/WHATSAPP_PHONE_NUMBER_ID в .env")
     to = item.get("phone")
     if not to:
         raise HTTPException(422, "Неизвестен адресат WhatsApp (у входящей записи нет номера телефона)")
     try:
-        res = whatsapp_client.send_message(WHATSAPP_SEND_TOKEN, WHATSAPP_PHONE_NUMBER_ID, to, text)
+        res = whatsapp_client.send_message(wa_tok, wa_pid, to, text)
     except whatsapp_client.WhatsAppError as e:
         raise HTTPException(502, f"WhatsApp/Meta не принял сообщение: {e}")
     msg_id = ((res.get("messages") or [{}])[0]).get("id")
@@ -1256,7 +1353,7 @@ def send_reply(comm_id: str, body: SendIn, media_file: str | None = None):
         # исходящие идут через outbox: воркер long-poll забирает их и шлёт
         # sendMessage. Если токен прямо здесь настроен — пробуем мгновенно.
         chat_id = (item.get("payload") or {}).get("chatId")
-        if TELEGRAM_BOT_TOKEN and chat_id:
+        if tg_token() and chat_id:
             try:
                 sent = send_telegram(item, body.text, media_file=media_file)
             except HTTPException as e:
@@ -1264,7 +1361,7 @@ def send_reply(comm_id: str, body: SendIn, media_file: str | None = None):
     elif item["kind"] == "whatsapp":
         # В WhatsApp бот может писать только по номеру телефона входящего
         # сообщения; отправляем сразу через Cloud API.
-        if WHATSAPP_SEND_TOKEN and WHATSAPP_PHONE_NUMBER_ID:
+        if all(wa_send_creds()):
             try:
                 sent = send_whatsapp(item, body.text)
             except HTTPException as e:
@@ -1366,9 +1463,9 @@ def send_to(body: dict):
     sent = None
     send_error = None
     try:
-        if kind == "telegram" and TELEGRAM_BOT_TOKEN and TELEGRAM_BOT_INFO:
+        if kind == "telegram" and tg_token():
             sent = send_telegram(item, text)
-        elif kind == "whatsapp" and WHATSAPP_SEND_TOKEN and WHATSAPP_PHONE_NUMBER_ID:
+        elif kind == "whatsapp" and all(wa_send_creds()):
             sent = send_whatsapp(item, text)
     except HTTPException as e:
         send_error = str(e.detail)[:200]
@@ -1385,7 +1482,7 @@ def send_to(body: dict):
 def capabilities():
     """Что умеет текущая конфигурация бэкенда (фронт показывает/скрывает кнопки)."""
     return {
-        "telegramSend": bool(TELEGRAM_BOT_TOKEN and TELEGRAM_BOT_INFO),
+        "telegramSend": bool(tg_token() and TELEGRAM_BOT_INFO),
         "telegramBot": (TELEGRAM_BOT_INFO or {}).get("username"),
         "whatsappSend": bool(WHATSAPP_INFO and WHATSAPP_INFO.get("ok")),
         "whatsappPhone": (WHATSAPP_INFO or {}).get("phone"),
@@ -1569,7 +1666,8 @@ def download_tg_voice(file_info: dict) -> dict | None:
     чтобы клиент мог слушать запись в любой момент (Bot API отдаёт файлы только
     по https, special:// paths не читаются напрямую)."""
     fid = file_info.get("file_id")
-    if not fid or not TELEGRAM_BOT_TOKEN:
+    tok = tg_token()
+    if not fid or not tok:
         return None
     try:
         res = tg_api("getFile", {"file_id": fid})
@@ -1577,7 +1675,7 @@ def download_tg_voice(file_info: dict) -> dict | None:
         if not fp:
             log.warning("[tg-media] getFile не вернул file_path для %s…", fid[:24])
             return None
-        url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{fp}"
+        url = f"https://api.telegram.org/file/bot{tok}/{fp}"
         with _open(url, max(NET_TIMEOUT, 30)) as resp:
             data = resp.read(TG_MEDIA_MAX_BYTES + 1)
         if len(data) > TG_MEDIA_MAX_BYTES:
@@ -1613,9 +1711,17 @@ async def telegram_webhook(
 ):
     # секрет приходит либо от нашего воркера (заголовок X-Bot-Secret),
     # либо напрямую от Telegram (заголовок X-Telegram-Bot-Api-Secret-Token,
-    # заданный через setWebhook) — принимаем любой из них
+    # заданный через setWebhook) — принимаем любой из них.
+    # Ожидаемый секрет: TELEGRAM_WEBHOOK_SECRET из .env, либо секрет
+    # подключённого телеграм-аккаунта из CRM (привязка без .env).
     provided = x_bot_secret or request.headers.get("x-telegram-bot-api-secret-token") or secret
-    check_secret(provided, TELEGRAM_SECRET, "TELEGRAM_WEBHOOK_SECRET")
+    expected = TELEGRAM_SECRET
+    if not expected:
+        try:
+            expected = channels.get_secret("telegram", field="secret") or ""
+        except Exception:
+            expected = ""
+    check_secret(provided, expected, "TELEGRAM_WEBHOOK_SECRET / секрет аккаунта Telegram")
     payload = await request.json()
     msg = payload.get("message") or payload.get("channel_post")
     if not msg:
