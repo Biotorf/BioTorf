@@ -8,6 +8,10 @@ import { useFormatters } from '@/composables/useFormatters';
 import StatusPill from '@/components/ui/StatusPill.vue';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 
+import CrmRowModal from '@/components/CrmRowModal.vue';
+const rowColl = ref('pilots');
+const rowOpen = ref(false);
+
 const db = useDbStore();
 const ui = useUiStore();
 const { day, num } = useFormatters();
@@ -37,6 +41,8 @@ const appsOf = (pid) => (db.data.applications || []).filter((a) => a.pilotId ===
       <BackendBadge collection="pilots" />
       </div>
       <input :value="ui.search" @input="ui.search = $event.target.value" class="input" style="max-width:260px" placeholder="Поиск по пилотам…" />
+    
+      <button class="btn primary slim" @click="rowOpen = true" title="Добавить запись вручную">＋ Добавить</button>
     </div>
 
     <div class="insight" style="margin-bottom:14px;gap:8px">
@@ -67,6 +73,7 @@ const appsOf = (pid) => (db.data.applications || []).filter((a) => a.pilotId ===
       Обработки фиксируются отдельными записями в карточке пилота; проверенные схемы применения — в «Базе знаний».
     </div>
   </div>
+  <CrmRowModal v-if="rowOpen" :coll="rowColl" @close="rowOpen = false" />
 </template>
 
 <style scoped>

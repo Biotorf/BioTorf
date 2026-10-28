@@ -8,6 +8,10 @@ import { useFormatters } from '@/composables/useFormatters';
 import StatusPill from '@/components/ui/StatusPill.vue';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 
+import CrmRowModal from '@/components/CrmRowModal.vue';
+const rowColl = ref('social');
+const rowOpen = ref(false);
+
 const db = useDbStore();
 const ui = useUiStore();
 const { day } = useFormatters();
@@ -34,6 +38,8 @@ const pilotTitle = (pid) => {
         <div class="subtitle">Контент-план публикаций, связь с пилотами и согласование</div>
       </div>
       <BackendBadge collection="social" />
+    
+      <button class="btn primary slim" @click="rowOpen = true" title="Добавить запись вручную">＋ Добавить</button>
     </div>
 
     <div class="note">В v0.9 публикации в Instagram автоматически не отправляются; результаты пилотов публикуются только после проверки агрономом и согласия хозяйства.</div>
@@ -55,6 +61,7 @@ const pilotTitle = (pid) => {
       <div v-if="!rows.length" class="empty">Публикаций нет.</div>
     </div>
   </div>
+  <CrmRowModal v-if="rowOpen" :coll="rowColl" @close="rowOpen = false" />
 </template>
 
 

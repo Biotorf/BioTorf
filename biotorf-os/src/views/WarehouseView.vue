@@ -5,6 +5,10 @@ import { useDbStore } from '@/stores/db';
 import { useFormatters } from '@/composables/useFormatters';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 
+import CrmRowModal from '@/components/CrmRowModal.vue';
+const rowColl = ref('warehouse');
+const rowOpen = ref(false);
+
 const db = useDbStore();
 const { num } = useFormatters();
 const query = ref('');
@@ -27,6 +31,8 @@ const totals = computed(() => ({
         <div class="subtitle">Остатки продукции и резервы под заказы</div>
       </div>
       <BackendBadge collection="warehouse" />
+    
+      <button class="btn primary slim" @click="rowOpen = true" title="Добавить запись вручную">＋ Добавить</button>
     </div>
 
     <div class="stats">
@@ -59,6 +65,7 @@ const totals = computed(() => ({
 
     <div class="note" style="margin-top:12px">Автоматические складские проводки отключены (§3, ОГРАНИЧЕНИЕ v0.9): резервы — справочные.</div>
   </div>
+  <CrmRowModal v-if="rowOpen" :coll="rowColl" @close="rowOpen = false" />
 </template>
 
 <style scoped>.mono { font-variant-numeric: tabular-nums; }</style>

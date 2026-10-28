@@ -25,30 +25,40 @@ function onLogout() {
   location.reload();
 }
 
-const MENU = [
-  ['dashboard', '▦', 'Обзор'],
-  ['crm', '♙', 'Клиенты и хозяйства'],
-  ['comms', '☎', 'Коммуникации'],
-  ['pipeline', '▥', 'Сделки и воронка'],
-  ['journey', '⤳', 'Сквозной процесс'],
-  ['pilots', '❧', 'Агрономия'],
-  ['knowledge', '▤', 'База знаний'],
-  ['social', '◉', 'Маркетинг и соцсети'],
-  ['products', '◫', 'Продукция и цены'],
-  ['orders', '▣', 'Заказы'],
-  ['production', '⚙', 'Производство'],
-  ['warehouse', '▤', 'Склад'],
-  ['shipments', '➜', 'Логистика'],
-  ['finance', '◈', 'Финансы'],
-  ['tasks', '☑', 'Задачи'],
-  ['analytics', '▥', 'Аналитика'],
-  ['calendar', '▦', 'Календарь'],
-  ['media', '▧', 'Медиатека'],
-  ['notifications', '♢', 'Уведомления'],
+const GROUPS = [
+  { label: 'ОБЗОР И ПРОЦЕСС', items: [
+    ['dashboard', '▦', 'Обзор'],
+    ['crm', '♙', 'Клиенты и хозяйства'],
+    ['comms', '☎', 'Коммуникации'],
+    ['pipeline', '▥', 'Сделки и воронка'],
+    ['journey', '⤳', 'Сквозной процесс'],
+    ['orders', '▣', 'Заказы'],
+    ['shipments', '➜', 'Логистика'],
+    ['tasks', '☑', 'Задачи'],
+    ['calendar', '▦', 'Календарь'],
+  ]},
+  { label: 'ПРОИЗВОДСТВО И ТОРГИ', items: [
+    ['products', '◫', 'Продукция и цены'],
+    ['production', '⚙', 'Производство'],
+    ['warehouse', '📦', 'Склад'],
+    ['finance', '◈', 'Финансы'],
+    ['pilots', '❧', 'Агрономия'],
+    ['analytics', '▥', 'Аналитика'],
+  ]},
+  { label: 'МАРКЕТИНГ И ЗНАНИЯ', items: [
+    ['social', '◉', 'Маркетинг и соцсети'],
+    ['knowledge', '📖', 'База знаний'],
+    ['media', '▧', 'Медиатека'],
+    ['notifications', '♢', 'Уведомления'],
+  ]},
+  { label: 'УПРАВЛЕНИЕ', items: [
+    ['employees', '♟', 'Сотрудники и роли'],
+    ['channels', '🔌', 'Каналы CRM'],
+  ]},
 ];
 
 const VIS = {
-  director: [...MENU.map((m) => m[0]), 'employees', 'channels'],
+  director: GROUPS.flatMap((g) => g.items.map((m) => m[0])),
   operations: ['dashboard', 'crm', 'comms', 'pilots', 'knowledge', 'social', 'orders', 'production', 'warehouse', 'shipments', 'finance', 'tasks', 'analytics', 'channels'],
   // ... остальные роли 1:1 из исходника
 };
@@ -56,13 +66,10 @@ const VIS = {
 // ключи разделов, которые видны всем ролям (общая рабочая лента связи)
 const ALWAYS = ['comms'];
 
-// «Сотрудники и роли» — виден всем, но управлять может только директор
-// (сервер всё равно проверяет право на выдачу ролей)
-const FULL_MENU = [...MENU, ['employees', '♟', 'Сотрудники и роли'], ['channels', '🔌', 'Каналы CRM']];
 
 const visibleMenu = computed(() => {
   const avail = VIS[ui.role] || VIS.director;
-  return FULL_MENU.filter((m) => avail.includes(m[0]) || ALWAYS.includes(m[0]));
+  return GROUPS.map((g) => ({ ...g, items: g.items.filter((m) => avail.includes(m[0]) || ALWAYS.includes(m[0])) })).filter((g) => g.items.length);
 });
 </script>
 
@@ -77,20 +84,23 @@ const visibleMenu = computed(() => {
     </div>
     <div class="nav-label">РАБОЧАЯ СИСТЕМА</div>
     <nav class="nav">
-      <button
-        v-for="[key, icon, label] in visibleMenu"
-        :key="key"
-        :class="{ active: ui.view === key }"
-        @click="ui.go(key)"
-      >
-        <b>{{ icon }}</b>{{ label }}
-        <span
-          v-if="BACKEND_VIEWS.has(key)"
-          class="live-dot"
-          :class="online ? 'on' : 'off'"
-          :title="online ? 'Раздел работает с сервером' : 'Сервер недоступен — локальные данные'"
-        ></span>
-      </button>
+      <template v-for="g in visibleMenu" :key="g.label">
+        <div class="group-label">{{ g.label }}</div>
+        <button
+          v-for="[key, icon, label] in g.items"
+          :key="key"
+          :class="{ active: ui.view === key }"
+          @click="ui.go(key)"
+        >
+          <b>{{ icon }}</b>{{ label }}
+          <span
+            v-if="BACKEND_VIEWS.has(key)"
+            class="live-dot"
+            :class="online ? 'on' : 'off'"
+            :title="online ? 'Раздел работает с сервером' : 'Сервер недоступен — локальные данные'"
+          ></span>
+        </button>
+      </template>
     </nav>
     <div class="side-bottom">
       <template v-if="ui.login">
@@ -109,6 +119,7 @@ const visibleMenu = computed(() => {
 
 <style scoped>
 .nav button { position: relative; }
+.group-label { font-size: 10px; letter-spacing: .08em; color: #7c8f86; margin: 14px 10px 4px; font-weight: 600; }
 .live-dot {
   margin-left: auto;
   width: 8px;

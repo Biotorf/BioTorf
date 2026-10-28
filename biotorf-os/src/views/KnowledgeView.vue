@@ -6,6 +6,10 @@ import { useDbStore } from '@/stores/db';
 import StatusPill from '@/components/ui/StatusPill.vue';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 
+import CrmRowModal from '@/components/CrmRowModal.vue';
+const rowColl = ref('knowledge');
+const rowOpen = ref(false);
+
 const db = useDbStore();
 const query = ref('');
 const cat = ref('Все');
@@ -27,6 +31,8 @@ const openId = ref(null);
         <div class="subtitle">Проверенные схемы применения, регламенты и скрипты продаж</div>
       </div>
       <BackendBadge collection="knowledge" />
+    
+      <button class="btn primary slim" @click="rowOpen = true" title="Добавить запись вручную">＋ Добавить</button>
     </div>
 
     <div class="toolbar">
@@ -51,7 +57,8 @@ const openId = ref(null);
               <div class="kb-text">{{ k.summary }}</div>
               <div class="mini" style="margin-top:8px">{{ k.public ? '🌐 Материал для публичного использования' : '🔒 Только для внутреннего использования' }}</div>
             </td></tr>
-          </template>
+            <CrmRowModal v-if="rowOpen" :coll="rowColl" @close="rowOpen = false" />
+</template>
           <tr v-if="!items.length"><td colspan="6" class="empty">Статей не найдено.</td></tr>
         </tbody>
       </table>

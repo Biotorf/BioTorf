@@ -8,6 +8,9 @@ import { useFormatters } from '@/composables/useFormatters';
 import StatusPill from '@/components/ui/StatusPill.vue';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 import CrmImportModal from '@/components/CrmImportModal.vue';
+import CrmRowModal from '@/components/CrmRowModal.vue';
+
+const rowModal = ref(null);
 
 const importColl = ref('');   // непусто — открыта модалка импорта
 
@@ -94,6 +97,7 @@ function create() {
             <td><StatusPill :status="t.status" /></td>
             <td>
               <button v-if="t.status !== 'Выполнена'" class="btn slim" @click.stop="db.updateTask(t.id, { status: 'Выполнена' })">✓ Выполнить</button>
+              <button class="btn slim ghost" @click.stop="rowModal = { coll: 'tasks', record: t }">✎</button>
             </td>
           </tr>
           <tr v-if="!tasks.length"><td colspan="6" class="empty">Задач нет — создайте первую или измените фильтр</td></tr>
@@ -102,6 +106,7 @@ function create() {
     </section>
 
     <CrmImportModal v-if="importColl" :coll="importColl" @close="importColl = ''" />
+    <CrmRowModal v-if="rowModal" :coll="rowModal.coll" :record="rowModal.record" @close="rowModal = null" />
   </div>
 </template>
 

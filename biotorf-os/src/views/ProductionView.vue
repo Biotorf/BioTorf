@@ -6,6 +6,10 @@ import { useFormatters } from '@/composables/useFormatters';
 import StatusPill from '@/components/ui/StatusPill.vue';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 
+import CrmRowModal from '@/components/CrmRowModal.vue';
+const rowColl = ref('production');
+const rowOpen = ref(false);
+
 const db = useDbStore();
 const { day, num } = useFormatters();
 const statusFilter = ref('Все');
@@ -22,6 +26,8 @@ const STATUSES = ['Все', 'План', 'В работе', 'Завершено']
         <div class="subtitle">Планы розлива и производственные партии</div>
       </div>
       <BackendBadge collection="production" />
+    
+      <button class="btn primary slim" @click="rowOpen = true" title="Добавить запись вручную">＋ Добавить</button>
     </div>
 
     <div class="note">Статусы партий не списывают сырьё и не резервируют склад автоматически — сверяйте остатки на складе.</div>
@@ -47,6 +53,7 @@ const STATUSES = ['Все', 'План', 'В работе', 'Завершено']
       </table>
     </section>
   </div>
+  <CrmRowModal v-if="rowOpen" :coll="rowColl" @close="rowOpen = false" />
 </template>
 
 <style scoped>.mono { font-variant-numeric: tabular-nums; }</style>

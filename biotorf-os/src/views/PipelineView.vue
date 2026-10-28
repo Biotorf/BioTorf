@@ -8,6 +8,9 @@ import { useFormatters } from '@/composables/useFormatters';
 import StatusPill from '@/components/ui/StatusPill.vue';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 import CrmImportModal from '@/components/CrmImportModal.vue';
+import CrmRowModal from '@/components/CrmRowModal.vue';
+
+const rowModal = ref(null);
 
 const importColl = ref('');   // непусто — открыта модалка импорта
 
@@ -54,6 +57,7 @@ function move(d, dir) {
       </div>
       <input :value="ui.search" @input="ui.search = $event.target.value" class="input" style="max-width:260px" placeholder="Поиск по сделкам…" />
       <button class="btn slim" @click="importColl = 'deals'" title="Загрузить сделки из CSV/JSON">⇪ Импорт</button>
+      <button class="btn primary slim" @click="rowModal = { coll: 'deals' }">＋ Сделка</button>
     </div>
 
     <!-- Канбан -->
@@ -85,7 +89,7 @@ function move(d, dir) {
             <td>{{ num(d.volumeL) }}</td>
             <td>{{ money(d.amount) }}</td>
             <td>{{ d.owner }}</td>
-            <td><button v-if="d.journeyId" class="btn slim" @click.stop="ui.openJourney(d.journeyId)">Открыть процесс</button></td>
+            <td><button v-if="d.journeyId" class="btn slim" @click.stop="ui.openJourney(d.journeyId)">Открыть процесс</button> <button class="btn slim ghost" @click.stop="rowModal = { coll: 'deals', record: d }">✎</button></td>
           </tr>
           <tr v-if="!deals.length"><td colspan="6" class="empty">Нет сделок по текущему фильтру</td></tr>
         </tbody>
@@ -93,6 +97,7 @@ function move(d, dir) {
     </section>
 
     <CrmImportModal v-if="importColl" :coll="importColl" @close="importColl = ''" />
+    <CrmRowModal v-if="rowModal" :coll="rowModal.coll" :record="rowModal.record" @close="rowModal = null" />
   </div>
 </template>
 

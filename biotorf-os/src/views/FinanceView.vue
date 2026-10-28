@@ -1,11 +1,15 @@
 <script setup>
 // «Финансы» (демо v0.9): счета, оплаты и дебиторка. Подтверждение оплаты — ручное (§3).
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
 import { useFormatters } from '@/composables/useFormatters';
 import StatusPill from '@/components/ui/StatusPill.vue';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
+
+import CrmRowModal from '@/components/CrmRowModal.vue';
+const rowColl = ref('invoices');
+const rowOpen = ref(false);
 
 const db = useDbStore();
 const ui = useUiStore();
@@ -31,6 +35,8 @@ const orderFarm = (orderId) => {
         <div class="subtitle">Счета, оплаты и дебиторская задолженность</div>
       </div>
       <BackendBadge collection="invoices" />
+    
+      <button class="btn primary slim" @click="rowOpen = true" title="Добавить запись вручную">＋ Добавить</button>
     </div>
 
     <div class="stats">
@@ -59,6 +65,7 @@ const orderFarm = (orderId) => {
       </table>
     </section>
   </div>
+  <CrmRowModal v-if="rowOpen" :coll="rowColl" @close="rowOpen = false" />
 </template>
 
 <style scoped>

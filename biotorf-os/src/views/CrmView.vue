@@ -7,6 +7,9 @@ import { useFormatters } from '@/composables/useFormatters';
 import StatusPill from '@/components/ui/StatusPill.vue';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 import CrmImportModal from '@/components/CrmImportModal.vue';
+import CrmRowModal from '@/components/CrmRowModal.vue';
+
+const rowModal = ref(null);   // { coll, record? } — ручное добавление/редактирование
 
 const importColl = ref('');   // непусто — открыта модалка импорта этой таблицы
 
@@ -56,7 +59,8 @@ const commsUnread = (farmId) => db.comms.filter((c) => c.farmId === farmId && !c
       <BackendBadge collection="farms" />
       <button class="btn slim" @click="importColl = 'farms'" title="Загрузить хозяйства из CSV/JSON">⇪ Импорт · Хозяйства</button>
       <button class="btn slim" @click="importColl = 'leads'" title="Загрузить лиды из CSV/JSON">⇪ Импорт · Лиды</button>
-      <button class="btn primary slim" @click="ui.go('journey')">＋ Создать · Лид</button>
+      <button class="btn primary slim" @click="rowModal = { coll: 'farms' }">＋ Хозяйство</button>
+      <button class="btn primary slim" @click="rowModal = { coll: 'leads' }">＋ Лид</button>
     </div>
 
     <!-- Входящие обращения -->
@@ -79,6 +83,7 @@ const commsUnread = (farmId) => db.comms.filter((c) => c.farmId === farmId && !c
             <th>Ответственный</th>
             <th>Статус</th>
             <th>Следующий контакт</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
@@ -93,6 +98,7 @@ const commsUnread = (farmId) => db.comms.filter((c) => c.farmId === farmId && !c
             <td>{{ l.owner }}</td>
             <td><StatusPill :status="l.status" /></td>
             <td>{{ day(l.next) }}</td>
+            <td @click.stop><button class="btn slim ghost" @click="rowModal = { coll: 'leads', record: l }">✎</button></td>
           </tr>
         </tbody>
       </table>
@@ -111,6 +117,7 @@ const commsUnread = (farmId) => db.comms.filter((c) => c.farmId === farmId && !c
             <th>Статус</th>
             <th>След. контакт</th>
             <th>Связь</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
@@ -135,11 +142,13 @@ const commsUnread = (farmId) => db.comms.filter((c) => c.farmId === farmId && !c
                 ☎ {{ commsCount(f.id) }}<template v-if="commsUnread(f.id)"> · <span class="pill red">{{ commsUnread(f.id) }}</span></template>
               </button>
             </td>
+            <td @click.stop><button class="btn slim ghost" @click="rowModal = { coll: 'farms', record: f }">✎ Изменить</button></td>
           </tr>
         </tbody>
       </table>
     </div>
 
     <CrmImportModal v-if="importColl" :coll="importColl" @close="importColl = ''" />
+    <CrmRowModal v-if="rowModal" :coll="rowModal.coll" :record="rowModal.record" @close="rowModal = null" />
   </div>
 </template>

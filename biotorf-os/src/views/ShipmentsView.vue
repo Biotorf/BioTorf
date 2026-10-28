@@ -12,6 +12,10 @@ import BackendBadge from '@/components/ui/BackendBadge.vue';
 import LogisticsDocEditor from '@/components/forms/LogisticsDocEditor.vue';
 import { toCsv, toXmlSpreadsheet, downloadBlob, printHtml } from '@/utils/spreadsheet';
 
+import CrmRowModal from '@/components/CrmRowModal.vue';
+const rowColl = ref('shipments');
+const rowOpen = ref(false);
+
 const db = useDbStore();
 const ui = useUiStore();
 const { money, num, day } = useFormatters();
@@ -124,6 +128,8 @@ const partyLabel = computed(() => tab.value === 'supply' ? 'Поставщик' 
         <button class="btn slim ghost" @click="printRegistry" title="Печать реестра / PDF">🖨 Печать</button>
         <button class="btn primary" @click="openEditor()">＋ {{ tab === 'supply' ? 'Новая поставка' : 'Новая выгрузка' }}</button>
       </div>
+    
+      <button class="btn primary slim" @click="rowOpen = true" title="Добавить запись вручную">＋ Добавить</button>
     </div>
 
     <div class="chips" style="margin-bottom:16px">
@@ -224,6 +230,7 @@ const partyLabel = computed(() => tab.value === 'supply' ? 'Поставщик' 
       (печатная форма A4 → PDF) и скачиваются выгрузки в Excel/CSV.
     </div>
   </div>
+  <CrmRowModal v-if="rowOpen" :coll="rowColl" @close="rowOpen = false" />
 </template>
 
 <style scoped>

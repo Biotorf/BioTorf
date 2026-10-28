@@ -7,6 +7,9 @@ import { useFormatters } from '@/composables/useFormatters';
 import StatusPill from '@/components/ui/StatusPill.vue';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 import CrmImportModal from '@/components/CrmImportModal.vue';
+import CrmRowModal from '@/components/CrmRowModal.vue';
+
+const rowModal = ref(null);
 
 const importColl = ref('');   // непусто — открыта модалка импорта
 
@@ -42,6 +45,7 @@ const skuName = (id) => db.skuById(id)?.name || id;
       <input :value="ui.search" @input="ui.search = $event.target.value" class="input" style="max-width:320px" placeholder="Поиск по заказам…" />
       <select v-model="statusFilter" class="select" style="max-width:220px"><option v-for="s in STATUSES" :key="s">{{ s }}</option></select>
       <button class="btn slim" @click="importColl = 'orders'" title="Загрузить заказы из CSV/JSON">⇪ Импорт</button>
+      <button class="btn primary slim" @click="rowModal = { coll: 'orders' }">＋ Заказ</button>
     </div>
 
     <section class="panel">
@@ -56,7 +60,7 @@ const skuName = (id) => db.skuById(id)?.name || id;
             <td class="mono">{{ money(o.amount) }}</td>
             <td>{{ day((o.date || '').slice(0, 10)) }}</td>
             <td><StatusPill :status="o.status" /></td>
-            <td><button v-if="o.journeyId" class="btn slim" @click.stop="ui.openJourney(o.journeyId)">Процесс</button></td>
+            <td><button v-if="o.journeyId" class="btn slim" @click.stop="ui.openJourney(o.journeyId)">Процесс</button> <button class="btn slim ghost" @click.stop="rowModal = { coll: 'orders', record: o }">✎</button></td>
           </tr>
           <tr v-if="!rows.length"><td colspan="8" class="empty">Заказов нет. Заказ создаётся из сквозного процесса после подтверждения КП (§3 шаг 19).</td></tr>
         </tbody>
@@ -64,6 +68,7 @@ const skuName = (id) => db.skuById(id)?.name || id;
     </section>
 
     <CrmImportModal v-if="importColl" :coll="importColl" @close="importColl = ''" />
+    <CrmRowModal v-if="rowModal" :coll="rowModal.coll" :record="rowModal.record" @close="rowModal = null" />
   </div>
 </template>
 

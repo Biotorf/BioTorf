@@ -5,6 +5,10 @@ import { useDbStore } from '@/stores/db';
 import { useFormatters } from '@/composables/useFormatters';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 
+import CrmRowModal from '@/components/CrmRowModal.vue';
+const rowColl = ref('media');
+const rowOpen = ref(false);
+
 const db = useDbStore();
 const { day } = useFormatters();
 const query = ref('');
@@ -23,6 +27,8 @@ const rows = computed(() =>
         <div class="subtitle">Фото и видео ДО / ПОСЛЕ, материалы для кейсов и соцсетей</div>
       </div>
       <BackendBadge collection="media" />
+    
+      <button class="btn primary slim" @click="rowOpen = true" title="Добавить запись вручную">＋ Добавить</button>
     </div>
 
     <div class="toolbar">
@@ -48,6 +54,7 @@ const rows = computed(() =>
       </table>
     </section>
   </div>
+  <CrmRowModal v-if="rowOpen" :coll="rowColl" @close="rowOpen = false" />
 </template>
 
 <style scoped>.mini { font-size: 12px; color: var(--muted, #7b8a86); }</style>

@@ -1,9 +1,13 @@
 <script setup>
 // «Продукция и цены» + калькуляция себестоимости (демо v0.9). Без бэкенда.
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import { useDbStore } from '@/stores/db';
 import { useFormatters } from '@/composables/useFormatters';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
+
+import CrmRowModal from '@/components/CrmRowModal.vue';
+const rowColl = ref('skus');
+const rowOpen = ref(false);
 
 const db = useDbStore();
 const { num, money } = useFormatters();
@@ -27,6 +31,8 @@ const lines = computed(() => {
         <div class="subtitle">SKU, рецептуры производственных линий и модель себестоимости</div>
       </div>
       <BackendBadge collection="skus" />
+    
+      <button class="btn primary slim" @click="rowOpen = true" title="Добавить запись вручную">＋ Добавить</button>
     </div>
 
     <div class="note">Цены и калькуляция — рабочие допущения ({{ cost.source || '—' }}), не утверждённый прайс.</div>
@@ -69,6 +75,7 @@ const lines = computed(() => {
       </section>
     </div>
   </div>
+  <CrmRowModal v-if="rowOpen" :coll="rowColl" @close="rowOpen = false" />
 </template>
 
 <style scoped>
