@@ -1,0 +1,23 @@
+# BIOTORF Business OS · backend для Render.com (без docker-специфичных вещей)
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --prefer-binary -r requirements.txt
+
+COPY . .
+
+ENV PORT=10000 \
+    DB_BACKEND=postgres \
+    FARMS_FILE=/tmp/farms.json \
+    MEDIA_DIR=/tmp/media
+
+EXPOSE 10000
+
+# farms.json кладётся во временный каталог (на Render нет постоянного диска
+# на бесплатном плане); схема PostgreSQL создаётся самим приложением при старте.
+CMD ["sh", "-c", "cp -n /app/farms.example.json \"$FARMS_FILE\" 2>/dev/null || true; uvicorn main:app --host 0.0.0.0 --port ${PORT:-10000}"]

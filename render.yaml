@@ -1,0 +1,55 @@
+# BIOTORF Business OS · развёртывание на Render.com (Blueprint)
+#
+# Как использовать:
+#   1. render.com → New + → Blueprint → выберите репозиторий Biotorf/BioTorf (ветка main).
+#   2. Render сам найдёт этот файл и создаст оба сервиса.
+#   3. В настройках biotorf-backend замените значения-заглушки реальными секретами
+#      (Settings → Environment Variables), затем Manual Deploy → Clear build cache & deploy.
+#
+# Стоимость демо: PostgreSQL Basic $7/мес; бэкенд — бесплатный инстанс ($0, засыпает
+# после простоя — перед показом клиенту просто откройте сайт заранее).
+
+databases:
+  - name: biotorf-crm-db
+    databaseName: biotorf
+    user: biotorf
+    plan: basic          # бесплатного плана БД у Render больше нет; basic = $7/мес
+    region: oregon
+    postgresMajorVersion: "17"
+
+services:
+  - type: web
+    name: biotorf-backend
+    runtime: docker
+    region: oregon
+    plan: free
+    repo: https://github.com/Biotorf/BioTorf
+    branch: main
+    dockerfilePath: ./backend/Dockerfile.render
+    dockerContext: ./backend
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: biotorf-crm-db
+          property: connectionString
+      - key: DB_BACKEND
+        value: postgres
+      # ⚠ ЗАМЕНИТЕ на реальные значения в Settings → Environment Variables!
+      - key: AUTH_PASSWORD
+        value: CHANGE_ME_password_for_crm_login
+      - key: AUTH_SECRET
+        generateValue: true
+      - key: DEV_MODE
+        value: "0"
+      - key: CORS_ORIGINS
+        value: "*"
+      - key: TELEGRAM_BOT_TOKEN
+        value: ""
+      - key: TELEGRAM_WEBHOOK_SECRET
+        value: ""
+      - key: WHATSAPP_TOKEN
+        value: ""
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        value: ""
