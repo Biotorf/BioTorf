@@ -251,7 +251,7 @@ WHATSAPP_INFO: dict | None = None      # результат проверки к�
 # ── аутентификация HTTP-запросов к /api/* ────────────────────────────────────
 # /auth/me требует токен (остальные /auth/* — публичные: login/register)
 PUBLIC_PATHS = ("/health", "/docs", "/openapi.json", "/redoc", "/webhooks/",
-                "/auth/login", "/auth/register")
+                "/auth/login", "/auth/register", "/api/internal/worker-token")
 
 
 @app.middleware("http")
@@ -916,7 +916,10 @@ def api_channel_accounts(kind: str, request: Request, with_token: bool = Query(F
         raise HTTPException(404, "Канал не найден")
     items = channels.list_accounts(kind)
     if with_token and getattr(request.state, "user", "") == "worker":
-        items = channels.list_accounts(kind, reveal=True)
+        # только активные аккаунты: отключённый (status != active) не должен
+        # случайно стать источником токена для воркера
+        items = [a for a in channels.list_accounts(kind, reveal=True)
+                 if a.get("status", "active") == "active"]
     return {"items": items}
 
 

@@ -41,7 +41,9 @@ def service_token() -> str:
     if API_KEY:
         return API_KEY
     now = time.time()
-    if _TOKEN_CACHE["tok"] and _TOKEN_CACHE["exp"] - 60 > now:
+    # прошлый токен принимаем только если он реально ещё жив (запас 30 сек),
+    # иначе при смене AUTH_SECRET/перезапуске бэкенда вечно получаем 401
+    if _TOKEN_CACHE["tok"] and _TOKEN_CACHE["exp"] - 30 > now:
         return _TOKEN_CACHE["tok"]
     try:
         with urllib.request.urlopen(
@@ -53,7 +55,7 @@ def service_token() -> str:
             return tok
     except Exception as e:
         print(f"[tg-worker] worker-token недоступен: {e}", file=sys.stderr)
-    return _TOKEN_CACHE["tok"]  # последняя надежда — прошлый (возможно, живой) токен
+    return ""
 
 
 def _auth_headers() -> dict:
@@ -62,10 +64,21 @@ def _auth_headers() -> dict:
 
 
 def _get_json_auth(path: str) -> dict:
-    req = urllib.request.Request(
-        f"{API.rstrip('/')}{path}", headers=_auth_headers())
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        return json.loads(resp.read() or b"{}")
+    for attempt in (1, 2):
+        req = urllib.request.Request(
+            f"{API.rstrip('/')}{path}", headers=_auth_headers())
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return json.loads(resp.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            if e.code == 401 and attempt == 1:
+                # сервисный токен протух (перезапуск бэкенда / смена секрета) —
+                # берём свежий и повторяем запрос один раз
+                _TOKEN_CACHE["tok"] = ""
+                _TOKEN_CACHE["exp"] = 0.0
+                continue
+            raise
+    return {}
 
 
 def resolve_webhook_secret() -> str:
@@ -87,7 +100,7 @@ def resolve_bot_token() -> str:
     """Токен бота: сначала аккаунт Telegram из CRM (GET /api/channels/telegram/accounts,
     токен отдаётся только с авторизацией), затем env-fallback."""
     try:
-        data = _get_json_auth("/api/channels/telegram/accounts")
+        data = _get_json_auth("/api/channels/telegram/accounts?with_token=1")
         for acc in (data.get("items") or data.get("accounts") or []):
             tok = (acc.get("token") or "").strip()
             if tok and acc.get("status", "active") == "active":

@@ -278,6 +278,11 @@ def connect_account(kind: str, data: dict, who: str = "") -> dict:
     secret = (data.get("secret") or "").strip()
     if kind == "telegram" and not re.match(r"^\d{6,12}:[\w-]{20,}$", token or ""):
         raise ValueError("Формат токена Telegram: 1234567:AA...")
+    if kind == "telegram" and not secret:
+        # секрет вебхука обязателен: воркер передаёт его в X-Bot-Secret, а
+        # /webhooks/telegram сверяет с полем secret аккаунта. Без секрета все
+        # входящие сообщения отбиваются как 401 и в CRM не появляются.
+        secret = secrets.token_urlsafe(24)
     aid = secrets.token_hex(8)
     now = _now()
     with _conn() as conn:
