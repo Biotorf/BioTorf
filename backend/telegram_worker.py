@@ -24,7 +24,22 @@ import time
 import urllib.error
 import urllib.request
 
-API = os.environ.get("COMMS_API", "http://127.0.0.1:8787")
+# ВАЖНО: 127.0.0.1 внутри контейнера воркера — это сам воркер, а не бэкенд.
+# Дефолт — docker-DNS имя сервиса backend; при --api localhost/127.0.0.1
+# автоматически переписываем на backend (лечит «Name or service not known»
+# и вечные 401 у старых контейнеров, собранных с битым дефолтом).
+API = os.environ.get("COMMS_API", "http://backend:8787")
+
+
+def _normalize_api(url: str) -> str:
+    u = (url or "").strip().rstrip("/") or "http://backend:8787"
+    for bad in ("127.0.0.1", "localhost", "0.0.0.0"):
+        if f"://{bad}" in u:
+            u = u.replace(f"://{bad}", "://backend")
+    return u
+
+
+API = _normalize_api(API)
 ENV_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()  # fallback для локальной разработки
 WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
 API_KEY = os.environ.get("CRM_API_KEY", "").strip()   # явный сервисный токен (необязателен)
@@ -53,8 +68,14 @@ def service_token() -> str:
             _TOKEN_CACHE["tok"] = tok
             _TOKEN_CACHE["exp"] = now + 540  # TTL 10 мин, обновляем за 9
             return tok
+    except urllib.error.URLError as e:
+        # DNS/соединение: чаще всего неверный COMMS_API/--api (например,
+        # http://127.0.0.1:8787 внутри контейнера = сам воркер, а не бэкенд)
+        print(f"[tg-worker] worker-token недоступен ({API}): {e.reason} — "
+              f"проверьте, что контейнер backend запущен и доступен по имени «backend»",
+              file=sys.stderr)
     except Exception as e:
-        print(f"[tg-worker] worker-token недоступен: {e}", file=sys.stderr)
+        print(f"[tg-worker] worker-token недоступен ({API}): {e}", file=sys.stderr)
     return ""
 
 
@@ -245,11 +266,16 @@ def deliver_outbox(api: str):
 
 
 def main():
-    global OFFSET, WEBHOOK_SECRET
+    global OFFSET, WEBHOOK_SECRET, API
     parser = argparse.ArgumentParser()
     parser.add_argument("--api", default=API, help="базовый URL Comms API")
     parser.add_argument("--once", action="store_true", help="один цикл getUpdates и выход (для теста)")
     args = parser.parse_args()
+
+    # --api тоже нормализуем: localhost/127.0.0.1 внутри контейнера воркера —
+    # это сам воркер, а не бэкенд (отсюда «Name or service not known»/401)
+    API = _normalize_api(args.api)
+    args.api = API
 
     # токен и секрет берём из подключённого аккаунта Telegram в CRM
     # («Настройки → Каналы»), env — только fallback для локальной разработки
