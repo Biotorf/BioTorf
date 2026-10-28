@@ -92,6 +92,12 @@ services:
     container_name: biotorf-tg-worker
     profiles: ["tg"]
     restart: unless-stopped
+    # depends_on + healthcheck гарантируют, что к моменту старта воркера
+    # DNS-имя «backend» уже резолвится (иначе первые попытки падают с
+    # "Name or service not known", а контейнер выходит с кодом 1).
+    depends_on:
+      backend:
+        condition: service_healthy
     command: ["python", "telegram_worker.py", "--api", "http://backend:8787"]
     environment:
       # токен и секрет берутся из подключённого аккаунта Telegram в CRM

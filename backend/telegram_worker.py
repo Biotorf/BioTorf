@@ -84,17 +84,52 @@ def _auth_headers() -> dict:
     return {"Authorization": f"Bearer {tok}"} if tok else {}
 
 
+def _wait_backend(timeout_s: float = 60.0) -> bool:
+    """Дождаться готовности CRM API (health). Возвращает True, если дождались.
+
+    Лечит гонку при старте стека: DNS-имя «backend» появляется только когда
+    контейнер бэкенда запущен, а первые попытки без ожидания дают
+    «Name or service not known» и выход с кодом 1 (restart-шторм)."""
+    deadline = time.time() + timeout_s
+    i = 0
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(f"{API.rstrip('/')}/health", timeout=3) as r:
+                if r.status == 200:
+                    if i:
+                        print(f"[tg-worker] backend доступен: {API}", file=sys.stderr)
+                    return True
+        except Exception:
+            pass
+        i += 1
+        if i == 1:
+            print(f"[tg-worker] ждём запуска backend ({API}) ...", file=sys.stderr)
+        time.sleep(1.0)
+    print(f"[tg-worker] ВНИМАНИЕ: backend за 60 сек не поднялся ({API})", file=sys.stderr)
+    return False
+
+
 def _get_json_auth(path: str) -> dict:
-    for attempt in (1, 2):
+    for attempt in (1, 2, 3):
         req = urllib.request.Request(
             f"{API.rstrip('/')}{path}", headers=_auth_headers())
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
                 return json.loads(resp.read() or b"{}")
         except urllib.error.HTTPError as e:
-            if e.code == 401 and attempt == 1:
-                # сервисный токен протух (перезапуск бэкенда / смена секрета) —
-                # берём свежий и повторяем запрос один раз
+            if e.code == 401 and attempt < 3:
+                # сервисный токен протух/пуст (перезапуск бэкенда, смена
+                # секрета или гонка при старте) — берём свежий и повторяем
+                _TOKEN_CACHE["tok"] = ""
+                _TOKEN_CACHE["exp"] = 0.0
+                if attempt == 2:
+                    _wait_backend()
+                continue
+            raise
+        except urllib.error.URLError:
+            # DNS/соединение: backend ещё не поднялся — подождём и повторим
+            if attempt < 3:
+                _wait_backend()
                 _TOKEN_CACHE["tok"] = ""
                 _TOKEN_CACHE["exp"] = 0.0
                 continue
@@ -277,10 +312,24 @@ def main():
     API = _normalize_api(args.api)
     args.api = API
 
+    # ждём подъёма backend: DNS-имя «backend» появляется только когда его
+    # контейнер запущен; без этого первые resolve_* падают и воркер
+    # выходил с кодом 1 в restart-шторм
+    _wait_backend()
+
     # токен и секрет берём из подключённого аккаунта Telegram в CRM
     # («Настройки → Каналы»), env — только fallback для локальной разработки
-    BOT_TOKEN = resolve_bot_token()
-    WEBHOOK_SECRET = resolve_webhook_secret()
+    BOT_TOKEN = ""
+    WEBHOOK_SECRET = ""
+    for attempt in range(5):
+        try:
+            BOT_TOKEN = resolve_bot_token()
+            WEBHOOK_SECRET = resolve_webhook_secret()
+        except Exception as e:
+            print(f"[tg-worker] CRM недоступен (попытка {attempt + 1}/5): {e}", file=sys.stderr)
+        if BOT_TOKEN and WEBHOOK_SECRET:
+            break
+        time.sleep(3)
 
     if not BOT_TOKEN:
         sys.exit(
