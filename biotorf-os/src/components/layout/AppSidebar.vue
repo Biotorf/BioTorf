@@ -14,7 +14,7 @@ const BACKEND_VIEWS = new Set([
   'crm', 'comms', 'pipeline', 'journey', 'pilots', 'orders', 'shipments',
   'finance', 'tasks', 'knowledge', 'warehouse', 'production', 'products',
   'social', 'media', 'analytics', 'calendar', 'notifications',
-  'employees', 'channels',
+  'employees',
 ]);
 // Живой ли сервер — для цветовой отметки в меню.
 const online = computed(() => db.serverOnline);
@@ -53,13 +53,12 @@ const GROUPS = [
   ]},
   { label: 'УПРАВЛЕНИЕ', items: [
     ['employees', '♟', 'Сотрудники и роли'],
-    ['channels', '🔌', 'Каналы CRM'],
   ]},
 ];
 
 const VIS = {
   director: GROUPS.flatMap((g) => g.items.map((m) => m[0])),
-  operations: ['dashboard', 'crm', 'comms', 'pilots', 'knowledge', 'social', 'orders', 'production', 'warehouse', 'shipments', 'finance', 'tasks', 'analytics', 'channels'],
+  operations: ['dashboard', 'crm', 'comms', 'pilots', 'knowledge', 'social', 'orders', 'production', 'warehouse', 'shipments', 'finance', 'tasks', 'analytics'],
   // ... остальные роли 1:1 из исходника
 };
 

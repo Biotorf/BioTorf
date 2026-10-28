@@ -42,12 +42,6 @@ BUILTIN = {
     "whatsapp":  {"label": "WhatsApp",    "icon": "💬", "color": "#25d366", "directions": ["in", "out"], "connectors": ["cloud-api"]},
 }
 
-DEFAULT_CHANNELS = [
-    {"id": "call", "group": "Клиентские каналы"},
-    {"id": "telegram", "group": "Мессенджеры"},
-    {"id": "whatsapp", "group": "Мессенджеры"},
-]
-
 # пресеты для кнопки «Добавить канал» — пользователю не нужно ничего придумывать
 CHANNEL_PRESETS = [
     {"id": "instagram",  "label": "Instagram",  "icon": "📸", "color": "#c13584", "group": "Соцсети",     "directions": ["in", "out"], "connectors": ["generic-webhook", "dm-api"]},
@@ -58,6 +52,13 @@ CHANNEL_PRESETS = [
     {"id": "youdo",      "label": "YouDo",      "icon": "✅", "color": "#ff8b00", "group": "Площадки",    "directions": ["in", "out"], "connectors": ["generic-webhook"]},
     {"id": "email",      "label": "Email",      "icon": "✉️", "color": "#6e56cf", "group": "Клиентские каналы", "directions": ["in", "out"], "connecters": [], "connectors": ["smtp-imap"]},
 ]
+
+
+DEFAULT_CHANNELS = [
+    {"id": "call", "group": "Клиентские каналы"},
+    {"id": "telegram", "group": "Мессенджеры"},
+    {"id": "whatsapp", "group": "Мессенджеры"},
+] + [{"id": p["id"], "group": p["group"]} for p in CHANNEL_PRESETS]
 
 
 def _conn():
@@ -98,6 +99,20 @@ CREATE TABLE IF NOT EXISTS channel_accounts (
 """
 
 
+# Каналы, которые всегда считаются доступными для приёма/отправки, даже если
+# их ещё нет (или они отключены) в таблице channels. Это нужно, чтобы generic-
+# вебхуки /webhooks/channel/{kind} работали сразу после старта, без «Каналов CRM»
+# — настройка идёт через .env и внешние коннекторы (n8n/Zapier/боты).
+ALWAYS_ON_KINDS = {c["id"] for c in CHANNEL_PRESETS} | set(BUILTIN.keys())
+
+PRESET_META = {p["id"]: p for p in CHANNEL_PRESETS}
+
+
+def _channel_meta(ch_id: str) -> dict:
+    """Мета канала из BUILTIN/пресетов (для seed и синхронизации реестра)."""
+    return BUILTIN.get(ch_id) or PRESET_META.get(ch_id) or {}
+
+
 def ensure_schema():
     with _conn() as conn:
         if IS_POSTGRES:
@@ -109,7 +124,23 @@ def ensure_schema():
         n = conn.execute("SELECT COUNT(*) c FROM channels").fetchone()["c"]
         if n == 0:
             for ch in DEFAULT_CHANNELS:
-                meta = BUILTIN.get(ch["id"], {})
+                meta = _channel_meta(ch["id"])
+                conn.execute(
+                    "INSERT INTO channels (id,label,icon,color,grp,enabled,directions,connectors) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (ch["id"], meta.get("label", ch["id"]), meta.get("icon", "🔗"),
+                     meta.get("color", "#888"), ch["group"], 1,
+                     json.dumps(meta.get("directions", ["in", "out"])),
+                     json.dumps(meta.get("connectors", []))),
+                )
+        else:
+            # самовосстановление: добавляем отсутствующие стандартные каналы
+            # (например, в старой базе есть только telegram/whatsapp/call)
+            have = {r["id"] for r in conn.execute("SELECT id FROM channels").fetchall()}
+            for ch in DEFAULT_CHANNELS:
+                if ch["id"] in have:
+                    continue
+                meta = _channel_meta(ch["id"])
                 conn.execute(
                     "INSERT INTO channels (id,label,icon,color,grp,enabled,directions,connectors) "
                     "VALUES (?,?,?,?,?,?,?,?)",
@@ -121,12 +152,18 @@ def ensure_schema():
 
 
 def valid_kind(kind: str | None) -> bool:
-    """Разрешён ли kind в comms (только включённые каналы реестра)."""
+    """Разрешён ли kind в comms.
+
+    Приоритет — включённая запись в таблице channels; если записи нет, но kind
+    входит в стандартный пресет (telegram/whatsapp/instagram/facebook/vk/ok/
+    avito/youdo/email/call) — канал разрешён по умолчанию."""
     if not kind:
         return False
     with _conn() as conn:
         r = conn.execute("SELECT enabled FROM channels WHERE id=?", (kind,)).fetchone()
-    return bool(r and r["enabled"])
+    if r:
+        return bool(r["enabled"])
+    return kind in ALWAYS_ON_KINDS
 
 
 def all_kinds() -> list[str]:
@@ -325,23 +362,57 @@ def delete_account(account_id: str) -> None:
             raise KeyError("Аккаунт не найден")
 
 
-def get_secret(kind: str, field: str = "token") -> str | None:
-    """Секрет активного аккаунта канала — для воркеров отправки.
+# env-фолбэки: настройка каналов «через файлы» (.env), без «Каналов CRM».
+# Если аккаунт не подключён в БД — секрет берётся из переменной окружения.
+_ENV_SECRET_KEYS = {
+    ("telegram", "token"): "TELEGRAM_BOT_TOKEN",
+    ("telegram", "secret"): "TELEGRAM_WEBHOOK_SECRET",
+    ("whatsapp", "token"): "WHATSAPP_TOKEN",
+    ("whatsapp", "secret"): "WHATSAPP_PHONE_NUMBER_ID",
+    ("instagram", "token"): "INSTAGRAM_TOKEN",
+    ("instagram", "secret"): "CHANNEL_WEBHOOK_SECRET_INSTAGRAM",
+    ("facebook", "token"): "FACEBOOK_PAGE_TOKEN",
+    ("facebook", "secret"): "CHANNEL_WEBHOOK_SECRET_FACEBOOK",
+    ("vk", "token"): "VK_GROUP_TOKEN",
+    ("vk", "secret"): "VK_CALLBACK_SECRET",
+    ("ok", "token"): "OK_API_TOKEN",
+    ("ok", "secret"): "CHANNEL_WEBHOOK_SECRET_OK",
+    ("avito", "token"): "AVITO_CLIENT_ID",
+    ("avito", "secret"): "AVITO_API_KEY",
+    ("youdo", "token"): "YOUDO_API_KEY",
+    ("youdo", "secret"): "CHANNEL_WEBHOOK_SECRET_YOUDO",
+    ("email", "token"): "SMTP_LOGIN",
+    ("email", "secret"): "SMTP_PASSWORD",
+}
 
-    Значения хранятся в БД зашифрованными (secrets_store); при чтении
-    расшифровываем, старые незашифрованные записи отдаём как есть."""
+
+def _env_secret(kind: str, field: str) -> str | None:
+    key = _ENV_SECRET_KEYS.get((kind, field))
+    if not key:
+        # общее имя для любых нестандартных каналов: CHANNEL_<KIND>_<FIELD>
+        key = f"CHANNEL_{kind.upper()}_{field.upper()}"
+    v = (os.environ.get(key) or "").strip()
+    return v or None
+
+
+def get_secret(kind: str, field: str = "token") -> str | None:
+    """Секрет канала — для приёма вебхуков и воркеров отправки.
+
+    Приоритет — активный аккаунт в БД («Настройки → Каналы»), значения там
+    хранятся зашифрованными (secrets_store). Если аккаунта нет — фолбэк из
+    .env (см. _ENV_SECRET_KEYS), чтобы можно было настроить всё файлами."""
     col = "token" if field == "token" else "secret"
     with _conn() as conn:
         r = conn.execute(
             f"SELECT {col} v FROM channel_accounts WHERE channel=? AND status='active' "
             f"AND {col} IS NOT NULL ORDER BY updated_at DESC LIMIT 1", (kind,)).fetchone()
-    if not r or not r["v"]:
-        return None
-    try:
-        import secrets_store
-        return secrets_store.decrypt(r["v"])
-    except Exception:
-        return r["v"]
+    if r and r["v"]:
+        try:
+            import secrets_store
+            return secrets_store.decrypt(r["v"])
+        except Exception:
+            return r["v"]
+    return _env_secret(kind, field)
 
 
 def wa_credentials() -> tuple[str | None, str | None]:

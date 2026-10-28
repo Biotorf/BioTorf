@@ -1406,6 +1406,42 @@ def send_whatsapp(item: dict, text: str) -> dict:
     return {"sent": True, "via": "whatsapp", "messageId": msg_id}
 
 
+def send_generic_outbox(kind: str, text: str, item: dict) -> tuple[bool, str | None]:
+    """Отправка в каналы без «живого» коннектора на сервере (instagram, facebook,
+    vk, ok, avito, youdo, email …).
+
+    Сообщение кладётся в outbox со статусом «В очереди»; внешний коннектор
+    (n8n / Zapier / свой скрипт-воркер) забирает его из GET /api/comms/outbox?kind=…
+    и отправляет в свою сеть. Если для канала настроен исходящий webhook
+    CHANNEL_OUTBOUND_WEBHOOK_<KIND>, бэкенд сам делает POST {text, contact,
+    phone, handle, payload} на этот URL — коннектор не нужен.
+
+    Возвращает (queued_or_sent, error)."""
+    url = (os.environ.get(f"CHANNEL_OUTBOUND_WEBHOOK_{kind.upper()}") or "").strip()
+    if not url:
+        return True, None  # просто ставим в очередь — заберёт внешний воркер
+    payload = {
+        "kind": kind,
+        "text": text,
+        "contact": item.get("contact"),
+        "phone": item.get("phone"),
+        "handle": item.get("handle"),
+        "payload": item.get("payload") or {},
+    }
+    secret = channels.get_secret(kind, "secret") or ""
+    try:
+        import urllib.request
+        req = urllib.request.Request(url, data=json.dumps(payload).encode(),
+                                     headers={"Content-Type": "application/json",
+                                              **({"X-Webhook-Secret": secret} if secret else {})})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            if resp.status >= 400:
+                return False, f"HTTP {resp.status}"
+        return True, None
+    except Exception as e:
+        return False, str(e)[:200]
+
+
 def send_reply(comm_id: str, body: SendIn, media_file: str | None = None):
     """Ответить клиенту из ленты: реально отправить в канал и создать
     исходящую запись «ответ» со ссылкой на исходное сообщение (replyTo)."""
@@ -1437,6 +1473,12 @@ def send_reply(comm_id: str, body: SendIn, media_file: str | None = None):
                 sent = send_whatsapp(item, body.text)
             except HTTPException as e:
                 send_error = str(e.detail)[:200]
+    else:
+        # instagram/facebook/vk/ok/avito/youdo/email и прочие — generic-каналы:
+        # ставим в outbox (заберёт внешний коннектор), либо мгновенно шлём на
+        # настроенный CHANNEL_OUTBOUND_WEBHOOK_<KIND>.
+        ok, err = send_generic_outbox(item["kind"], body.text, item)
+        send_error = err
 
     reply = {
         "id": new_id(),
@@ -1500,8 +1542,8 @@ def send_to(body: dict):
     { kind: telegram|whatsapp, chatId?|username?|userIndex?|phone?, contact?, farmId?, text }"""
     kind = body.get("kind")
     text = (body.get("text") or "").strip()
-    if kind not in ("telegram", "whatsapp") or not text:
-        raise HTTPException(422, "Укажите kind (telegram/whatsapp) и текст сообщения")
+    if not kind or not channels.valid_kind(kind) or not text:
+        raise HTTPException(422, "Укажите kind (telegram/whatsapp/instagram/facebook/vk/ok/avito/youdo/email…) и текст сообщения")
     pl = {}
     if kind == "telegram":
         if body.get("chatId"):
@@ -1512,7 +1554,7 @@ def send_to(body: dict):
             pl["userIndex"] = body["userIndex"]
         else:
             raise HTTPException(422, "Неизвестен адресат Telegram (нужен chatId или @username)")
-    else:
+    elif kind == "whatsapp":
         if not body.get("phone"):
             raise HTTPException(422, "Для WhatsApp нужен номер телефона получателя")
     item = {
@@ -1538,6 +1580,9 @@ def send_to(body: dict):
             sent = send_telegram(item, text)
         elif kind == "whatsapp" and all(wa_send_creds()):
             sent = send_whatsapp(item, text)
+        elif kind not in ("telegram", "whatsapp"):
+            ok, err = send_generic_outbox(kind, text, item)
+            send_error = err
     except HTTPException as e:
         send_error = str(e.detail)[:200]
     if sent:
