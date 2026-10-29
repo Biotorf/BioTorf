@@ -6,14 +6,14 @@
 #   3. В настройках biotorf-backend замените значения-заглушки реальными секретами
 #      (Settings → Environment Variables), затем Manual Deploy → Clear build cache & deploy.
 #
-# Стоимость демо: всё на бесплатных планах ($0). Бесплатные инстансы засыпают
-# после простоя — перед показом клиенту заранее откройте сайт.
+# Стоимость демо: PostgreSQL Basic $7/мес; бэкенд — бесплатный инстанс ($0, засыпает
+# после простоя — перед показом клиенту просто откройте сайт заранее).
 
 databases:
   - name: biotorf-crm-db
     databaseName: biotorf
     user: biotorf
-    plan: free          # Новый бесплатный план Postgres (~$0/мес, 0.5 CPU / 512 MB / 1 GB disk)
+    plan: free        # Render: минимальный платный план БД (~$7/мес); legacy 'starter' больше не поддерживается для новых БД
     region: oregon
     postgresMajorVersion: "17"
 
@@ -59,6 +59,7 @@ services:
   - type: web
     name: biotorf-frontend
     runtime: static
+    region: oregon
     repo: https://github.com/Biotorf/BioTorf
     branch: main
     rootDir: biotorf-os              # каталог с package.json (Vite)
@@ -74,6 +75,14 @@ services:
         name: Access-Control-Allow-Origin
         value: "*"
     envVars:
-      - key: VITE_COMMS_API
-        sync: https://biotorf-backend.onrender.com                 # Render спросит значение при деплое: URL бэкенда,
-                                     # например https://biotorf-backend.onrender.com
+      # URL бэкенда подставляется автоматически из адреса сервиса biotorf-backend
+      - key: VITE_API_URL
+        fromService:
+          type: web
+          name: biotorf-backend
+          property: url
+      - key: VITE_COMMS_API           # прод-код фронта читает именно эту переменную
+        fromService:
+          type: web
+          name: biotorf-backend
+          property: url
