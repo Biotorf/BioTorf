@@ -13,7 +13,7 @@ databases:
   - name: biotorf-crm-db
     databaseName: biotorf
     user: biotorf
-    plan: pro  # Render: минимальный платный план БД (~$7/мес)
+    plan: 0.5c-512mb  # Render: минимальный платный план БД (~$7/мес)
     region: oregon
     postgresMajorVersion: "17"
 
