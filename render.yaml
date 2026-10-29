@@ -5,15 +5,12 @@
 #   2. Render сам найдёт этот файл и создаст базу данных, бэкенд и фронтенд.
 #   3. В настройках biotorf-backend замените значения-заглушки реальными секретами
 #      (Settings → Environment Variables), затем Manual Deploy → Clear build cache & deploy.
-#
-# Стоимость демо: всё на бесплатных планах ($0). Бесплатные инстансы засыпают
-# после простоя — перед показом клиенту заранее откройте сайт.
 
 databases:
   - name: biotorf-crm-db
     databaseName: biotorf
     user: biotorf
-    plan: free          # Новый бесплатный план Postgres (~$0/мес, 0.5 CPU / 512 MB / 1 GB disk)
+    plan: free          # бесплатный план Postgres; если Render откажет — замените на basic (~$7/мес)
     region: oregon
     postgresMajorVersion: "17"
 
@@ -55,7 +52,9 @@ services:
       - key: WHATSAPP_PHONE_NUMBER_ID
         value: ""
 
-  # Фронтенд: статический Vite-сайт из каталога biotorf-os
+  # Фронтенд: статический Vite-сайт из каталога biotorf-os.
+  # "static" — это НОРМАЛЬНО: фронт — SPA, а API-запросы делает браузер
+  # напрямую к biotorf-backend.onrender.com (адрес подставлен ниже).
   - type: web
     name: biotorf-frontend
     runtime: static
@@ -75,8 +74,9 @@ services:
         name: Access-Control-Allow-Origin
         value: "*"
     envVars:
-      # ВАЖНО: фронтенд (biotorf-os/src/api/commsClient.js) читает именно
-      # VITE_COMMS_API — это и есть "VITE_API_URL". Если не задано, фронт
-      # стучится на свой же origin (у статического сайта бэкенда там нет).
+      # ВАЖНО: фронт (biotorf-os/src/api/commsClient.js) читает именно VITE_COMMS_API.
+      # Без неё он стучится на свой же домен (biotorf-frontend...), где бэкенда нет.
       - key: VITE_COMMS_API
-        value: https://biotorf-backend.onrender.com   # публичный URL сервиса biotorf-backend
+        value: https://biotorf-backend.onrender.com
+      - key: VITE_API_URL            # на всякий случай — то же значение
+        value: https://biotorf-backend.onrender.com
