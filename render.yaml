@@ -6,14 +6,14 @@
 #   3. В настройках biotorf-backend замените значения-заглушки реальными секретами
 #      (Settings → Environment Variables), затем Manual Deploy → Clear build cache & deploy.
 #
-# Стоимость демо: PostgreSQL Basic $7/мес; бэкенд — бесплатный инстанс ($0, засыпает
+# Стоимость демо: PostgreSQL Basic (план basic) $7/мес; бэкенд — бесплатный инстанс ($0, засыпает
 # после простоя — перед показом клиенту просто откройте сайт заранее).
 
 databases:
   - name: biotorf-crm-db
     databaseName: biotorf
     user: biotorf
-    plan: starter        # Render: минимальный платный план БД (~$7/мес)
+    plan: basic          # Render: актуальный минимальный план БД (~$7/мес); legacy 'starter' больше не поддерживается для новых БД
     region: oregon
     postgresMajorVersion: "17"
 
