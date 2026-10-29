@@ -59,7 +59,6 @@ services:
   - type: web
     name: biotorf-frontend
     runtime: static
-    region: oregon
     repo: https://github.com/Biotorf/BioTorf
     branch: main
     rootDir: biotorf-os              # каталог с package.json (Vite)
