@@ -74,6 +74,6 @@ services:
         name: Access-Control-Allow-Origin
         value: "*"
     envVars:
-      - key: VITE_API_URL
-        sync: false                  # Render спросит значение при деплое: URL бэкенда,
+      - key: VITE_COMMS_API
+        sync: https://biotorf-backend.onrender.com                 # Render спросит значение при деплое: URL бэкенда,
                                      # например https://biotorf-backend.onrender.com
