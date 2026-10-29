@@ -1,24 +1,13 @@
 # BIOTORF Business OS · развёртывание на Render.com (Blueprint)
-#
-# Как использовать:
-#   1. render.com → New + → Blueprint → выберите репозиторий Biotorf/BioTorf (ветка main).
-#   2. Render сам найдёт этот файл и создаст базу данных, бэкенд и фронтенд.
-#   3. В настройках biotorf-backend замените значения-заглушки реальными секретами
-#      (Settings → Environment Variables), затем Manual Deploy → Clear build cache & deploy.
-#
-# Стоимость демо: PostgreSQL Basic $7/мес; бэкенд — бесплатный инстанс ($0, засыпает
-# после простоя — перед показом клиенту просто откройте сайт заранее).
-
 databases:
   - name: biotorf-crm-db
     databaseName: biotorf
     user: biotorf
-    plan: free        # Render: минимальный платный план БД (~$7/мес); legacy 'starter' больше не поддерживается для новых БД
+    plan: free
     region: oregon
     postgresMajorVersion: "17"
 
 services:
-  # Бэкенд: Docker-образ из ./backend/Dockerfile.render
   - type: web
     name: biotorf-backend
     runtime: docker
@@ -37,7 +26,6 @@ services:
           property: connectionString
       - key: DB_BACKEND
         value: postgres
-      # ⚠ ЗАМЕНИТЕ на реальные значения в Settings → Environment Variables!
       - key: AUTH_PASSWORD
         value: CHANGE_ME_password_for_crm_login
       - key: AUTH_SECRET
@@ -55,19 +43,18 @@ services:
       - key: WHATSAPP_PHONE_NUMBER_ID
         value: ""
 
-  # Фронтенд: статический Vite-сайт из каталога biotorf-os
   - type: web
     name: biotorf-frontend
     runtime: static
     region: oregon
     repo: https://github.com/Biotorf/BioTorf
     branch: main
-    rootDir: biotorf-os              # каталог с package.json (Vite)
+    rootDir: biotorf-os
     buildCommand: npm install && npm run build
-    staticPublishPath: ./dist        # результат сборки vite build
+    staticPublishPath: ./dist
     pullRequestPreviewsEnabled: true
     routes:
-      - type: rewrite                # SPA-роутинг: все пути → index.html
+      - type: rewrite
         source: /*
         destination: /index.html
     headers:
@@ -75,14 +62,7 @@ services:
         name: Access-Control-Allow-Origin
         value: "*"
     envVars:
-      # URL бэкенда подставляется автоматически из адреса сервиса biotorf-backend
+      - key: VITE_COMMS_API
+        value: https://biotorf-backend.onrender.com
       - key: VITE_API_URL
-        fromService:
-          type: web
-          name: biotorf-backend
-          property: url
-      - key: VITE_COMMS_API           # прод-код фронта читает именно эту переменную
-        fromService:
-          type: web
-          name: biotorf-backend
-          property: url
+        value: https://biotorf-backend.onrender.com
