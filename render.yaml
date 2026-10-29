@@ -2,22 +2,23 @@
 #
 # Как использовать:
 #   1. render.com → New + → Blueprint → выберите репозиторий Biotorf/BioTorf (ветка main).
-#   2. Render сам найдёт этот файл и создаст оба сервиса.
+#   2. Render сам найдёт этот файл и создаст базу данных, бэкенд и фронтенд.
 #   3. В настройках biotorf-backend замените значения-заглушки реальными секретами
 #      (Settings → Environment Variables), затем Manual Deploy → Clear build cache & deploy.
 #
-# Стоимость демо: PostgreSQL Basic $7/мес; бэкенд — бесплатный инстанс ($0, засыпает
-# после простоя — перед показом клиенту просто откройте сайт заранее).
+# Стоимость демо: всё на бесплатных планах ($0). Бесплатные инстансы засыпают
+# после простоя — перед показом клиенту заранее откройте сайт.
 
 databases:
   - name: biotorf-crm-db
     databaseName: biotorf
     user: biotorf
-    plan: free  # Render: минимальный платный план БД (~$7/мес)
+    plan: free          # Новый бесплатный план Postgres (~$0/мес, 0.5 CPU / 512 MB / 1 GB disk)
     region: oregon
     postgresMajorVersion: "17"
 
 services:
+  # Бэкенд: Docker-образ из ./backend/Dockerfile.render
   - type: web
     name: biotorf-backend
     runtime: docker
@@ -53,3 +54,27 @@ services:
         value: ""
       - key: WHATSAPP_PHONE_NUMBER_ID
         value: ""
+
+  # Фронтенд: статический Vite-сайт из каталога biotorf-os
+  - type: web
+    name: biotorf-frontend
+    runtime: static
+    region: oregon
+    repo: https://github.com/Biotorf/BioTorf
+    branch: main
+    rootDir: biotorf-os              # каталог с package.json (Vite)
+    buildCommand: npm install && npm run build
+    staticPublishPath: ./dist        # результат сборки vite build
+    pullRequestPreviewsEnabled: true
+    routes:
+      - type: rewrite                # SPA-роутинг: все пути → index.html
+        source: /*
+        destination: /index.html
+    headers:
+      - path: /*
+        name: Access-Control-Allow-Origin
+        value: "*"
+    envVars:
+      - key: VITE_API_URL
+        sync: false                  # Render спросит значение при деплое: URL бэкенда,
+                                     # например https://biotorf-backend.onrender.com
