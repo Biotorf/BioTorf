@@ -75,6 +75,8 @@ services:
         name: Access-Control-Allow-Origin
         value: "*"
     envVars:
-      - key: VITE_API_URL
-        sync: false                  # Render спросит значение при деплое: URL бэкенда,
-                                     # например https://biotorf-backend.onrender.com
+      # ВАЖНО: фронтенд (biotorf-os/src/api/commsClient.js) читает именно
+      # VITE_COMMS_API — это и есть "VITE_API_URL". Если не задано, фронт
+      # стучится на свой же origin (у статического сайта бэкенда там нет).
+      - key: VITE_COMMS_API
+        value: https://biotorf-backend.onrender.com   # публичный URL сервиса biotorf-backend
