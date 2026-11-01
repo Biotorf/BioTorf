@@ -4,6 +4,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>BIOTORF Business OS</title>
+  <!-- Адрес бэкенда для статического хостинга (Render). Фронт и API живут на
+       разных доменах, поэтому задаём URL сервера здесь, до загрузки бандла.
+       Можно переопределить в консоли браузера:
+         localStorage.setItem('biotorf.api.url','https://biotorf-backend.onrender.com') -->
+  <script>window.__BIOTORF_API__ = 'https://biotorf-backend.onrender.com';</script>
 </head>
 <body>
   <div id="app"></div>

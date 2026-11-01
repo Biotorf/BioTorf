@@ -33,12 +33,11 @@ async function submit() {
   try {
     if (mode.value === 'login') {
       const res = await login(user.value.trim(), pass.value);
+      // сразу перекидываем в сервис — без перезагрузки страницы
+      emit('session', res);
       if (res.pending) {
-        // вход разрешён: показываем мини-профиль, но данные закрыты до выдачи роли
         info.value = `Вы вошли как ожидающий подтверждения. Заполните профиль — генеральный директор увидит ваши данные и выдаст роль.`;
         pendingSession.value = res;
-      } else {
-        emit('session', res);
       }
     } else {
       const res = await register(user.value.trim(), pass.value, name.value.trim());
@@ -49,7 +48,9 @@ async function submit() {
       // зарегистрировались → сразу входим под этим же логином/паролем:
       // получаем pending-токен и можем заполнить профиль до подтверждения
       const lg = await login(res.login || user.value.trim(), pass.value);
-      if (lg.token) {
+      if (lg.token || lg.pending) {
+        // сразу перекидываем в сервис (pending sees restricted UI + profile modal)
+        emit('session', lg);
         pendingSession.value = lg;
         info.value = 'Аккаунт создан и ожидает подтверждения роли генеральным директором. Заполните профиль — директор увидит ваши данные.';
       } else {

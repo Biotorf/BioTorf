@@ -9,7 +9,18 @@
 // текущему хосту (в Docker-стеке фронт и API живут на одном origin, nginx
 // проксирует /api, /webhooks, /health на backend). При npm run dev без
 // явной переменной остаёмся на http://127.0.0.1:8787.
+//
+// Для статического хостинга (Render static-сайт), где фронт и бэк живут на
+// разных доменах, есть два надёжных способа задать адрес бэкенда — оба
+// срабатывают даже если переменные окружения сборки не долетели:
+//   1) window.__BIOTORF_API__ — задать в index.html до загрузки бандла;
+//   2) localStorage 'biotorf.api.url' — можно выставить прямо в консоли браузера.
 function resolveApiUrl() {
+  if (typeof window !== 'undefined') {
+    const runtime = window.__BIOTORF_API__
+      || (() => { try { return localStorage.getItem('biotorf.api.url'); } catch { return null; } })();
+    if (runtime && /^https?:\/\//.test(runtime)) return runtime.replace(/\/+$/, '');
+  }
   const configured = import.meta.env?.VITE_COMMS_API;
   if (configured) return configured;
   if (typeof window !== 'undefined' && window.location && window.location.origin
