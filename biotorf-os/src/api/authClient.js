@@ -110,6 +110,14 @@ export function applySession(data) {
   authState.required = true;
   localStorage.setItem(TOKEN_KEY, data.token);
   localStorage.setItem(USER_KEY, JSON.stringify(authState.user));
+  // после входа у клиента появляется токен — если миграция «пустые таблицы»
+  // ещё не выполнилась на сервере, pullCrmState сможет вызвать /api/dev/wipe
+  import('../stores/db').then(({ useDbStore }) => {
+    try {
+      const db = useDbStore();
+      if (localStorage.getItem('biotorf.needsServerWipe') === '1') db.pullCrmState();
+    } catch { /* store ещё не готов */ }
+  }).catch(() => { /* noop */ });
 }
 
 export function logout() {

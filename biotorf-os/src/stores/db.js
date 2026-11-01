@@ -9,7 +9,7 @@ const apiOn = () => typeof apiEnabled === 'function' ? apiEnabled() : !!apiEnabl
 const KEY = 'biotorf-business-os-mvp-2026-10';
 // ключ миграции: если изменится — локальное демо-состояние будет сброшено
 const MIG_KEY = 'biotorf.storage.migration';
-const MIGRATION = 'empty-v1';   // 2026-11: удалены все тестовые данные
+const MIGRATION = 'empty-v2';   // 2026-11: полное удаление тестовых данных (локально + сервер)
 
 // Пустое состояние: без тестовых записей, только справочники и настройки
 function emptyState() {
@@ -42,6 +42,7 @@ try {
   if (localStorage.getItem(MIG_KEY) !== MIGRATION) {
     localStorage.removeItem(KEY);
     localStorage.setItem(MIG_KEY, MIGRATION);
+    localStorage.setItem('biotorf.needsServerWipe', '1');   // просим сервер стереть свои таблицы
   }
 } catch { /* localStorage недоступен */ }
 
@@ -664,6 +665,25 @@ export const useDbStore = defineStore('db', {
       if (!(await checkApi())) { this.serverOnline = false; return false; }
       this.serverOnline = true;
       try {
+        // однократно после миграции: принудительно стираем ВСЕ таблицы на
+        // сервере и локально (тестовые данные не должны пережить обновление)
+        let forcedWipe = false;
+        try { forcedWipe = localStorage.getItem('biotorf.needsServerWipe') === '1'; } catch { /* noop */ }
+        if (forcedWipe) {
+          const res = await this.wipeServerDemo();
+          if (res && res.ok) {
+            for (const coll of SYNC_COLLECTIONS) this.data[coll] = [];
+            this.data.comms = [];
+            this.data.logistics = this.data.logistics || [];
+            try {
+              localStorage.setItem(KEY, JSON.stringify(this.data));
+              localStorage.removeItem('biotorf.needsServerWipe');
+            } catch { /* noop */ }
+            return true;   // состояние уже чистое, тянуть со сервера не нужно
+          }
+          // сервер ещё не обновлён (нет /api/dev/wipe) или требует авторизации —
+          // в следующий заход попробуем снова
+        }
         let state = await crmApi.getState();
         const empty = SYNC_COLLECTIONS.every((c) => !(state[c] || []).length);
         if (empty) {

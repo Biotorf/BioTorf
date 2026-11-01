@@ -32,6 +32,10 @@ services:
         generateValue: true
       - key: DEV_MODE
         value: "0"
+      # Однократно стереть все тестовые/демо-данные из таблиц при старте бэкенда.
+      # После успешного деплоя с этой опцией можно убрать (или поставить "0").
+      - key: WIPE_AT_STARTUP
+        value: "1"
       - key: CORS_ORIGINS
         value: "*"
       - key: TELEGRAM_BOT_TOKEN

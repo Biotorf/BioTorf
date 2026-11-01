@@ -563,6 +563,43 @@ def _refresh_channel_status():
     threading.Thread(target=_startup_checks, daemon=True).start()
 
 
+WIPE_AT_STARTUP = os.environ.get("WIPE_AT_STARTUP", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _wipe_all_data() -> None:
+    """Стереть все тестовые/демо-данные из таблиц CRM и ленты коммуникаций.
+
+    Учётные записи сотрудников (users) НЕ удаляются. Безопасно повторяется.
+    """
+    removed = {}
+    try:
+        with store.connect() as conn:
+            for coll in crm.COLLECTIONS:
+                try:
+                    removed[coll] = crm.wipe_collection(conn, coll)
+                except Exception as e:  # одна упавшая таблица не должна блокировать остальные
+                    log.warning("[wipe] таблица %s: %s", coll, e)
+            cur = conn.execute("DELETE FROM comms")
+            removed["comms"] = getattr(cur, "rowcount", None)
+    except Exception as e:
+        log.warning("[wipe] очистка не выполнена (БД недоступна?): %.120s", e)
+        return
+    total = sum(v for v in removed.values() if isinstance(v, int))
+    log.info("[wipe] удалены все данные из таблиц: %d записей (%s)",
+             total, ", ".join(f"{k}:{v}" for k, v in removed.items() if v))
+
+
+def _wipe_worker():
+    """Фоновая очистка для PG-режима: ждёт готовности схемы, затем стирает данные."""
+    deadline = time.time() + 300
+    while not _schema_ready[0] and time.time() < deadline:
+        time.sleep(2)
+    if _schema_ready[0]:
+        _wipe_all_data()
+    else:
+        log.warning("[wipe] схема БД не готова за 5 минут — автостирание пропущено")
+
+
 @app.on_event("startup")
 def startup():
     # Только локальные операции — без сети и без блокирующего ожидания БД.
@@ -571,9 +608,13 @@ def startup():
         # если база ещё не поднялась, startup не должен висеть — иначе
         # health-check платформы не дождётся /health и убьёт контейнер.
         threading.Thread(target=_schema_worker, daemon=True).start()
+        if WIPE_AT_STARTUP:
+            threading.Thread(target=_wipe_worker, daemon=True).start()
     else:
         _ensure_schema()
         _schema_ready[0] = True
+        if WIPE_AT_STARTUP:
+            _wipe_all_data()
     if not auth.AUTH_PASSWORD and not auth.DEV_MODE:
         log.warning("[auth] ⚠ AUTH_PASSWORD не задан — API ЗАБЛОКИРОВАН (503 на все /api/*). "
                     "Задайте пароль в .env или включите DEV_MODE=1 для локальной разработки.")
