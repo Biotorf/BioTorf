@@ -1,6 +1,5 @@
 import { defineStore } from 'pinia';
-import { SAMPLE } from '@/data/sample';
-import { commsApi, apiEnabled, checkApi } from '@/api/commsClient';
+import { commsApi, apiEnabled, checkApi, COMMS_API_URL } from '@/api/commsClient';
 import { logisticsApi } from '@/api/logisticsClient';
 import { crmApi } from '@/api/crmClient';
 
@@ -8,6 +7,43 @@ import { crmApi } from '@/api/crmClient';
 const apiOn = () => typeof apiEnabled === 'function' ? apiEnabled() : !!apiEnabled;
 
 const KEY = 'biotorf-business-os-mvp-2026-10';
+// ключ миграции: если изменится — локальное демо-состояние будет сброшено
+const MIG_KEY = 'biotorf.storage.migration';
+const MIGRATION = 'empty-v1';   // 2026-11: удалены все тестовые данные
+
+// Пустое состояние: без тестовых записей, только справочники и настройки
+function emptyState() {
+  return {
+    version: 3,
+    mode: 'production',
+    users: [],
+    farms: [], leads: [], deals: [], journeys: [], pilots: [], quotes: [],
+    orders: [], invoices: [], shipments: [], tasks: [], contacts: [],
+    clientNotes: [], applications: [], payments: [], media: [], social: [],
+    knowledge: [], skus: [], warehouse: [], production: [], clientDocs: [],
+    comms: [], logistics: [], marketingAttributions: [], preferences: {},
+    stages: ['Новый лид', 'Связаться', 'Контакт установлен', 'Квалификация',
+      'Потенциальный клиент', 'Агрономическая диагностика', 'Предложен пилот',
+      'Пилот согласован', 'Пилот идет', 'Результат получен', 'Экономика рассчитана',
+      'КП отправлено', 'Переговоры', 'Счет/договор', 'Ожидается оплата', 'Оплачено',
+      'Отгружено', 'Получено клиентом', 'Сопровождение', 'Повторный заказ',
+      'Сезонный контракт'],
+    pilotStages: ['Новый пилот', 'Квалификация', 'Ожидается согласование',
+      'BIOTORF зарезервирован', 'BIOTORF отправлен', 'BIOTORF получен',
+      'Ожидается первая обработка', 'Испытание идет', 'Ожидается промежуточный контроль',
+      'Ожидается итоговый результат', 'Результат получен', 'Экономика рассчитана',
+      'Пилот успешен', 'Пилот без подтвержденного эффекта', 'Пилот приостановлен',
+      'Пилот прекращен', 'Передан в продажи', 'Завершен'],
+  };
+}
+
+// Один раз после обновления: стираем localStorage со старыми демо-данными
+try {
+  if (localStorage.getItem(MIG_KEY) !== MIGRATION) {
+    localStorage.removeItem(KEY);
+    localStorage.setItem(MIG_KEY, MIGRATION);
+  }
+} catch { /* localStorage недоступен */ }
 
 // Коллекции, которые синхронизируются с бэкендом (backend/crm.py)
 const SYNC_COLLECTIONS = [
@@ -20,15 +56,15 @@ const SYNC_COLLECTIONS = [
 function load() {
   try {
     const raw = localStorage.getItem(KEY);
-    if (!raw) return structuredClone(SAMPLE);
+    if (!raw) return emptyState();
     const parsed = JSON.parse(raw);
     // миграция v1 → v2: убираем тестовые коммуникации из сохранённого демо-состояния
     if (!parsed.version || parsed.version < 2) {
       parsed.comms = [];
       parsed.version = 2;
     }
-    // дополняем отсутствующие коллекции как в исходнике
-    parsed.social ??= structuredClone(SAMPLE.social || []);
+    // дополняем отсутствующие коллекции пустыми значениями (без демо-данных)
+    parsed.social ??= [];
     parsed.contacts ??= [];
     parsed.clientNotes ??= [];
     parsed.clientDocs ??= [];
@@ -50,7 +86,7 @@ function load() {
     }
     return parsed;
   } catch {
-    return structuredClone(SAMPLE);
+    return emptyState();
   }
 }
 
@@ -623,14 +659,16 @@ export const useDbStore = defineStore('db', {
       return state;
     },
     async pullCrmState() {
-      // первичная загрузка: сервер пустой — засеем демо; сервер с данными — берём его
+      // первичная загрузка: берём снимок с сервера (пустой сервер = пустой UI;
+      // тестовые данные больше не засываются — см. wipeServerDemo ниже)
       if (!(await checkApi())) { this.serverOnline = false; return false; }
       this.serverOnline = true;
       try {
         let state = await crmApi.getState();
         const empty = SYNC_COLLECTIONS.every((c) => !(state[c] || []).length);
         if (empty) {
-          await crmApi.seed(Object.fromEntries(SYNC_COLLECTIONS.map((c) => [c, this.data[c] || []])));
+          // при первой встрече чистим сервер от демо-записей (однократно)
+          await this.wipeServerDemo().catch(() => {});
           state = await crmApi.getState();
         }
         for (const coll of SYNC_COLLECTIONS) {
@@ -644,8 +682,20 @@ export const useDbStore = defineStore('db', {
         return false;
       }
     },
+    // Удалить все демо-записи с бэкенда (POST /api/dev/wipe, collections=all).
+    async wipeServerDemo() {
+      try {
+        const resp = await fetch(`${COMMS_API_URL}/api/dev/wipe`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ collections: 'all', confirm: 'WIPE_ALL_DATA' }),
+          signal: AbortSignal.timeout(15000),
+        });
+        return resp.ok ? await resp.json() : null;
+      } catch { return null; }
+    },
     reset() {
-      this.data = structuredClone(SAMPLE);
+      this.data = emptyState();
       localStorage.removeItem(KEY);
     },
     replaceAll(next) {

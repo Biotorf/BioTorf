@@ -2046,3 +2046,37 @@ def reset():
     with store.connect() as conn:
         conn.execute("DELETE FROM comms")
     return {"ok": True}
+
+
+WIPE_CONFIRM = "WIPE_ALL_DATA"
+
+
+@app.post("/api/dev/wipe")
+def dev_wipe(body: dict = {}):
+    """Очистить таблицы от тестовых/демо-данных.
+
+    Тело: { "collections": "all" | ["farms", ...], "confirm": "WIPE_ALL_DATA" }
+    collections=all — также стирается лента коммуникаций.
+    Учётные записи сотрудников (users) НЕ удаляются.
+    """
+    if (body or {}).get("confirm") != WIPE_CONFIRM:
+        raise HTTPException(403, f"Требуется подтверждение: \"confirm\": \"{WIPE_CONFIRM}\"")
+    removed = {}
+    colls = (body or {}).get("collections", "all")
+    if colls == "all":
+        for coll in crm.COLLECTIONS:
+            removed[coll] = crm.wipe_collection(store.connect(), coll)
+        with store.connect() as conn:
+            cur = conn.execute("DELETE FROM comms")
+        removed["comms"] = cur.rowcount
+    elif isinstance(colls, list):
+        for coll in colls:
+            if coll == "comms":
+                with store.connect() as conn:
+                    cur = conn.execute("DELETE FROM comms")
+                removed["comms"] = cur.rowcount
+            else:
+                removed[coll] = crm.wipe_collection(store.connect(), coll)
+    else:
+        raise HTTPException(422, "collections должен быть 'all' или списком имён")
+    return {"ok": True, "removed": removed}

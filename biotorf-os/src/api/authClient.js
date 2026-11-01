@@ -81,13 +81,15 @@ export function changeMyPassword(oldPassword, newPassword) {
 // в /api/me/* по его персональному токену, чтобы он заполнил профиль).
 export async function login(user, password) {
   const data = await post('/auth/login', { user, password });
-  if (data.token) applySession(data);   // в т.ч. pending: токен пустой по правам,
-  return data;                          // но даёт доступ к /api/me/* и мини-профилю
+  // всегда применяем сессию (в т.ч. pending): экран меняется сразу после
+  // нажатия «Войти», без перезагрузки страницы
+  if (data.token || data.pending) applySession(data);
+  return data;
 }
 
 // Регистрация сотрудника. Первый аккаунт → сразу сессия директора
-// (data.firstAccount === true, есть token). Остальные → pending без токена:
-// вход им не нужен, чтобы заполнить профиль (см. /auth/login для pending).
+// (data.firstAccount === true, есть token). Остальные получают роль «pending»:
+// сессия применяется сразу, чтобы попасть в сервис без перезагрузки.
 export async function register(user, password, name = '') {
   const data = await post('/auth/register', { user, password, name });
   if (data.token) applySession(data);
