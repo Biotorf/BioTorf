@@ -40,6 +40,36 @@ const NUM_FIELDS = new Set(['area', 'volumeL', 'amount', 'qty', 'price', 'stock'
 const BOOL_FIELDS = new Set(['paid']);
 const LONG_FIELDS = new Set(['notes', 'text', 'route', 'result', 'tags']);
 
+// Русские подписи коллекций и полей для модальных окон
+const COLL_RU = {
+  farms: 'Хозяйства', leads: 'Лиды', deals: 'Сделки', orders: 'Заказы',
+  invoices: 'Счета', payments: 'Платежи', shipments: 'Отгрузки', tasks: 'Задачи',
+  contacts: 'Контакты', skus: 'Товары (SKU)', warehouse: 'Склад', production: 'Производство',
+  pilots: 'Пилоты', quotes: 'КП', journeys: 'Маршруты клиентов', knowledge: 'База знаний',
+  media: 'Медиа', social: 'Соцсети',
+};
+const FIELD_RU = {
+  id: 'ID (не менять)', name: 'Название', contactName: 'Контактное лицо', phone: 'Телефон',
+  company: 'Компания', region: 'Регион', source: 'Источник', owner: 'Ответственный',
+  status: 'Статус', next: 'Следующее действие', notes: 'Заметки', type: 'Тип',
+  crop: 'Культура', area: 'Площадь', title: 'Название / тема', farmId: 'Хозяйство (ID)',
+  stage: 'Этап', volumeL: 'Объём, л', amount: 'Сумма', number: 'Номер', dealId: 'Сделка (ID)',
+  date: 'Дата', orderId: 'Заказ (ID)', invoiceId: 'Счёт (ID)', paid: 'Оплачен (да/нет)',
+  method: 'Способ оплаты', comment: 'Комментарий', transport: 'Транспорт', driver: 'Водитель',
+  plate: 'Гос. номер', route: 'Маршрут', due: 'Срок', priority: 'Приоритет',
+  refKind: 'Связь · тип', refId: 'Связь · ID', role: 'Должность', email: 'E-mail',
+  primary: 'Основной контакт', sku: 'Артикул (SKU)', category: 'Категория', unit: 'Ед. изм.',
+  price: 'Цена', stock: 'Остаток', batch: 'Партия', qty: 'Количество', location: 'Локация',
+  expiry: 'Срок годности', product: 'Продукт', shift: 'Смена', operator: 'Оператор',
+  startDate: 'Начало', endDate: 'Окончание', result: 'Результат', leadId: 'Лид (ID)',
+  tags: 'Теги', text: 'Текст', url: 'Ссылка', tag: 'Метка', platform: 'Платформа',
+  scheduledDate: 'Дата публикации', link: 'Ссылка',
+};
+function fieldLabel(k) {
+  if (k === 'id') return isEdit.value ? 'ID (не менять)' : 'ID (можно оставить пустым)';
+  return FIELD_RU[k] || k;
+}
+
 const isEdit = computed(() => !!props.record);
 
 const fields = computed(() => {
@@ -97,12 +127,12 @@ async function save() {
   <div class="overlay" @click.self="emit('close')">
     <div class="modal">
       <div class="head">
-        <b>{{ isEdit ? 'Редактировать запись' : 'Новая запись' }} · {{ coll }}</b>
+        <b>{{ isEdit ? 'Редактировать запись' : 'Новая запись' }} · {{ COLL_RU[coll] || coll }}</b>
         <button class="x" @click="emit('close')">✕</button>
       </div>
       <div class="body">
         <label v-for="k in fields" :key="k" class="field">
-          <span class="fname">{{ k === 'id' && isEdit ? 'id (не менять)' : k }}</span>
+          <span class="fname">{{ fieldLabel(k) }}</span>
           <textarea v-if="LONG_FIELDS.has(k)" v-model="form[k]" rows="3"></textarea>
           <input v-else v-model="form[k]" :type="NUM_FIELDS.has(k) ? 'number' : 'text'" />
         </label>
