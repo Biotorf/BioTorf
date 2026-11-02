@@ -1,0 +1,599 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BIOTORF Business OS — Книга пользователя</title>
+<style>
+/* ==== Палитра и типографика — как в приложении BIOTORF ==== */
+:root{
+  --bg:#f3f6f3; --panel:#fff; --ink:#172625; --muted:#7b8a86; --border:#e4ebe7;
+  --green:#13846a; --mint:#e8f6ef; --orange:#edaa55; --red:#d5675d;
+  --sidebar:#112c27; --side2:#173b33; --shadow:0 9px 24px rgba(20,55,45,.06);
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font:15px/1.65 -apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;color:var(--ink);background:var(--bg)}
+.shell{display:grid;grid-template-columns:262px minmax(0,1fr);min-height:100vh}
+
+/* ==== Сайдбар ==== */
+.sidebar{background:var(--sidebar);color:#dcebe4;padding:24px 13px;position:sticky;top:0;height:100vh;overflow:auto}
+.brand{display:flex;align-items:center;gap:12px;padding:5px 12px 20px;border-bottom:1px solid #2e5148}
+.brand-mark{display:grid;place-items:center;width:40px;height:40px;border-radius:12px;background:#1e4d3a;color:#7ee2a8;font-size:26px}
+.brand strong{display:block;letter-spacing:1.6px;font-size:16px;color:#fff}
+.brand small{font-size:10px;letter-spacing:1.2px;color:#9db8ad;text-transform:uppercase}
+.toc-label{padding:20px 13px 8px;text-transform:uppercase;font-size:10px;color:#729e8e;letter-spacing:1.6px;font-weight:800}
+.toc a{display:flex;gap:10px;align-items:center;color:#b9cec6;text-decoration:none;padding:8px 13px;margin:2px 0;border-radius:9px;font-size:13px}
+.toc a:hover{background:#20463c;color:#fff}
+.toc a b{font-weight:500;font-size:15px;width:20px;text-align:center}
+.side-bottom{font-size:11px;color:#92afa2;border-top:1px solid #2e5148;padding:14px 13px;margin-top:22px}
+
+/* ==== Контент ==== */
+.main{min-width:0}
+.topbar{height:64px;background:#fff;display:flex;align-items:center;justify-content:space-between;padding:0 34px;border-bottom:1px solid var(--border);position:sticky;top:0;z-index:5;gap:20px}
+.topbar h2{margin:0;font-size:17px;font-weight:750}
+.pill{color:#137d60;background:#e7f6ed;padding:4px 11px;border-radius:20px;font-size:11px;font-weight:750;white-space:nowrap}
+.pill.amber{color:#996925;background:#fff5df}.pill.red{color:#c1534a;background:#ffefed}
+.content{padding:34px 40px 80px;max-width:1080px;margin:auto}
+.hero{display:flex;align-items:center;gap:14px;padding:18px;background:linear-gradient(115deg,#113e31,#1e6850);border-radius:15px;color:#fff;margin-bottom:26px}
+.hero .brand-mark{background:rgba(255,255,255,.12)}
+.hero h1{margin:0;font-size:24px;letter-spacing:-.6px}
+.hero small{color:#bbdbcc}
+.note{border:1px solid #e7ddbf;color:#7a6840;background:#fffbec;border-radius:11px;padding:12px 15px;margin:16px 0;font-size:13px}
+.note.green{border-color:#cfe8d8;color:#25603f;background:#f1faf3}
+.note.red{border-color:#f0cfc9;color:#8f4438;background:#fff5f3}
+section{background:#fff;border:1px solid var(--border);border-radius:15px;box-shadow:var(--shadow);padding:26px 28px;margin-bottom:22px;scroll-margin-top:80px}
+section>h2{display:flex;align-items:center;gap:11px;font-size:19px;font-weight:750;letter-spacing:-.3px;margin:0 0 6px}
+section>h2 .ic{display:grid;place-items:center;width:36px;height:36px;border-radius:11px;background:var(--mint);color:var(--green);font-size:18px;flex-shrink:0}
+.sub{color:var(--muted);font-size:13px;margin-bottom:16px}
+h3{font-size:15px;font-weight:700;margin:22px 0 8px}
+h3 .step{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:50%;background:var(--green);color:#fff;font-size:12px;margin-right:7px}
+ol,ul{margin:8px 0;padding-left:22px}
+li{margin:5px 0}
+code{font-family:ui-monospace,Consolas,monospace;font-size:13px;background:#f4f3ec;border-radius:4px;padding:2px 6px;color:#172625}
+b.g{color:var(--green)}
+
+/* таблицы */
+.table-wrap{overflow-x:auto;border:1px solid var(--border);border-radius:12px;margin:12px 0;background:#fff}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;color:#7a8d84;font-size:11px;font-weight:750;text-transform:uppercase;letter-spacing:.4px;background:#fafcfb}
+th,td{padding:11px 14px;border-bottom:1px solid #eef1ef;vertical-align:top}
+tr:last-child td{border-bottom:0}
+tbody tr:hover{background:#f7faf8}
+td code{white-space:nowrap}
+
+/* карточки-«скриншоты» интерфейса (рисуем CSS, без внешних картинок) */
+.shot{border:1px solid #dfeae4;border-radius:14px;overflow:hidden;margin:14px 0;background:#fff;box-shadow:var(--shadow)}
+.shot-head{display:flex;align-items:center;gap:8px;background:#fff;border-bottom:1px solid var(--border);padding:10px 14px}
+.dot{width:10px;height:10px;border-radius:50%}
+.shot-title{font-size:12px;color:var(--muted);margin-left:4px}
+.shot-body{padding:16px;background:var(--bg)}
+.caption{font-size:11px;color:var(--muted);text-align:center;padding:8px;border-top:1px dashed #e0e9e4;background:#fff}
+
+/* мокап формы */
+.formgrid{display:grid;grid-template-columns:1fr 1fr;gap:11px}
+.f{display:flex;flex-direction:column;gap:4px}
+.f label{font-size:11px;color:#64776c;font-weight:700}
+.f input,.f select{background:#fff;border:1px solid #dbe4df;border-radius:9px;padding:9px 11px;font:inherit;font-size:13px;color:#37544a}
+.f input.demo{border-color:#14866a;box-shadow:0 0 0 3px #d8f2e6}
+.f.full{grid-column:1/-1}
+.btnrow{display:flex;gap:9px;justify-content:flex-end;margin-top:14px}
+.btn{border:1px solid #d7e7df;background:#fff;border-radius:10px;padding:9px 15px;font-weight:650;font-size:13px;color:#37544a}
+.btn.primary{background:var(--green);border-color:var(--green);color:#fff}
+
+/* мокап канбан */
+.kanban{display:flex;gap:11px;overflow-x:auto;padding-bottom:8px}
+.lane{background:#eaf0ec;border:1px solid #dfeae4;border-radius:12px;padding:11px;flex:0 0 190px;min-height:170px}
+.lanehead{display:flex;justify-content:space-between;font-weight:750;font-size:12px;margin-bottom:10px;color:#31544a}
+.deal{border-radius:10px;background:#fff;border:1px solid #e5eae7;padding:11px;box-shadow:0 3px 7px rgba(0,0,0,.03);margin-bottom:8px}
+.deal .t{font-weight:700;font-size:12.5px;margin-bottom:6px}
+.deal .a{font-size:15px;font-weight:750;color:#1c7337}
+.deal .m{font-size:10.5px;color:#7d8f87;margin-top:7px}
+
+/* мокап статистик */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:13px}
+.stat{background:#fff;border:1px solid var(--border);border-radius:13px;padding:15px 16px}
+.stat .l{font-size:11px;color:var(--muted);margin-bottom:7px}
+.stat .v{font-size:22px;font-weight:760;letter-spacing:-.6px}
+.stat .f2{font-size:10.5px;color:var(--muted);margin-top:5px}
+.stat .tag{display:inline-flex;color:var(--green);font-weight:700;background:#e5f5ee;border-radius:5px;padding:1px 6px;font-size:10.5px}
+
+/* воронка этапов */
+.flow{display:flex;flex-wrap:wrap;gap:7px;margin:10px 0}
+.stage{background:#e9f4ee;border:1px solid #d3e6da;color:#25816b;border-radius:8px;padding:5px 10px;font-size:12px;font-weight:650}
+.stage.key{background:var(--green);color:#fff;border-color:var(--green)}
+.arrow{color:#9db8ad;align-self:center;font-size:12px}
+
+/* таймлайн */
+.timeline{border-left:2px solid #d6ece1;margin:10px 6px}
+.event{padding:4px 0 14px 20px;position:relative;font-size:13px}
+.event:before{content:'';height:9px;width:9px;border-radius:50%;background:#28a27a;border:3px solid #e3f4ea;position:absolute;left:-7px;top:7px}
+.event b{display:block}
+.event span{font-size:11px;color:var(--muted)}
+
+/* календарь мокап */
+.cal{display:grid;grid-template-columns:repeat(7,1fr);gap:6px}
+.cell{border:1px solid #e6eae7;border-radius:10px;min-height:64px;padding:6px;background:#fcfdfb;font-size:11px;color:#4b6958}
+.cell b{font-size:11px}
+.ev{background:#e2f6e8;color:#246b3e;border-radius:5px;font-size:9.5px;padding:3px 4px;margin-top:4px;line-height:1.25}
+
+/* чек-лист / роли */
+.roles{display:grid;grid-template-columns:repeat(2,1fr);gap:13px}
+.role{border:1px solid var(--border);border-radius:12px;padding:15px 16px;background:#fff}
+.role h4{margin:0 0 8px;font-size:14px;display:flex;gap:8px;align-items:center}
+.role h4 .ic{width:30px;height:30px;border-radius:9px;background:var(--mint);display:grid;place-items:center}
+.role ul{padding-left:18px;font-size:13px;color:#3d5a4e}
+
+.faq dt{font-weight:750;margin-top:14px;font-size:14px}
+.faq dd{margin:4px 0 0;color:#4c6259;font-size:14px}
+footer{color:#84948d;font-size:11px;margin:30px 0 0;text-align:center}
+
+@media(max-width:900px){
+  .shell{grid-template-columns:1fr}
+  .sidebar{position:static;height:auto}
+  .stats{grid-template-columns:repeat(2,1fr)}
+  .roles,.formgrid{grid-template-columns:1fr}
+  .content{padding:20px 14px 60px}
+}
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- ================= САЙДБАР (как в приложении) ================= -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">❧</div>
+      <div><strong>BIOTORF</strong><small>Business OS · книга</small></div>
+    </div>
+    <div class="toc-label">Оглавление</div>
+    <nav class="toc">
+      <a href="#start"><b>▶</b>Быстрый старт</a>
+      <a href="#login"><b>♟</b>Вход и сотрудники</a>
+      <a href="#products"><b>◫</b>Продукция и цены</a>
+      <a href="#crm"><b>♙</b>Хозяйства и контакты</a>
+      <a href="#leads"><b>◎</b>Лиды</a>
+      <a href="#pipeline"><b>▥</b>Сделки и воронка</a>
+      <a href="#pilots"><b>❧</b>Агрономия и пилоты</a>
+      <a href="#quotes"><b>✎</b>КП, заказы, финансы</a>
+      <a href="#warehouse"><b>📦</b>Производство и склад</a>
+      <a href="#logistics"><b>➜</b>Логистика</a>
+      <a href="#tasks"><b>☑</b>Задачи и календарь</a>
+      <a href="#comms"><b>☎</b>Коммуникации</a>
+      <a href="#marketing"><b>◉</b>Маркетинг и знания</a>
+      <a href="#analytics"><b>▤</b>Обзор и аналитика</a>
+      <a href="#import"><b>⇪</b>Импорт CSV</a>
+      <a href="#rules"><b>§</b>Правила и форматы</a>
+      <a href="#faq"><b>?</b>Частые проблемы</a>
+    </nav>
+    <div class="side-bottom">Версия книги: ноябрь 2026<br>Демо: biotorf-frontend.onrender.com</div>
+  </aside>
+
+  <!-- ================= КОНТЕНТ ================= -->
+  <div class="main">
+    <div class="topbar">
+      <h2>Книга пользователя BIOTORF Business OS</h2>
+      <span class="pill">для команды и клиентов</span>
+    </div>
+
+    <div class="content">
+
+      <div class="hero">
+        <div class="brand-mark">❧</div>
+        <div>
+          <h1>Как работать в BIOTORF Business OS</h1>
+          <small>Пошаговая инструкция: от первого входа до повторных сезонных заказов</small>
+        </div>
+      </div>
+
+      <div class="note green"><b>Главный принцип:</b> порядок всегда один — <b class="g">Хозяйство → Контакт → Лид → Сделка → Пилот → КП → Заказ → Счёт → Оплата → Отгрузка → Сопровождение</b>. Все разделы связаны по ID, поэтому заведите сначала справочники, потом ведите сделки.</div>
+
+      <!-- ============ БЫСТРЫЙ СТАРТ ============ -->
+      <section id="start">
+        <h2><span class="ic">▶</span>Быстрый старт за 15 минут</h2>
+        <p class="sub">Что сделать в первый день, чтобы система заработала.</p>
+        <ol>
+          <li><b>Откройте</b> <code>https://biotorf-frontend.onrender.com</code> и войдите под своей учёткой (логин + пароль выдаёт директор).</li>
+          <li><b>Заведите продукцию</b> — раздел «Продукция и цены» (3–5 SKU с ценами). На неё ссылается всё остальное.</li>
+          <li><b>Заведите хозяйства</b> — раздел «Клиенты и хозяйства», вкладка «Хозяйства». Вручную или через CSV-импорт.</li>
+          <li><b>Добавьте контакты</b> — телефоны ЛПР (директор, главный агроном) с привязкой по <code>Хозяйство (ID)</code>.</li>
+          <li><b>Создайте лиды</b> из входящих обращений — дальше они сами попадут в воронку сделок.</li>
+          <li><b>Ежедневно</b>: фиксируйте звонки в «Коммуникациях», двигайте этапы сделок, ставьте задачи со сроками.</li>
+        </ol>
+        <div class="shot">
+          <div class="shot-head"><span class="dot" style="background:#f26d5f"></span><span class="dot" style="background:#f3bd4d"></span><span class="dot" style="background:#3ecf7a"></span><span class="shot-title">biotorf-frontend.onrender.com</span></div>
+          <div class="shot-body">
+            <div class="stats">
+              <div class="stat"><div class="l">Активные сделки</div><div class="v">12</div><div class="f2"><span class="tag">▲ 3 за неделю</span></div></div>
+              <div class="stat"><div class="l">Воронка, ₽</div><div class="v">4,8 млн</div><div class="f2">в работе</div></div>
+              <div class="stat"><div class="l">Пилоты в поле</div><div class="v">5</div><div class="f2">2 ждут результата</div></div>
+              <div class="stat"><div class="l">Задачи на сегодня</div><div class="v">8</div><div class="f2"><span class="tag" style="color:#c1534a;background:#ffefed">2 просрочены</span></div></div>
+            </div>
+          </div>
+          <div class="caption">Раздел «Обзор» — главная страница: цифры дня и список дел</div>
+        </div>
+      </section>
+
+      <!-- ============ ВХОД ============ -->
+      <section id="login">
+        <h2><span class="ic">♟</span>Вход и сотрудники</h2>
+        <p class="sub">Разделы: экран входа → «Сотрудники и роли» (доступ только директору).</p>
+        <h3><span class="step">1</span>Вход в систему</h3>
+        <p>На экране входа введите <b>логин</b> и <b>пароль</b> сотрудника, нажмите <b>«Войти»</b> — сразу откроется рабочая система (без перезагрузки страницы).</p>
+        <h3><span class="step">2</span>Добавить сотрудника</h3>
+        <p>«Сотрудники и роли» → <b>«Новая запись»</b>:</p>
+        <div class="shot">
+          <div class="shot-head"><span class="dot" style="background:#f26d5f"></span><span class="dot" style="background:#f3bd4d"></span><span class="dot" style="background:#3ecf7a"></span><span class="shot-title">Модальное окно — Новая запись</span></div>
+          <div class="shot-body">
+            <div class="formgrid">
+              <div class="f"><label>ID (можно оставить пустым)</label><input value=""></div>
+              <div class="f"><label>ФИО *</label><input class="demo" value="Иванов Иван Иванович"></div>
+              <div class="f"><label>Роль</label><select><option>Продажи</option><option>Директор</option><option>Операции</option><option>Агроном</option></select></div>
+              <div class="f"><label>Логин *</label><input class="demo" value="ivanov"></div>
+              <div class="f"><label>Пароль *</label><input value="•••••••"></div>
+              <div class="f"><label>Телефон</label><input value="+79181234567"></div>
+            </div>
+            <div class="btnrow"><button class="btn">Отмена</button><button class="btn primary">Сохранить</button></div>
+          </div>
+          <div class="caption">Поля со звёздочкой (*) обязательны. Роль определяет, какие разделы видит сотрудник</div>
+        </div>
+        <h3><span class="step">3</span>Роли и доступ</h3>
+        <div class="table-wrap"><table>
+          <tr><th>Роль</th><th>Видит</th><th>Для чего</th></tr>
+          <tr><td><b>Директор</b></td><td>Все разделы</td><td>Управление, сотрудники, аналитика</td></tr>
+          <tr><td><b>Продажи</b></td><td>CRM, воронка, коммуникации, задачи, КП</td><td>Лиды → сделки → деньги</td></tr>
+          <tr><td><b>Операции</b></td><td>Заказы, склад, логистика, производство</td><td>Сборка и отгрузки</td></tr>
+          <tr><td><b>Агроном</b></td><td>Агрономия, пилоты, медиатека</td><td>Полевые испытания и результаты</td></tr>
+        </table></div>
+        <div class="note red"><b>Не работайте под одним логином вдвоём</b> — тогда в задачах и сделках будет невозможно определить ответственного.</div>
+      </section>
+
+      <!-- ============ ПРОДУКЦИЯ ============ -->
+      <section id="products">
+        <h2><span class="ic">◫</span>Продукция и цены (справочник SKU)</h2>
+        <p class="sub">Раздел «Продукция и цены». Заполняется <b>первым</b> — на товары ссылается склад, заказы и финансы.</p>
+        <div class="table-wrap"><table>
+          <tr><th>Поле</th><th>Как заполнять</th><th>Пример</th></tr>
+          <tr><td>Название *</td><td>Полное название продукта</td><td>BIOTORF Агро, концентрат</td></tr>
+          <tr><td>Категория</td><td>Тип продукта</td><td>удобрение / стимулятор / защита</td></tr>
+          <tr><td>Ед. изм.</td><td>Краткая единица</td><td>л / кг / уп</td></tr>
+          <tr><td>Цена</td><td><b>Только число</b>, без «руб.» и пробелов</td><td><code>1850</code></td></tr>
+          <tr><td>Остаток</td><td>Число, можно позже вести на «Складе»</td><td><code>420</code></td></tr>
+          <tr><td>Заметки</td><td>Норма расхода, фасовка, особенности</td><td>норма 2 л/га, канистры 20 л</td></tr>
+        </table></div>
+        <div class="note green"><b>Совет:</b> держите в прайсе 3–7 актуальных SKU. Устаревшие не удаляйте — на них могут ссылаться прошлые заказы.</div>
+      </section>
+
+      <!-- ============ CRM ============ -->
+      <section id="crm">
+        <h2><span class="ic">♙</span>Клиенты и хозяйства</h2>
+        <p class="sub">Раздел «Клиенты и хозяйства», вкладки «Хозяйства» и «Контакты». Это ядро клиентской базы.</p>
+        <h3><span class="step">1</span>Новое хозяйство</h3>
+        <div class="shot">
+          <div class="shot-head"><span class="dot" style="background:#f26d5f"></span><span class="dot" style="background:#f3bd4d"></span><span class="dot" style="background:#3ecf7a"></span><span class="shot-title">Модальное окно — Новая запись · Хозяйства</span></div>
+          <div class="shot-body">
+            <div class="formgrid">
+              <div class="f"><label>ID (можно оставить пустым)</label><input placeholder="FA-a1b2c3d4-001"></div>
+              <div class="f"><label>Название *</label><input class="demo" value="ООО «Заря»"></div>
+              <div class="f"><label>Тип</label><input value="агрохолдинг"></div>
+              <div class="f"><label>Регион</label><input value="Краснодарский край"></div>
+              <div class="f"><label>Культура</label><input value="пшеница озимая"></div>
+              <div class="f"><label>Площадь</label><input value="1200"></div>
+              <div class="f"><label>Ответственный</label><input value="Иванов"></div>
+              <div class="f"><label>Статус</label><input value="активное"></div>
+              <div class="f"><label>Следующее действие</label><input value="позвонить 15.11"></div>
+              <div class="f"><label>Телефон</label><input value="+79181234567"></div>
+              <div class="f full"><label>Заметки</label><input value="главный агроном — Петров, решения принимает вместе с директором"></div>
+            </div>
+            <div class="btnrow"><button class="btn">Отмена</button><button class="btn primary">Сохранить</button></div>
+          </div>
+          <div class="caption">Карточка хозяйства. Скопируйте его ID — он понадобится в контактах, сделках и пилотах</div>
+        </div>
+        <h3><span class="step">2</span>Контакты хозяйства</h3>
+        <ul>
+          <li><code>Хозяйство (ID)</code> — ID из таблицы «Хозяйства» (обязательно, иначе контакт «без клиента»).</li>
+          <li><b>ФИО</b>, <b>Должность</b> (гендиректор / главный агроном / закупщик), <b>Телефон</b> (+7XXXXXXXXXX), <b>E-mail</b>.</li>
+          <li><b>Основной контакт</b> — отметьте одного человека на хозяйство: ему звонят по умолчанию.</li>
+        </ul>
+        <div class="note"><b>Правило:</b> у каждого активного хозяйства минимум 1 контакт с телефоном и заполненное поле «Следующее действие» с датой.</div>
+      </section>
+
+      <!-- ============ ЛИДЫ ============ -->
+      <section id="leads">
+        <h2><span class="ic">◎</span>Лиды — откуда приходят клиенты</h2>
+        <p class="sub">Вкладка «Лиды» в разделе «Клиенты и хозяйства».</p>
+        <div class="table-wrap"><table>
+          <tr><th>Поле</th><th>Как заполнять</th><th>Пример</th></tr>
+          <tr><td>Название *</td><td>Компания/хозяйство из обращения</td><td>КФХ «Нива»</td></tr>
+          <tr><td>Контактное лицо</td><td>Кто обратился</td><td>Сидоров П.А.</td></tr>
+          <tr><td>Телефон</td><td>+7XXXXXXXXXX</td><td>+79034567890</td></tr>
+          <tr><td>Источник</td><td>Откуда пришли — сверяйте с разделом «Маркетинг»</td><td>выставка / сайт / телеграм / реферал / холодный звонок</td></tr>
+          <tr><td>Ответственный</td><td>Менеджер, который ведёт</td><td>Иванов</td></tr>
+          <tr><td>Статус</td><td>Короткий статус</td><td>новый</td></tr>
+          <tr><td>Следующее действие</td><td>Конкретика + дата</td><td>обзвон 12.11</td></tr>
+        </table></div>
+        <p>Новый лид автоматически появляется в разделе <b>«Сквозной процесс»</b> на этапе «Новый лид». После первого результативного разговора создайте по нему <b>сделку</b>.</p>
+      </section>
+
+      <!-- ============ ВОРОНКА ============ -->
+      <section id="pipeline">
+        <h2><span class="ic">▥</span>Сделки и воронка продаж</h2>
+        <p class="sub">Раздел «Сделки и воронка». Сделка = клиент, которого вы ведёте до денег.</p>
+        <h3><span class="step">1</span>Создать сделку</h3>
+        <ul>
+          <li><b>Название / тема</b>: «BIOTORF — ООО Заря, 1200 га» (клиент + предмет).</li>
+          <li><b>Хозяйство (ID)</b>, <b>Этап</b> (первый: «Новый лид»), <b>Объём, л</b> (число), <b>Сумма</b> (число), <b>Ответственный</b>, <b>Следующее действие</b> (с датой).</li>
+        </ul>
+        <h3><span class="step">2</span>Этапы воронки (двигать строго по порядку)</h3>
+        <div class="flow">
+          <span class="stage">Новый лид</span><span class="arrow">→</span>
+          <span class="stage">Связаться</span><span class="arrow">→</span>
+          <span class="stage">Контакт установлен</span><span class="arrow">→</span>
+          <span class="stage">Квалификация</span><span class="arrow">→</span>
+          <span class="stage">Потенциальный клиент</span><span class="arrow">→</span>
+          <span class="stage key">Агрономическая диагностика</span><span class="arrow">→</span>
+          <span class="stage key">Пилот согласован</span><span class="arrow">→</span>
+          <span class="stage key">Пилот идет</span><span class="arrow">→</span>
+          <span class="stage key">Результат получен</span><span class="arrow">→</span>
+          <span class="stage key">Экономика рассчитана</span><span class="arrow">→</span>
+          <span class="stage key">КП отправлено</span><span class="arrow">→</span>
+          <span class="stage">Переговоры</span><span class="arrow">→</span>
+          <span class="stage key">Счет/договор</span><span class="arrow">→</span>
+          <span class="stage">Ожидается оплата</span><span class="arrow">→</span>
+          <span class="stage key">Оплачено</span><span class="arrow">→</span>
+          <span class="stage key">Отгружено</span><span class="arrow">→</span>
+          <span class="stage">Получено клиентом</span><span class="arrow">→</span>
+          <span class="stage">Сопровождение</span><span class="arrow">→</span>
+          <span class="stage">Повторный заказ</span><span class="arrow">→</span>
+          <span class="stage">Сезонный контракт</span>
+        </div>
+        <div class="shot">
+          <div class="shot-head"><span class="dot" style="background:#f26d5f"></span><span class="dot" style="background:#f3bd4d"></span><span class="dot" style="background:#3ecf7a"></span><span class="shot-title">Раздел «Сделки и воронка» — канбан</span></div>
+          <div class="shot-body">
+            <div class="kanban">
+              <div class="lane"><div class="lanehead"><span>Квалификация</span><span>2</span></div>
+                <div class="deal"><div class="t">ООО Заря · 1200 га</div><div class="a">1,86 млн ₽</div><div class="m">Иванов · след: встреча 14.11</div></div>
+                <div class="deal"><div class="t">КФХ Нива</div><div class="a">420 тыс ₽</div><div class="m">Петров · след: звонок 12.11</div></div>
+              </div>
+              <div class="lane"><div class="lanehead"><span>Пилот идет</span><span>1</span></div>
+                <div class="deal"><div class="t">Агрофирма Юг</div><div class="a">2,4 млн ₽</div><div class="m">Иванов · делянка 50 га</div></div>
+              </div>
+              <div class="lane"><div class="lanehead"><span>КП отправлено</span><span>1</span></div>
+                <div class="deal"><div class="t">СПК Рассвет</div><div class="a">760 тыс ₽</div><div class="m">Сидорова · КП-014 от 05.11</div></div>
+              </div>
+              <div class="lane"><div class="lanehead"><span>Ожидается оплата</span><span>1</span></div>
+                <div class="deal"><div class="t">ООО Дон</div><div class="a">980 тыс ₽</div><div class="m">Счёт СЧ-007 · до 20.11</div></div>
+              </div>
+            </div>
+          </div>
+          <div class="caption">Каждая карточка — сделка. Переход между колонками = смена этапа в карточке сделки</div>
+        </div>
+        <h3><span class="step">3</span>Правила движения по воронке</h3>
+        <ul>
+          <li>Этап не двигается «в никуда»: между контрольными точками (тёмно-зелёные) должны быть реальные записи — <b>коммуникация, пилот, результат, расчёт, КП, счёт, платёж, отгрузка</b>.</li>
+          <li>Этап пишется <b>слово в слово</b> как в списке — иначе аналитика посчитает неверно.</li>
+          <li>Сделка без даты в «Следующем действии» считается брошенной — директор разбирает такие на «Обзоре».</li>
+        </ul>
+      </section>
+
+      <!-- ============ ПИЛОТЫ ============ -->
+      <section id="pilots">
+        <h2><span class="ic">❧</span>Агрономия и пилоты</h2>
+        <p class="sub">Раздел «Агрономия». Пилот — доказательная база продукта: пробная делянка с замерами. Для B2B-продаж это ключевой этап.</p>
+        <h3><span class="step">1</span>Создать пилот</h3>
+        <div class="table-wrap"><table>
+          <tr><th>Поле</th><th>Как заполнять</th><th>Пример</th></tr>
+          <tr><td>Хозяйство (ID) *</td><td>ID клиента</td><td>FA-a1b2c3d4-001</td></tr>
+          <tr><td>Культура</td><td>Что обрабатываем</td><td>кукуруза</td></tr>
+          <tr><td>Площадь</td><td>Га, число</td><td><code>50</code></td></tr>
+          <tr><td>Начало / Окончание</td><td>Формат ГГГГ-ММ-ДД</td><td><code>2026-05-01</code> / <code>2026-08-15</code></td></tr>
+          <tr><td>Статус</td><td>Текущий этап пилота</td><td>испытание идет</td></tr>
+          <tr><td>Ответственный</td><td>Агроном</td><td>Кузнецова</td></tr>
+          <tr><td>Результат</td><td>Свободный текст: прибавка, стоимость обработки, вывод</td><td>+4,2 ц/га, окупаемость 6x</td></tr>
+        </table></div>
+        <h3><span class="step">2</span>Этапы пилота</h3>
+        <div class="flow">
+          <span class="stage">Новый пилот</span><span class="arrow">→</span><span class="stage">Квалификация</span><span class="arrow">→</span><span class="stage">Ожидается согласование</span><span class="arrow">→</span>
+          <span class="stage">BIOTORF зарезервирован</span><span class="arrow">→</span><span class="stage">BIOTORF отправлен</span><span class="arrow">→</span><span class="stage">BIOTORF получен</span><span class="arrow">→</span>
+          <span class="stage">Ожидается первая обработка</span><span class="arrow">→</span><span class="stage key">Испытание идет</span><span class="arrow">→</span><span class="stage">Ожидается промежуточный контроль</span><span class="arrow">→</span>
+          <span class="stage">Ожидается итоговый результат</span><span class="arrow">→</span><span class="stage key">Результат получен</span><span class="arrow">→</span><span class="stage key">Экономика рассчитана</span><span class="arrow">→</span>
+          <span class="stage">Пилот успешен</span><span class="arrow">или</span><span class="stage">Пилот без подтвержденного эффекта</span><span class="arrow">→</span><span class="stage">Передан в продажи</span><span class="arrow">→</span><span class="stage">Завершен</span>
+        </div>
+        <h3><span class="step">3</span>После успешного пилота</h3>
+        <ol>
+          <li>Заполните поле <b>Результат</b> цифрами (прибавка урожайности, экономия).</li>
+          <li>Прикрепите фото «до/после» в <b>«Медиатеку»</b>.</li>
+          <li>Вернитесь в сделку → этапы «Результат получен» → «Экономика рассчитана» → подготовьте <b>КП</b>.</li>
+        </ol>
+      </section>
+
+      <!-- ============ КП/ЗАКАЗЫ/ФИНАНСЫ ============ -->
+      <section id="quotes">
+        <h2><span class="ic">✎</span>КП → Заказ → Счёт → Оплата</h2>
+        <p class="sub">Денежный контур: КП во вкладке раздела сделок, затем «Заказы» и «Финансы».</p>
+        <div class="timeline">
+          <div class="event"><b>1. КП</b><span>Номер (КП-015), Сделка (ID), Дата, Сумма, Статус (черновик → отправлено → принято). Основа — результат пилота и экономика.</span></div>
+          <div class="event"><b>2. Заказ</b><span>Номер (З-021), Хозяйство (ID), Сделка (ID), Дата, Объём л, Сумма, Статус (новый → собран → готов к отгрузке), Ответственный.</span></div>
+          <div class="event"><b>3. Счёт</b><span>Номер (СЧ-009), Заказ (ID), Сделка (ID), Дата, Сумма, Оплачен (нет/да), Статус (выставлен → оплачен / просрочен).</span></div>
+          <div class="event"><b>4. Платёж</b><span>Счёт (ID), Дата поступления, Сумма, Способ оплаты (безнал/карта/наличные), Комментарий (платёжка).</span></div>
+          <div class="event"><b>5. Этап сделки → «Оплачено»</b><span>Дальше — отгрузка (раздел «Логистика»).</span></div>
+        </div>
+        <div class="note green"><b>Сверка:</b> сумма платежа = сумма счёта = сумма заказа. Расхождения исправляйте в счёте, а не «на словах».</div>
+      </section>
+
+      <!-- ============ СКЛАД ============ -->
+      <section id="warehouse">
+        <h2><span class="ic">📦</span>Производство и склад</h2>
+        <p class="sub">Разделы «Производство» и «Склад». Склад показывает, что реально можно отгрузить.</p>
+        <h3><span class="step">1</span>Производство партии</h3>
+        <p>Каждая выпущенная партия: <b>Дата</b> (ГГГГ-ММ-ДД), <b>Продукт</b> (название SKU), <b>Партия</b> (№ партии, напр. П-2411), <b>Количество</b> (число), <b>Смена</b>, <b>Оператор</b>, <b>Заметки</b>.</p>
+        <h3><span class="step">2</span>Приход на склад</h3>
+        <p>«Склад» → новая запись: <b>Артикул (SKU)</b> — из прайса, <b>Партия</b> — та же, что в производстве, <b>Количество</b>, <b>Ед. изм.</b>, <b>Локация</b> (склад/адрес), <b>Срок годности</b> (ГГГГ-ММ-ДД), <b>Статус</b> (в наличии / зарезервировано / списан).</p>
+        <div class="note"><b>FIFO:</b> резервируйте под заказы партии с ближайшим сроком годности. Статус «зарезервировано» меняйте на «списан» только после фактической отгрузки.</div>
+      </section>
+
+      <!-- ============ ЛОГИСТИКА ============ -->
+      <section id="logistics">
+        <h2><span class="ic">➜</span>Логистика (отгрузки)</h2>
+        <p class="sub">Раздел «Логистика». Отгрузка привязывается к заказу.</p>
+        <ul>
+          <li><b>Заказ (ID)</b> — из «Заказов»; <b>Дата</b> отгрузки.</li>
+          <li><b>Транспорт</b> (наш/транспортная компания), <b>Водитель</b>, <b>Гос. номер</b> (А123ВС23).</li>
+          <li><b>Маршрут</b>: «склад Краснодар → ООО Заря, ст. Каневская».</li>
+          <li><b>Статус</b>: готовится → в пути → доставлена.</li>
+        </ul>
+        <p>После подтверждения получения клиентом поставьте сделке этап <b>«Получено клиентом»</b>, затем «Сопровождение».</p>
+      </section>
+
+      <!-- ============ ЗАДАЧИ/КАЛЕНДАРЬ ============ -->
+      <section id="tasks">
+        <h2><span class="ic">☑</span>Задачи и календарь</h2>
+        <p class="sub">Разделы «Задачи» и «Календарь» — личный план и контроль сроков всей команды.</p>
+        <h3><span class="step">1</span>Правильная задача</h3>
+        <ul>
+          <li><b>Название</b> — глаголом: «Позвонить ООО Заря по итогам пилота».</li>
+          <li><b>Ответственный</b> — один человек, не отдел.</li>
+          <li><b>Срок</b> — дата ГГГГ-ММ-ДД. Без срока задача не создаётся.</li>
+          <li><b>Приоритет</b>: низкий / обычный / высокий / критический.</li>
+          <li><b>Связь · тип</b> и <b>Связь · ID</b> — привяжите к сделке (<code>deal</code> + ID) или хозяйству: так задача появится в карточке клиента.</li>
+        </ul>
+        <h3><span class="step">2</span>Календарь</h3>
+        <div class="shot">
+          <div class="shot-head"><span class="dot" style="background:#f26d5f"></span><span class="dot" style="background:#f3bd4d"></span><span class="dot" style="background:#3ecf7a"></span><span class="shot-title">Раздел «Календарь»</span></div>
+          <div class="shot-body">
+            <div class="cal">
+              <div class="cell"><b>3</b></div><div class="cell"><b>4</b><div class="ev">Отгрузка З-021</div></div><div class="cell"><b>5</b><div class="ev">КП для СПК Рассвет</div></div><div class="cell"><b>6</b></div><div class="cell"><b>7</b><div class="ev">Осмотр пилота «Юг»</div></div><div class="cell"><b>8</b></div><div class="cell"><b>9</b><div class="ev">Оплата СЧ-009</div></div>
+            </div>
+          </div>
+          <div class="caption">В календарь стекаются сроки задач, даты пилотов, отгрузок и платежей</div>
+        </div>
+        <div class="note green"><b>Ритуал:</b> утро менеджера — «Задачи» на сегодня; вечер директора — «Обзор»: какие сделки без следующего действия.</div>
+      </section>
+
+      <!-- ============ КОММУНИКАЦИИ ============ -->
+      <section id="comms">
+        <h2><span class="ic">☎</span>Коммуникации</h2>
+        <p class="sub">Раздел «Коммуникации» — журнал всех касаний клиента (звонки, встречи, сообщения).</p>
+        <ul>
+          <li>Каждый осмысленный разговор фиксируется: <b>тип</b> (звонок/встреча/telegram/whatsapp), <b>клиент</b>, <b>дата</b>, <b>итог</b> (один абзац: договорились о…).</li>
+          <li>Связывайте запись со сделкой — история переговоров будет видна в карточке.</li>
+          <li>Подключённые каналы: Telegram-бот и WhatsApp (токены задаёт администратор в переменных окружения бэкенда).</li>
+        </ul>
+        <div class="note"><b>Правило воронки:</b> сделка не переходит со стадии «Связаться», пока в «Коммуникациях» нет хотя бы одной записи по ней.</div>
+      </section>
+
+      <!-- ============ МАРКЕТИНГ ============ -->
+      <section id="marketing">
+        <h2><span class="ic">◉</span>Маркетинг, база знаний, медиатека</h2>
+        <div class="roles">
+          <div class="role"><h4><span class="ic">◉</span>Маркетинг и соцсети</h4>
+            <ul>
+              <li><b>Платформа</b>: telegram / vk / whatsapp / сайт.</li>
+              <li><b>Название / тема</b> публикации, <b>Статус</b>: идея → в работе → запланировано → опубликовано.</li>
+              <li><b>Дата публикации</b> и <b>Ссылка</b> на пост.</li>
+              <li>Источник лида должен совпадать с платформой — аналитика посчитает, какой канал приводит клиентов.</li>
+            </ul>
+          </div>
+          <div class="role"><h4><span class="ic">📖</span>База знаний</h4>
+            <ul>
+              <li><b>Название</b>, <b>Категория</b> (скрипты / агрономия / документы), <b>Теги</b> через запятую.</li>
+              <li><b>Текст</b>: регламенты, ответы на возражения, инструкции по продукту.</li>
+              <li>Новичок учится по базе знаний, а не по пересказам коллег.</li>
+            </ul>
+          </div>
+          <div class="role"><h4><span class="ic">▧</span>Медиатека</h4>
+            <ul>
+              <li><b>Название</b>, <b>Тип</b> (фото/видео/документ/PDF), <b>Ссылка</b>.</li>
+              <li><b>Метка</b> — хозяйство или пилот; <b>Дата</b> съёмки.</li>
+              <li>Фото «до/после» с делянок — главный аргумент в продажах.</li>
+            </ul>
+          </div>
+          <div class="role"><h4><span class="ic">♢</span>Уведомления</h4>
+            <ul>
+              <li>Автолента событий: новые лиды, просрочки счетов, срыв сроков задач.</li>
+              <li>Проверяйте раз в день; красные элементы — требуют реакции сегодня.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ АНАЛИТИКА ============ -->
+      <section id="analytics">
+        <h2><span class="ic">▤</span>Обзор и аналитика</h2>
+        <p class="sub">Что смотреть руководителю и как данные превращаются в управленческие решения.</p>
+        <div class="table-wrap"><table>
+          <tr><th>Метрика</th><th>Где</th><th>Норма / сигнал тревоги</th></tr>
+          <tr><td>Конверсия по этапам воронки</td><td>Аналитика</td><td>Провал > 50% на этапе — проблема процесса, ищите причину в сделках этого этапа</td></tr>
+          <tr><td>Средний цикл сделки</td><td>Аналитика</td><td>Растёт дольше сезона — ужесточайте «следующие действия»</td></tr>
+          <tr><td>Выручка / дебиторка</td><td>Финансы, Аналитика</td><td>Просроченные счета > 1 шт — звонок клиенту в тот же день</td></tr>
+          <tr><td>Эффективность каналов</td><td>Аналитика + Маркетинг</td><td>Канал с нулевыми лидами 2 месяца — резать бюджет</td></tr>
+          <tr><td>Успеваемость по задачам</td><td>Обзор</td><td>Просрочки одного сотрудника 3+ дней — разговор 1:1</td></tr>
+        </table></div>
+      </section>
+
+      <!-- ============ ИМПОРТ ============ -->
+      <section id="import">
+        <h2><span class="ic">⇪</span>Массовое заполнение через CSV</h2>
+        <p class="sub">Кнопка «Импорт» есть в каждом разделе — заносите десятки записей файлом.</p>
+        <ol>
+          <li>Подготовьте файл <code>.csv</code> (Excel/Google Sheets → «Скачать как CSV»). Кодировка UTF-8, разделитель <code>,</code> или <code>;</code>.</li>
+          <li><b>Первая строка — заголовки полей</b> (те же имена, что в форме ручного ввода):<br>
+            <code>id,name,type,region,crop,area,owner,status,next,phone,notes</code></li>
+          <li>В разделе → «Импорт» → выберите файл → проверьте предпросмотр.</li>
+          <li>Режим загрузки:
+            <ul>
+              <li><b>«Добавить / обновить по id»</b> — регулярные догрузки (не трогает остальное);</li>
+              <li><b>«Заменить всю таблицу»</b> — первичная загрузка справочников (старые данные удаляются).</li>
+            </ul>
+          </li>
+          <li>Кнопка <b>«Очистить таблицу»</b> — стереть раздел целиком (и в базе тоже).</li>
+        </ol>
+        <div class="note red"><b>Не смешивайте</b> в CSV несколько разделов. Даты — строками ГГГГ-ММ-ДД, числа — без единиц измерения и пробелов.</div>
+      </section>
+
+      <!-- ============ ПРАВИЛА ============ -->
+      <section id="rules">
+        <h2><span class="ic">§</span>Свод правил и форматов данных</h2>
+        <div class="table-wrap"><table>
+          <tr><th>Данные</th><th>Формат</th><th>Правильно</th><th>Нельзя</th></tr>
+          <tr><td>Дата</td><td>ГГГГ-ММ-ДД</td><td><code>2026-11-09</code></td><td>09.11.26 · «ноябрь»</td></tr>
+          <tr><td>Числа (сумма, объём, площадь)</td><td>Только цифры</td><td><code>1200</code></td><td>«1 200 га», «1200р.»</td></tr>
+          <tr><td>Телефон</td><td>+7 и 10 цифр</td><td><code>+79181234567</code></td><td>«8 (918) 123-45-67» — работает хуже</td></tr>
+          <tr><td>ID связей</td><td>Копировать из карточки</td><td><code>FA-a1b2c3d4-001</code></td><td>Придумывать вручную</td></tr>
+          <tr><td>Этап/статус</td><td>Слово в слово из схемы</td><td>«КП отправлено»</td><td>«кп отправили 🙂»</td></tr>
+          <tr><td>Ячейка</td><td>Одно значение</td><td>Телефон — только телефон</td><td>«Иван, тел. 8918…, почта…»</td></tr>
+        </table></div>
+        <h3>Регламент дня</h3>
+        <ul>
+          <li><b>Менеджер:</b> все касания — в «Коммуникациях»; у каждой активной сделки — следующее действие с датой; задачи не закрывать без обновления этапа сделки.</li>
+          <li><b>Операции:</b> заказ собран → статус «готов к отгрузке» → отгрузка создана в «Логистике» → складская партия «списана».</li>
+          <li><b>Агроном:</b> каждый визит на делянку = обновление статуса пилота + заметка + фото в медиатеку.</li>
+          <li><b>Директор:</b> ежедневно «Обзор» + «Уведомления»; еженедельно «Аналитика» (конверсии, просрочки).</li>
+        </ul>
+      </section>
+
+      <!-- ============ FAQ ============ -->
+      <section id="faq">
+        <h2><span class="ic">?</span>Частые проблемы</h2>
+        <dl class="faq">
+          <dt>«Бэкенд недоступен / сервис приостановлен»</dt>
+          <dd>Бесплатный сервер уснул после простоя. Откройте <code>https://biotorf-backend.onrender.com/health</code>, подождите 30–60 секунд, вернитесь и обновите страницу (Ctrl+Shift+R). Данные не теряются — фронт синхронизируется сам.</dd>
+          <dt>Изменил запись, а в таблице старое</dt>
+          <dd>Жёсткая перезагрузка страницы (Ctrl+Shift+R). Если не помогло — смотрите значок состояния API вверху справа: красный = бэкенд недоступен.</dd>
+          <dt>Сделка не видна в нужной колонке воронки</dt>
+          <dd>Проверьте, что «Этап» написан слово в слово и «Хозяйство (ID)» существует в таблице хозяйств.</dd>
+          <dt>Аналитика показывает ноль по выручке</dt>
+          <dd>Скорее всего в суммах стоят единицы измерения/пробелы («1 200 р.» вместо <code>1200</code>) или платежи не заведены.</dd>
+          <dt>Нужно удалить тестовые данные</dt>
+          <dd>В разделе: «Импорт» → «Очистить таблицу» (удаляет и на сервере). Или через консоль базы Render: <code>TRUNCATE ... CASCADE</code>.</dd>
+          <dt>Забыли пароль сотрудника</dt>
+          <dd>Директор открывает «Сотрудники и роли» → редактирует запись → новый пароль. Сотрудник входит с ним.</dd>
+        </dl>
+      </section>
+
+      <footer>BIOTORF Business OS · книга пользователя · актуально на ноябрь 2026 · https://biotorf-frontend.onrender.com/manual.html</footer>
+    </div>
+  </div>
+</div>
+</body>
+</html>
