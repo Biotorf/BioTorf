@@ -135,6 +135,26 @@ footer{color:#84948d;font-size:11px;margin:30px 0 0;text-align:center}
   .roles,.formgrid{grid-template-columns:1fr}
   .content{padding:20px 14px 60px}
 }
+
+/* ==== Дополнение: регламенты, скрипты, чек-листы ==== */
+.kb-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin:16px 0}
+.kb-card{background:#fff;border:1px solid var(--border);border-radius:14px;padding:18px 20px;box-shadow:var(--shadow)}
+.kb-card h4{margin:0 0 6px;font-size:15px;color:var(--green)}
+.kb-card p{margin:0;font-size:13px;color:#4a5a54}
+.kb-note{border-left:4px solid var(--orange);background:#fff8ec;border-radius:0 12px 12px 0;padding:12px 16px;margin:14px 0;font-size:13.5px}
+.kb-warn{border-left:4px solid var(--red);background:#fdefed;border-radius:0 12px 12px 0;padding:12px 16px;margin:14px 0;font-size:13.5px}
+.kb-tip{border-left:4px solid var(--green);background:var(--mint);border-radius:0 12px 12px 0;padding:12px 16px;margin:14px 0;font-size:13.5px}
+.kb-steps{counter-reset:kbstep;list-style:none;padding:0;margin:14px 0}
+.kb-steps>li{position:relative;padding:0 0 16px 52px}
+.kb-steps>li::before{counter-increment:kbstep;content:counter(kbstep);position:absolute;left:0;top:0;width:34px;height:34px;border-radius:50%;background:var(--green);color:#fff;font-weight:800;display:grid;place-items:center;font-size:15px}
+.kb-kbd{background:#eef2f0;border:1px solid #d7ded9;border-bottom-width:2px;border-radius:6px;padding:1px 7px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
+.kb-field{width:100%;border-collapse:collapse;margin:10px 0;font-size:13px}
+.kb-field th{background:#f0f5f2;text-align:left;padding:8px 12px;border:1px solid var(--border);font-size:12px;text-transform:uppercase;letter-spacing:.4px;color:#41564e}
+.kb-field td{padding:8px 12px;border:1px solid var(--border);vertical-align:top}
+.kb-field td:first-child{font-weight:700}
+.kb-check{list-style:none;padding:0;margin:10px 0}
+.kb-check li{padding:5px 0 5px 30px;position:relative;font-size:13.5px}
+.kb-check li::before{content:"\2713";position:absolute;left:2px;top:5px;color:var(--green);font-weight:900}
 </style>
 </head>
 <body>
@@ -165,6 +185,13 @@ footer{color:#84948d;font-size:11px;margin:30px 0 0;text-align:center}
       <a href="#import"><b>⇪</b>Импорт CSV</a>
       <a href="#rules"><b>§</b>Правила и форматы</a>
       <a href="#faq"><b>?</b>Частые проблемы</a>
+      <a href="#regiment"><b>⏱</b>Регламент дня</a>
+      <a href="#scripts"><b>☗</b>Скрипты продаж</a>
+      <a href="#csvheaders"><b>⌘</b>CSV-шаблоны</a>
+      <a href="#roles"><b>♟</b>Роли команды</a>
+      <a href="#mistakes"><b>⚠</b>Ошибки новичков</a>
+      <a href="#onboarding"><b>★</b>Внедрение за неделю</a>
+      <a href="#tips"><b>✦</b>Хитрости интерфейса</a>
     </nav>
     <div class="side-bottom">Версия книги: ноябрь 2026<br>Демо: biotorf-frontend.onrender.com</div>
   </aside>
@@ -589,6 +616,123 @@ footer{color:#84948d;font-size:11px;margin:30px 0 0;text-align:center}
           <dt>Забыли пароль сотрудника</dt>
           <dd>Директор открывает «Сотрудники и роли» → редактирует запись → новый пароль. Сотрудник входит с ним.</dd>
         </dl>
+      </section>
+
+      
+      <section id="regiment">
+        <h2><span class="num">18</span>Регламент дня: как пользоваться системой каждый день</h2>
+        <p>Система ценна только тогда, когда в неё заходят <b>каждый рабочий день</b>. Ниже — готовый регламент для отдела.</p>
+        <div class="kb-grid">
+          <div class="kb-card"><h4>🌅 Утро (09:00–09:30)</h4><p>Открыть «Обзор» → посмотреть просроченные задачи и сделки без следующего действия. Менеджер выбирает 3 главные задачи на день.</p></div>
+          <div class="kb-card"><h4>📞 День (работа с клиентами)</h4><p>Каждый звонок или переписка фиксируется в «Коммуникациях» сразу после разговора — не позже 15 минут. Затем обновляется этап сделки и поле «Следующее действие» с датой.</p></div>
+          <div class="kb-card"><h4>🌇 Вечер (17:30–18:00)</h4><p>Директор смотрит «Аналитику»: сколько лидов стало контактами, сколько сделок двигнулось. Сделки без следующего действия разбираются наутро.</p></div>
+        </div>
+        <ul class="kb-check">
+          <li>Ни одна активная сделка не остаётся без даты следующего действия.</li>
+          <li>Ни один звонок не остался незафиксированным в «Коммуникациях».</li>
+          <li>Каждый пилот имеет статус, обновлённый не старше недели.</li>
+          <li>Каждый счёт имеет понятный статус: выставлен / оплачен / просрочен.</li>
+        </ul>
+      </section>
+
+      <section id="scripts">
+        <h2><span class="num">19</span>Скрипты продаж и работа с возражениями</h2>
+        <p>Храните скрипты в «Базе знаний» с категориями <code>скрипты</code>, <code>возражения</code>, <code>кейсы</code>.</p>
+        <h3>19.1. Первый звонок (этап «Связаться»)</h3>
+        <div class="kb-note"><b>Цель звонка — не продать, а назначить аудит или пилот.</b> Структура: приветствие → контекст («видели ваше хозяйство, N га пшеницы») → проблема (стоимость СЗР, потери урожая) → решение одним предложением → вопрос-якорь: «Готовы провести бесплатный агроаудит одной делянки?» → договорённость фиксируется задачей с датой.</div>
+        <h3>19.2. Квалификация лида</h3>
+        <ul class="kb-check">
+          <li>Реальная площадь и культура? — записать в карточку хозяйства.</li>
+          <li>Кто принимает решение — ФИО и должность в «Контакты», пометить основным.</li>
+          <li>Есть ли бюджет / работают ли с аналогами сейчас?</li>
+          <li>Когда сезонная закупка? — дата в поле «Следующее действие».</li>
+        </ul>
+        <h3>19.3. Типовые возражения</h3>
+        <table class="kb-field">
+          <tr><th>Возражение</th><th>Что отвечать</th></tr>
+          <tr><td>«Дорого»</td><td>Перевод в экономику: стоимость на гектар против потери урожая. Показать цифры из завершённого пилота похожего хозяйства.</td></tr>
+          <tr><td>«Нам не нужно»</td><td>Вопрос обратно: чем обрабатываете сейчас и какой результат? Сравнение по цифрам контроля.</td></tr>
+          <tr><td>«Пришлите КП на почту»</td><td>Задача со сроком → КП в разделе «КП» → отправка → контрольный звонок через 2 дня (этап «КП отправлено»).</td></tr>
+          <tr><td>«Уже есть поставщик»</td><td>Предложение пилота на небольшой делянке — параллельное сравнение без риска.</td></tr>
+        </table>
+        <div class="kb-tip">Каждая выигранная сделка — повод добавить кейс в «Базу знаний»: задача клиента, решение, результат в цифрах. Кейсы используются на этапе «Экономика рассчитана».</div>
+      </section>
+
+      <section id="csvheaders">
+        <h2><span class="num">20</span>CSV-шаблоны: точные заголовки всех таблиц</h2>
+        <p>Первая строка CSV = точные имена полей. Разделитель — запятая или точка с запятой, кодировка UTF-8.</p>
+        <table class="kb-field">
+          <tr><th>Таблица</th><th>Строка заголовков (копируйте целиком)</th></tr>
+          <tr><td>Хозяйства</td><td><code>id,name,type,region,crop,area,owner,status,next,phone,notes</code></td></tr>
+          <tr><td>Контакты</td><td><code>id,farmId,name,role,phone,email,isPrimary,notes</code></td></tr>
+          <tr><td>Лиды</td><td><code>id,name,contactName,phone,source,owner,status,next,notes</code></td></tr>
+          <tr><td>Сделки</td><td><code>id,title,farmId,stage,volumeL,sum,owner,next,notes</code></td></tr>
+          <tr><td>Пилоты</td><td><code>id,farmId,crop,area,startAt,endAt,status,owner,result</code></td></tr>
+          <tr><td>КП</td><td><code>id,number,dealId,date,sum,status,notes</code></td></tr>
+          <tr><td>Заказы</td><td><code>id,number,farmId,dealId,date,volumeL,sum,status,owner</code></td></tr>
+          <tr><td>Счета</td><td><code>id,number,orderId,dealId,date,sum,paid,status</code></td></tr>
+          <tr><td>Платежи</td><td><code>id,invoiceId,date,sum,method,comment</code></td></tr>
+          <tr><td>Отгрузки</td><td><code>id,orderId,date,transport,driver,plate,route,status</code></td></tr>
+          <tr><td>Продукция (SKU)</td><td><code>id,name,category,unit,price,stock,notes</code></td></tr>
+          <tr><td>Склад</td><td><code>id,skuId,batch,qty,unit,location,expiry,status</code></td></tr>
+          <tr><td>Производство</td><td><code>id,date,product,batch,qty,shift,operator,notes</code></td></tr>
+          <tr><td>Задачи</td><td><code>id,title,assignee,due,priority,status,linkType,linkId,notes</code></td></tr>
+          <tr><td>Маркетинг</td><td><code>id,platform,title,status,publishAt,link,notes</code></td></tr>
+        </table>
+        <div class="kb-warn"><b>Важно:</b> при первичной загрузке колонку <code>id</code> оставляйте пустой — система сгенерирует ID сама. Поля <code>farmId / dealId / orderId / invoiceId / skuId</code> должны совпадать с ID из соответствующих таблиц.</div>
+      </section>
+
+      <section id="roles">
+        <h2><span class="num">21</span>Ролевая модель: кто что делает</h2>
+        <table class="kb-field">
+          <tr><th>Роль</th><th>Обязан в системе</th><th>Право</th></tr>
+          <tr><td>Директор</td><td>Контроль «Аналитики», утверждение счетов, управление сотрудниками</td><td>Полный доступ, создание аккаунтов</td></tr>
+          <tr><td>Менеджер по продажам</td><td>Лиды, сделки, коммуникации, задачи, КП</td><td>Вести своих клиентов, двигать этапы</td></tr>
+          <tr><td>Агроном</td><td>Пилоты: статусы, осмотры, результаты</td><td>Создавать пилоты, фиксировать результаты</td></tr>
+          <tr><td>Операции / логист</td><td>Заказы, склад, производство, отгрузки</td><td>Менять остатки, оформлять отгрузки</td></tr>
+        </table>
+        <div class="kb-tip">Один человек — один аккаунт. Общие логины запрещены: ценность CRM в том, что видно, <b>кто именно</b> сделал каждое действие.</div>
+      </section>
+
+      <section id="mistakes">
+        <h2><span class="num">22</span>Типичные ошибки новичков</h2>
+        <table class="kb-field">
+          <tr><th>Ошибка</th><th>Последствие</th><th>Как правильно</th></tr>
+          <tr><td>Сумма «1 200 руб.»</td><td>Аналитика не видит деньги</td><td>Только число: <code>1200</code></td></tr>
+          <tr><td>Дата «09.11.2026»</td><td>Календарь ломается</td><td><code>2026-11-09</code></td></tr>
+          <tr><td>Этап «думаем» от себя</td><td>Сделка выпадает из воронки</td><td>Только слово из списка этапов</td></tr>
+          <tr><td>Телефон со скобками</td><td>Не работает сопоставление</td><td><code>+79181234567</code></td></tr>
+          <tr><td>Дублирование хозяйства</td><td>Кривая аналитика</td><td>Сначала поиск, потом создание</td></tr>
+          <tr><td>Изменение существующего ID</td><td>Связи рвутся</td><td>ID только копировать, не менять</td></tr>
+        </table>
+      </section>
+
+      <section id="onboarding">
+        <h2><span class="num">23</span>Чек-лист внедрения: первая неделя</h2>
+        <ol class="kb-steps">
+          <li><b>День 1 — фундамент.</b> Создать сотрудников с ролями, заполнить «Продукция и цены», импортировать хозяйства из Excel.</li>
+          <li><b>День 1 — контакты.</b> На каждое хозяйство минимум 1 основной контакт.</li>
+          <li><b>День 2 — лиды.</b> Текущие клиенты и потенциальные — все в систему; ни один диалог не живёт только в мессенджере.</li>
+          <li><b>День 2–3 — сделки.</b> На каждого реального клиента — сделка на текущем честном этапе.</li>
+          <li><b>День 3 — финансы.</b> Перенести открытые счета и ожидаемые оплаты (история с текущего квартала).</li>
+          <li><b>День 4 — склад.</b> Инвентаризация фактических остатков по партиям.</li>
+          <li><b>День 5 — база знаний.</b> Скрипты, документы, фото из «Медиатеки».</li>
+          <li><b>День 5 — тренинг.</b> Каждый сотрудник проходит свой маршрут: менеджер — лид→звонок→сделка→задача; агроном — пилот; операции — заказ→отгрузка.</li>
+          <li><b>Дни 6–7 — боевой режим.</b> Работа по регламенту (глава 18), в пятницу сверка «Аналитики» с реальностью.</li>
+        </ol>
+        <div class="kb-note"><b>Критерий успеха:</b> через неделю ответ на вопрос «где мы договорились с ООО Заря?» находится за 20 секунд: карточка хозяйства → коммуникации → этап сделки → следующая задача.</div>
+      </section>
+
+      <section id="tips">
+        <h2><span class="num">24</span>Хитрости интерфейса</h2>
+        <ul class="kb-check">
+          <li>Поиск по таблице работает по подстроке во всех полях — набирайте часть названия, телефона или ID.</li>
+          <li><span class="kb-kbd">Esc</span> закрывает любое модальное окно без сохранения.</li>
+          <li>В модалке «Импорт» всегда смотрите предпросмотр до нажатия «Загрузить».</li>
+          <li>Режим «Заменить всю таблицу» удаляет старые данные — только для первичной загрузки справочников.</li>
+          <li>Страница выглядит устаревшей — <span class="kb-kbd">Ctrl</span>+<span class="kb-kbd">Shift</span>+<span class="kb-kbd">R</span>.</li>
+          <li>Перед демонстрацией клиенту откройте <code>https://biotorf-backend.onrender.com/health</code> — бесплатный бэкенд проснётся за 30–60 секунд.</li>
+        </ul>
       </section>
 
       <footer>BIOTORF Business OS · книга пользователя · актуально на ноябрь 2026 · https://biotorf-frontend.onrender.com/manual.html</footer>
