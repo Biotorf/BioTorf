@@ -10,7 +10,7 @@ import { usePwaInstall } from '@/composables/usePwaInstall';
 
 const ui = useUiStore();
 const emit = defineEmits(['session']);   // готовая сессия → App скрывает gate
-const { canInstall, promptInstall } = usePwaInstall();
+const { installHint, showInstallButton, promptInstall } = usePwaInstall();
 
 const mode = ref('login');            // login | register
 const user = ref('');
@@ -99,12 +99,18 @@ function enterPending() {
 
       <!-- установка приложения: показываем только до входа -->
       <button
-        v-if="canInstall"
+        v-if="showInstallButton"
         class="install-hint"
         type="button"
         @click="promptInstall"
         title="Установить BIOTORF как приложение на компьютер"
       >⤓ Установить как приложение (ярлык на рабочем столе)</button>
+      <p v-if="installHint" class="gate-note ok">
+        Приложение установлено ✅ — ярлык появится на рабочем столе и в меню «Пуск»
+        Windows автоматически. Если нужно именно <b>файл ярлыка (.lnk)</b>: правый клик
+        по значку в панели задач → «Закрепить на панели задач», либо из меню браузера
+    (⋮) → «Сохранить и поделиться» → «Создать ярлык…».
+      </p>
 
       <h2>{{ mode === 'login' ? 'Вход для сотрудников' : 'Регистрация сотрудника' }}</h2>
       <p v-if="firstRun && mode === 'register'" class="gate-note ok">

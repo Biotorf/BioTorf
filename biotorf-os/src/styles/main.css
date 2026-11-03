@@ -62,3 +62,7 @@
 .install-btn:hover{transform:translateY(-1px);box-shadow:0 6px 18px rgba(134,59,255,.35)}
 .install-btn:active{transform:translateY(0)}
 @media(max-width:750px){.install-btn{padding:7px 10px;font-size:11px}}
+
+/* ===== PWA: подсказка после установки ===== */
+.install-toast{display:inline-flex;align-items:center;max-width:340px;background:#123d2a;color:#7ee2b8;border:1px solid #2e6b4c;border-radius:11px;padding:7px 12px;font-size:11.5px;line-height:1.35;animation:fadeInUp .3s ease}
+@media(max-width:900px){.install-toast{display:none}}

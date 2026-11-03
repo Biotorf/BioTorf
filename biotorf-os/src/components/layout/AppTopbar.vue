@@ -9,7 +9,7 @@ import { usePwaInstall } from '@/composables/usePwaInstall';
 const ui = useUiStore();
 const db = useDbStore();
 const { ROLES } = usePermissions();
-const { canInstall, promptInstall } = usePwaInstall();
+const { showInstallButton, installHint, promptInstall } = usePwaInstall();
 </script>
 
 <template>
@@ -31,11 +31,12 @@ const { canInstall, promptInstall } = usePwaInstall();
       </button>
       <button class="toolbar-icon" @click="ui.go('calendar')" title="Календарь">▦</button>
       <button
-        v-if="canInstall"
+        v-if="showInstallButton"
         class="install-btn"
         @click="promptInstall"
         title="Установить BIOTORF как приложение на компьютер"
       >⤓ Установить</button>
+      <span v-if="installHint" class="install-toast" title="Через 12 секунд подсказка скроется">✅ Приложение установлено — ярлык в «Пуск» и на рабочем столе. Нужен файл .lnk? Меню браузера (⋮) → «Сохранить и поделиться» → «Создать ярлык…»</span>
       <ManualLink />
       <!-- мини-профиль: аватар с выпадающим меню (Профиль / Выйти) -->
       <MiniProfile />
