@@ -3,9 +3,11 @@
 // Показывается только если бэкенд требует авторизацию (authState.required).
 // Если сотрудников ещё нет (hasUsers=false) — первым регистрируется
 // генеральный директор: его аккаунт создаётся автоматически с ролью director.
-import { ref, computed } from 'vue';
+import { ref, computed, nextTick } from 'vue';
 import { login, register, authState } from '@/api/authClient';
+import { useUiStore } from '@/stores/ui';
 
+const ui = useUiStore();
 const emit = defineEmits(['session']);   // готовая сессия → App скрывает gate
 
 const mode = ref('login');            // login | register
@@ -22,6 +24,18 @@ const firstRun = computed(() => authState.required && !authState.hasUsers);
 
 function switchMode(m) { mode.value = m; error.value = ''; info.value = ''; }
 
+// Надёжный вход в сервис: применяем профиль в ui-стор, скрываем экран входа
+// и подтягиваем данные с сервера — БЕЗ перезагрузки страницы.
+async function enterService(res) {
+  ui.applySession(res);
+  emit('session', res);
+  await nextTick();
+  try {
+    const { useDbStore } = await import('@/stores/db');
+    useDbStore().pullCrmState();
+  } catch { /* noop */ }
+}
+
 async function submit() {
   error.value = ''; info.value = '';
   if (!user.value.trim() || !pass.value) { error.value = 'Заполните логин и пароль'; return; }
@@ -34,7 +48,7 @@ async function submit() {
     if (mode.value === 'login') {
       const res = await login(user.value.trim(), pass.value);
       // сразу перекидываем в сервис — без перезагрузки страницы
-      emit('session', res);
+      await enterService(res);
       if (res.pending) {
         info.value = `Вы вошли как ожидающий подтверждения. Заполните профиль — генеральный директор увидит ваши данные и выдаст роль.`;
         pendingSession.value = res;
@@ -42,7 +56,7 @@ async function submit() {
     } else {
       const res = await register(user.value.trim(), pass.value, name.value.trim());
       if (res.firstAccount) {
-        emit('session', res);       // первый аккаунт = директор, токен уже выдан
+        await enterService(res);   // первый аккаунт = директор, токен уже выдан
         return;
       }
       // зарегистрировались → сразу входим под этим же логином/паролем:
@@ -50,7 +64,7 @@ async function submit() {
       const lg = await login(res.login || user.value.trim(), pass.value);
       if (lg.token || lg.pending) {
         // сразу перекидываем в сервис (pending sees restricted UI + profile modal)
-        emit('session', lg);
+        await enterService(lg);
         pendingSession.value = lg;
         info.value = 'Аккаунт создан и ожидает подтверждения роли генеральным директором. Заполните профиль — директор увидит ваши данные.';
       } else {
@@ -66,7 +80,7 @@ async function submit() {
 }
 
 function enterPending() {
-  if (pendingSession.value) emit('session', pendingSession.value);
+  if (pendingSession.value) enterService(pendingSession.value);
 }
 </script>
 
