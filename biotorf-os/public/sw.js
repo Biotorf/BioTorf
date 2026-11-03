@@ -11,11 +11,10 @@ self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(STATIC_CACHE).then((cache) => cache.addAll([
       '/manifest.webmanifest',
-      '/favicon.svg',
-      '/pwa-192.png',
-      '/pwa-512.png',
-      '/pwa-maskable-512.png',
-      '/apple-touch-icon.png',
+      '/favicon.png',
+      '/x192.png',
+      '/x512.png',
+      '/x180.png',
     ])).then(() => self.skipWaiting())
   );
 });
