@@ -108,8 +108,9 @@ function fmtTs(iso) { return new Date(iso).toLocaleString('ru-RU', { day: '2-dig
         <div class="subtitle">Лид → квалификация → сделка → пилот (если нужен) → КП → заказ → счёт → оплата → доставка</div>
       <BackendBadge collection="journeys" />
       </div>
-      <button class="btn primary slim" @click="newLeadOpen = !newLeadOpen">＋ Создать лид</button>
-    </div>
+        <div class="actionbar" style="margin-top:10px">
+          <button class="btn primary slim" @click="newLeadOpen = !newLeadOpen">＋ Создать лид</button>
+        </div></div>
 
     <div v-if="newLeadOpen" class="muted-block" style="margin-bottom:14px">
       <b class="mini">ШАГ 1 · НОВОЕ ВХОДЯЩЕЕ ОБРАЩЕНИЕ</b>

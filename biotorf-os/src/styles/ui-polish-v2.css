@@ -1,0 +1,163 @@
+/* ============================================================
+   UI-POLISH v2 — профессиональная полировка интерфейса BIOTORF
+   (только внешний вид: кнопки, анимации, раскладки, тени.
+    Логика и данные не затрагиваются)
+   ============================================================ */
+
+/* ---------- 1. Переменные глубины и движения ---------- */
+:root{
+  --ease-spring:cubic-bezier(.34,1.56,.64,1);
+  --ease-out:cubic-bezier(.22,.8,.3,1);
+  --r-lg:16px;--r-md:12px;--r-sm:9px;
+  --shadow-soft:0 1px 2px rgba(16,44,34,.05),0 6px 18px rgba(16,44,34,.06);
+  --shadow-lift:0 2px 4px rgba(16,44,34,.06),0 14px 30px rgba(16,44,34,.12);
+}
+
+/* ---------- 2. Плавный скролл и выделение ---------- */
+html{scroll-behavior:smooth}
+::selection{background:#c9f2d8;color:#0e3a26}
+*::-webkit-scrollbar{width:10px;height:10px}
+*::-webkit-scrollbar-track{background:transparent}
+*::-webkit-scrollbar-thumb{background:#cfdcd3;border-radius:8px;border:2px solid transparent;background-clip:content-box}
+*::-webkit-scrollbar-thumb:hover{background:#a8bfb2;background-clip:content-box}
+
+/* ---------- 3. Сайдбар: активный пункт со «светящейся пилюлей» ---------- */
+.sidebar{transition:box-shadow .2s ease}
+.nav button{position:relative;transition:background .14s ease,color .14s ease,transform .14s var(--ease-out)}
+.nav button.active{
+  background:linear-gradient(120deg,#2bc35f,#1fa14f);
+  box-shadow:0 4px 14px rgba(43,195,95,.35);
+  transform:translateX(2px);
+}
+.nav button.active::after{
+  content:'';position:absolute;left:-13px;top:22%;bottom:22%;width:3px;
+  border-radius:3px;background:#aef0c0;
+}
+
+/* ---------- 4. Топбар: стеклянный эффект ---------- */
+.topbar{
+  backdrop-filter:saturate(1.4) blur(10px);
+  background:rgba(255,255,255,.86);
+}
+.toolbar-icon{
+  transition:transform .16s var(--ease-spring),box-shadow .16s ease,border-color .16s ease,background .16s ease;
+}
+.toolbar-icon:hover{transform:translateY(-2px);border-color:#9ecbb0;box-shadow:var(--shadow-soft);background:#f4fbf6}
+.toolbar-icon:active{transform:scale(.92)}
+.toolbar-icon i{
+  animation:ui-badge-in .3s var(--ease-spring) both;
+  box-shadow:0 1px 4px rgba(216,80,66,.4);
+  font-weight:700;
+}
+@keyframes ui-badge-in{from{transform:scale(0)}to{transform:scale(1)}}
+
+/* ---------- 5. Заголовок страницы + кнопка «+ Добавить» справа ---------- */
+.pagehead h1{position:relative;display:inline-block}
+.pagehead .actionbar{display:flex;gap:9px;flex-wrap:wrap;align-items:center}
+.pagehead .btn.primary{padding:11px 18px;font-size:14px}
+
+/* ---------- 6. Кнопки обычной разметки (.btn вне AppButton) ---------- */
+.btn{border-radius:10px;transition:transform .15s var(--ease-out),box-shadow .15s ease,background .15s ease,border-color .15s ease}
+.btn:not(:disabled):hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(16,60,40,.1)}
+.btn:not(:disabled):active{transform:translateY(0) scale(.97)}
+.btn:focus-visible{outline:2px solid #29bb5b;outline-offset:2px}
+.btn.primary{background:linear-gradient(135deg,#2fbf63,#1d9a52);border-color:#1fae58;color:#fff;box-shadow:0 2px 8px rgba(31,174,88,.25)}
+.btn.primary:not(:disabled):hover{background:linear-gradient(135deg,#37cb6e,#188a48);box-shadow:0 6px 16px rgba(31,174,88,.32)}
+
+/* опасная красная кнопка удаления в таблицах/модалках */
+.btn.danger,.btn.del{background:#fff;border:1px solid #f0c3bd;color:#c14e43}
+.btn.danger:not(:disabled):hover,.btn.del:not(:disabled):hover{background:linear-gradient(135deg,#e86a5f,#cf4d43);border-color:#cf4d43;color:#fff;box-shadow:0 5px 14px rgba(207,77,67,.28)}
+
+/* ---------- 7. Таблицы: липкая шапка, зебра, кнопки действий ---------- */
+.table-wrap{box-shadow:var(--shadow-soft);transition:box-shadow .2s ease}
+.table-wrap:hover{box-shadow:var(--shadow-lift)}
+.table th{position:sticky;top:0;z-index:1;box-shadow:inset 0 -1px 0 #e3eae5}
+.table tbody tr:nth-child(even){background:#fafcfa}
+.table tbody tr:nth-child(even):hover{background:#eff8f1!important}
+.table tbody tr{transition:background .12s ease,box-shadow .12s ease}
+.table tbody tr:hover{box-shadow:inset 3px 0 0 #2fbf63}
+.row-actions{display:inline-flex;gap:6px;opacity:.45;transition:opacity .15s ease}
+tr:hover .row-actions,.row-actions:focus-within{opacity:1}
+.row-actions .btn{padding:5px 9px;font-size:12px;border-radius:8px}
+
+/* ---------- 8. Статистические карточки: ожившие KPI ---------- */
+.stat{position:relative;overflow:hidden;box-shadow:var(--shadow-soft)}
+.stat::before{
+  content:'';position:absolute;right:-34px;top:-34px;width:110px;height:110px;border-radius:50%;
+  background:radial-gradient(circle,#e6f7ec 0%,transparent 70%);
+  transition:transform .3s var(--ease-out);
+}
+.stat:hover::before{transform:scale(1.35)}
+.stat .val{font-variant-numeric:tabular-nums}
+.stat:hover{transform:translateY(-3px);box-shadow:var(--shadow-lift)}
+
+/* ---------- 9. Kanban-карточки сделок ---------- */
+.lane{transition:background .2s ease}
+.lane:hover{background:#e6efe8}
+.deal-card{box-shadow:0 1px 3px rgba(0,0,0,.04)}
+.deal-card:hover{transform:translateY(-3px) rotate(-.2deg);box-shadow:0 10px 22px rgba(0,0,0,.1)}
+
+/* ---------- 10. Модалки: красивее тень, размытие фона ---------- */
+.modal{box-shadow:0 24px 80px rgba(6,26,19,.32);border:1px solid #e2ece5}
+.modal .modal-title{background:linear-gradient(180deg,#fbfdfb,#f4f8f4);border-radius:16px 16px 0 0}
+.modal-backdrop{backdrop-filter:blur(3px)}
+
+/* ---------- 11. Формы: аккуратные подписи и фокус ---------- */
+.field label{transition:color .15s ease}
+.field:focus-within label{color:#177a56}
+.input,.select,.textarea{transition:border-color .15s ease,box-shadow .15s ease,background .15s ease}
+.input:hover,.select:hover,.textarea:hover{border-color:#bcd5c6}
+.input:focus,.select:focus,.textarea:focus{background:#fff}
+
+/* ---------- 12. Пилюли статусов с лёгкой пульсацией для активных ---------- */
+.pill,.chip{border-radius:20px}
+.pill.amber{animation:ui-pulse 2.4s ease-in-out infinite}
+@keyframes ui-pulse{0%,100%{box-shadow:0 0 0 0 rgba(217,150,45,.18)}50%{box-shadow:0 0 0 5px rgba(217,150,45,0)}}
+
+/* ---------- 13. Пунктирные пустые состояния ---------- */
+.empty{border:1.5px dashed #d7e4da;border-radius:14px;background:#fbfdfb;margin-top:8px}
+
+/* ---------- 14. Баннер: мягкий градиент и свечение ---------- */
+.banner{box-shadow:0 10px 26px rgba(17,62,49,.25);position:relative;overflow:hidden}
+.banner::after{
+  content:'';position:absolute;inset:0;
+  background:linear-gradient(115deg,transparent 55%,rgba(255,255,255,.12) 60%,transparent 70%);
+  transform:translateX(-100%);animation:ui-banner-shine 6s ease-in-out infinite;
+}
+@keyframes ui-banner-shine{0%,60%{transform:translateX(-100%)}80%,100%{transform:translateX(100%)}}
+
+/* ---------- 15. Появление контента: каскад чуть живее ---------- */
+.content>*{animation:ui-fade-up .38s var(--ease-out) both}
+@keyframes ui-fade-up{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+
+/* ---------- 16. Ссылки-подсказки (?) в заголовках разделов ---------- */
+.manual-link{transition:transform .15s var(--ease-spring),box-shadow .15s ease}
+.manual-link:hover{transform:scale(1.12);box-shadow:0 4px 10px rgba(41,187,91,.25)}
+
+/* ---------- 17. Мобильная навигация ---------- */
+@media(max-width:750px){
+  .nav button.active{transform:none}
+  .nav button.active::after{display:none}
+  .row-actions{opacity:1}
+}
+
+/* ---------- 18. Уважение к prefers-reduced-motion ---------- */
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}
+}
+
+/* ---------- 19. Кнопка закрытия модалки (✕) — аккуратный кругляш ---------- */
+.modal .x,button.x,.overlay .x{
+  display:grid;place-items:center;width:30px;height:30px;border-radius:50%;
+  border:1px solid #e2ece5;background:#f6faf7;color:#5c7268;font-size:14px;line-height:1;
+  transition:background .15s ease,color .15s ease,transform .15s var(--ease-spring),border-color .15s ease;
+}
+.modal .x:hover,button.x:hover,.overlay .x:hover{background:#ffece9;border-color:#f0c3bd;color:#c14e43;transform:rotate(90deg)}
+
+/* ---------- 20. Красные текстовые кнопки удаления → полноценные danger-кнопки ---------- */
+.btn.danger-text{background:#fff;border:1px solid #f0c3bd;color:#c14e43}
+.btn.danger-text:not(:disabled):hover{background:linear-gradient(135deg,#e86a5f,#cf4d43);border-color:#cf4d43;color:#fff;box-shadow:0 5px 14px rgba(207,77,67,.28)}
+
+/* ---------- 21. Иконки-карандаши в таблицах «✎» ---------- */
+.table .btn.ghost{background:#f2f7f3;border:1px solid transparent}
+.table .btn.ghost:hover{background:#dff0e5;border-color:#bfe0cb;color:#177a56}

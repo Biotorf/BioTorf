@@ -130,9 +130,9 @@ const partyLabel = computed(() => tab.value === 'supply' ? 'Поставщик' 
         <button class="btn slim ghost" @click="printRegistry" title="Печать реестра / PDF">🖨 Печать</button>
         <button class="btn primary" @click="openEditor()">＋ {{ tab === 'supply' ? 'Новая поставка' : 'Новая выгрузка' }}</button>
       </div>
-    
-      <button class="btn primary slim" @click="rowOpen = true" title="Добавить запись вручную">＋ Добавить</button>
-    </div>
+        <div class="actionbar" style="margin-top:10px">
+          <button class="btn primary slim" @click="rowOpen = true" title="Добавить запись вручную">＋ Добавить</button>
+        </div></div>
 
     <div class="chips" style="margin-bottom:16px">
       <button class="btn slim" :class="{ primary: tab === 'dispatch' }" @click="tab = 'dispatch'; ui.filter = 'Все'">

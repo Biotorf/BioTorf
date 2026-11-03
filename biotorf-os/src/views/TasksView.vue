@@ -65,9 +65,10 @@ function create() {
         <div class="subtitle">Поручения с исполнителем, сроком и статусом · просрочено: <b :style="lateCount ? 'color:#c62828' : ''">{{ lateCount }}</b></div>
       <BackendBadge collection="tasks" />
       </div>
-      <button class="btn slim" @click="importColl = 'tasks'" title="Загрузить задачи из CSV/JSON">⇪ Импорт</button>
-      <button class="btn primary slim" @click="showNew = !showNew">＋ Создать задачу</button>
-    </div>
+        <div class="actionbar" style="margin-top:10px">
+          <button class="btn slim" @click="importColl = 'tasks'" title="Загрузить задачи из CSV/JSON">⇪ Импорт</button>
+          <button class="btn primary slim" @click="showNew = !showNew">＋ Создать задачу</button>
+        </div></div>
 
     <div v-if="showNew" class="insight" style="flex-wrap:wrap;gap:8px;margin-bottom:14px">
       <input v-model="form.title" class="input" style="min-width:280px" placeholder="Название (измеримый результат)…" @keyup.enter="create" />

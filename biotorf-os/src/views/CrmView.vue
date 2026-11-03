@@ -58,11 +58,13 @@ const commsUnread = (farmId) => db.comms.filter((c) => c.farmId === farmId && !c
         <ManualLink />
         <div class="subtitle">Реестр хозяйств, контактов и входящих лидов</div>
       </div>
-      <BackendBadge collection="farms" />
-      <button class="btn slim" @click="importColl = 'farms'" title="Загрузить хозяйства из CSV/JSON">⇪ Импорт · Хозяйства</button>
-      <button class="btn slim" @click="importColl = 'leads'" title="Загрузить лиды из CSV/JSON">⇪ Импорт · Лиды</button>
-      <button class="btn primary slim" @click="rowModal = { coll: 'farms' }">＋ Хозяйство</button>
-      <button class="btn primary slim" @click="rowModal = { coll: 'leads' }">＋ Лид</button>
+      <div class="actionbar">
+        <BackendBadge collection="farms" />
+        <button class="btn slim" @click="importColl = 'farms'" title="Загрузить хозяйства из CSV/JSON">⇪ Импорт · Хозяйства</button>
+        <button class="btn slim" @click="importColl = 'leads'" title="Загрузить лиды из CSV/JSON">⇪ Импорт · Лиды</button>
+        <button class="btn primary slim" @click="rowModal = { coll: 'farms' }">＋ Хозяйство</button>
+        <button class="btn primary slim" @click="rowModal = { coll: 'leads' }">＋ Лид</button>
+      </div>
     </div>
 
     <!-- Входящие обращения -->
