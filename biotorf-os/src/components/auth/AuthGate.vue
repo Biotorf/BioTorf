@@ -6,11 +6,9 @@
 import { ref, computed, nextTick } from 'vue';
 import { login, register, authState } from '@/api/authClient';
 import { useUiStore } from '@/stores/ui';
-import { usePwaInstall } from '@/composables/usePwaInstall';
 
 const ui = useUiStore();
 const emit = defineEmits(['session']);   // готовая сессия → App скрывает gate
-const { installHint, showInstallButton, promptInstall } = usePwaInstall();
 
 const mode = ref('login');            // login | register
 const user = ref('');
@@ -97,21 +95,6 @@ function enterPending() {
     <form class="gate-card" @submit.prevent="submit">
       <div class="gate-brand"><span class="brand-mark">🌱</span><strong>BIOTORF BUSINESS OS</strong></div>
 
-      <!-- установка приложения: показываем только до входа -->
-      <button
-        v-if="showInstallButton"
-        class="install-hint"
-        type="button"
-        @click="promptInstall"
-        title="Установить BIOTORF как приложение на компьютер"
-      >⤓ Установить как приложение (ярлык на рабочем столе)</button>
-      <p v-if="installHint" class="gate-note ok">
-        Приложение установлено ✅ — ярлык появится на рабочем столе и в меню «Пуск»
-        Windows автоматически. Если нужно именно <b>файл ярлыка (.lnk)</b>: правый клик
-        по значку в панели задач → «Закрепить на панели задач», либо из меню браузера
-    (⋮) → «Сохранить и поделиться» → «Создать ярлык…».
-      </p>
-
       <h2>{{ mode === 'login' ? 'Вход для сотрудников' : 'Регистрация сотрудника' }}</h2>
       <p v-if="firstRun && mode === 'register'" class="gate-note ok">
         В системе пока нет ни одного аккаунта. Первый зарегистрированный
@@ -175,6 +158,4 @@ function enterPending() {
 .gate-note.ok{color:#218468;background:#e5f5ee;border-color:#cfe9db}
 .gate-card .btn.primary{margin-top:6px}
 .gate-switch{font-size:12px}
-.install-hint{border:1px dashed #863bff;background:#f5f0ff;color:#5b2bb8;border-radius:10px;padding:8px 12px;font-size:12.5px;cursor:pointer;transition:.15s}
-.install-hint:hover{background:#ece2ff}
 </style>
