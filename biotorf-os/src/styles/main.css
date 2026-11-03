@@ -11,3 +11,48 @@
 .kpi-move{margin-top:8px;display:flex;justify-content:flex-end;gap:5px}.kpi-move button{border:1px solid #d8e7df;background:#f3f9f5;border-radius:6px;padding:2px 10px;cursor:pointer}
 .actionable{cursor:pointer}.actionable:hover{background:#eff7f0!important}.cal-open{display:block;width:100%;border:0;text-align:left;font:inherit;cursor:pointer}.cal-open:focus-visible,.actionable:focus-visible{outline:2px solid #22854b;outline-offset:2px}
 .cal-event.cal-open{font-family:inherit!important;font-size:9px!important;line-height:1.15!important;padding:2px 4px!important;margin-top:2px!important;white-space:normal!important;max-height:28px;overflow:hidden}.cal-cell{min-height:102px}.insight[data-work]{cursor:pointer}.insight[data-work]:hover{background:#e8f5ec}.record-edit-actions{margin-top:15px;display:flex;gap:8px;flex-wrap:wrap}.record-edit-form .field{margin-bottom:10px}.record-edit-form input,.record-edit-form select,.record-edit-form textarea{width:100%}@media(max-width:750px){.cal-event.cal-open{font-size:8px!important;padding:2px!important}}
+/* ===== UI-POLISH v1: анимации, кнопки, фокус-состояния ===== */
+@keyframes ui-fade-up{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+@keyframes ui-modal-in{from{opacity:0;transform:translateY(18px) scale(.97)}to{opacity:1;transform:none}}
+@keyframes ui-backdrop-in{from{opacity:0}to{opacity:1}}
+@keyframes ui-pop{0%{transform:scale(1)}40%{transform:scale(.96)}100%{transform:scale(1)}}
+@keyframes ui-shimmer{to{background-position:200% 0}}
+
+.content>*{animation:ui-fade-up .35s ease both}
+.content>*:nth-child(2){animation-delay:.05s}
+.content>*:nth-child(3){animation-delay:.1s}
+.content>*:nth-child(4){animation-delay:.15s}
+
+.btn{transition:transform .15s ease,box-shadow .15s ease,background .15s ease,border-color .15s ease;position:relative;line-height:1.3}
+.btn:not(:disabled):hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(16,60,40,.10)}
+.btn:not(:disabled):active{transform:translateY(0) scale(.97);box-shadow:none;animation:ui-pop .18s ease}
+.btn:focus-visible{outline:2px solid #29bb5b;outline-offset:2px}
+.btn.primary{background:linear-gradient(135deg,#2fbf63,#1d9a52);border-color:#1fae58;box-shadow:0 2px 8px rgba(31,174,88,.28)}
+.btn.primary:not(:disabled):hover{background:linear-gradient(135deg,#35cc6c,#188a48);box-shadow:0 6px 16px rgba(31,174,88,.34)}
+.btn.ghost{transition:background .15s,transform .15s}
+.btn.ghost:not(:disabled):hover{background:#e4efe7}
+
+.stat,.panel,.hero-card{transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease}
+.stat:hover,.hero-card:hover{transform:translateY(-2px);box-shadow:0 8px 22px rgba(14,50,32,.08)}
+
+.table tbody tr{transition:background .12s ease}
+.clickrow:hover{background:#eef8f0!important}
+
+.nav button.active{box-shadow:inset 3px 0 0 #aef0c0,0 2px 8px rgba(0,0,0,.18);transition:background .15s,box-shadow .15s,transform .15s}
+.nav button:not(.active):hover{transform:translateX(2px)}
+
+.deal-card{transition:transform .15s ease,box-shadow .15s ease}
+.deal-card:hover{transform:translateY(-2px);box-shadow:0 6px 16px rgba(0,0,0,.08)}
+.deal-card:active{cursor:grabbing}
+
+.modal-backdrop{animation:ui-backdrop-in .18s ease}
+.modal{animation:ui-modal-in .22s cubic-bezier(.2,.9,.3,1.2)}
+
+.input,.select,.textarea{transition:border-color .15s ease,box-shadow .15s ease}
+
+.pill,.chip{transition:transform .12s ease}
+
+.search input{transition:background .15s,box-shadow .15s;border:1px solid transparent}
+.search input:focus{background:#fff;border-color:#bfe3cc;box-shadow:0 0 0 3px #ddf3e4}
+
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
