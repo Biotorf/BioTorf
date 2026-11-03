@@ -101,9 +101,11 @@ const visibleMenu = computed(() => {
         </button>
       </template>
     </nav>
-    <a class="manual-nav" href="/manual.html#start" target="_blank" rel="noopener">
-      📖 Книга пользователя<span class="qmark">?</span>
-    </a>
+    <nav class="nav manual-nav-wrap">
+      <a class="manual-entry" href="/manual.html#start" target="_blank" rel="noopener">
+        <b>📖</b>Книга пользователя
+      </a>
+    </nav>
     <div class="side-bottom">
       <template v-if="ui.login">
         {{ ui.name || ui.login }} · {{ ROLES[ui.role] || ui.role }}
@@ -120,18 +122,16 @@ const visibleMenu = computed(() => {
 </template>
 
 <style scoped>
-.manual-nav {
-  display: flex; align-items: center; gap: 8px; margin: 12px 10px 4px;
-  padding: 9px 12px; border-radius: 10px; text-decoration: none;
-  font-size: 13px; font-weight: 650; color: #dff0e5; background: rgba(255,255,255,.07);
-  border: 1px solid rgba(255,255,255,.14); transition: background .15s ease;
+.manual-nav-wrap { margin-top: 6px; }
+.manual-entry {
+  display: flex; align-items: center; gap: 10px; width: calc(100% - 20px);
+  margin: 2px 10px; padding: 10px 12px; border-radius: 10px;
+  text-decoration: none; font-size: 13.5px; font-weight: 600;
+  color: #dff0e5; background: transparent; border: 1px solid transparent;
+  transition: background .15s ease, color .15s ease;
 }
-.manual-nav:hover { background: rgba(255,255,255,.14); }
-.manual-nav .qmark {
-  margin-left: auto; width: 18px; height: 18px; border-radius: 50%;
-  display: grid; place-items: center; font-size: 11px; font-weight: 800;
-  background: #a7d3b4; color: #14382a;
-}
+.manual-entry b { font-size: 15px; width: 18px; text-align: center; }
+.manual-entry:hover { background: rgba(255,255,255,.10); color: #fff; }
 .nav button { position: relative; }
 .group-label { font-size: 10px; letter-spacing: .08em; color: #7c8f86; margin: 14px 10px 4px; font-weight: 600; }
 .live-dot {

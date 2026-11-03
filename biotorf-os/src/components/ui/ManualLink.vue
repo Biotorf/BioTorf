@@ -36,18 +36,23 @@ const href = computed(() => `/manual.html#${VIEW_TO_SECTION[ui.view] || 'start'}
 
 <template>
   <a class="manual-link" :href="href" target="_blank" rel="noopener"
-     title="Открыть книгу пользователя для этого раздела">
-    📖 <span class="cap">Книга</span>
-  </a>
+     title="Открыть руководство для этого раздела">?</a>
 </template>
 
 <style scoped>
 .manual-link{
-  display:inline-flex;align-items:center;gap:6px;text-decoration:none;
-  font-size:12.5px;font-weight:650;color:#214f37;background:#eef7f1;
-  border:1px solid #cfe4d6;border-radius:9px;padding:6px 10px;cursor:pointer;
-  transition:background .15s ease, box-shadow .15s ease;white-space:nowrap;
+  display:inline-grid;place-items:center;width:30px;height:30px;flex:none;
+  border-radius:50%;text-decoration:none;cursor:pointer;
+  font-size:14px;font-weight:800;color:#214f37;background:#eef7f1;
+  border:1px solid #cfe4d6;
+  transition:background .15s ease, box-shadow .15s ease, transform .15s ease;
 }
-.manual-link:hover{background:#dff0e5;box-shadow:0 2px 8px rgba(33,79,55,.12)}
-@media (max-width:900px){ .cap{display:none} }
+.manual-link:hover{
+  background:#dff0e5;box-shadow:0 2px 10px rgba(33,79,55,.18);transform:scale(1.08);
+}
+.manual-link:active{transform:scale(.94)}
+@media (prefers-reduced-motion:reduce){
+  .manual-link{transition:none}
+  .manual-link:hover{transform:none}
+}
 </style>
