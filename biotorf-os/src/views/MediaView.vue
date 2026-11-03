@@ -8,6 +8,8 @@ import BackendBadge from '@/components/ui/BackendBadge.vue';
 import CrmRowModal from '@/components/CrmRowModal.vue';
 const rowColl = ref('media');
 const rowOpen = ref(false);
+const editRec = ref(null);
+function openEdit(rec) { editRec.value = rec; rowOpen.value = true; }
 
 const db = useDbStore();
 const { day } = useFormatters();
@@ -37,7 +39,7 @@ const rows = computed(() =>
 
     <section class="panel">
       <table class="table">
-        <thead><tr><th>Материал</th><th>Тип</th><th>Пилот / хозяйство</th><th>Дата</th><th>Согласие на публикацию</th></tr></thead>
+        <thead><tr><th>Материал</th><th>Тип</th><th>Пилот / хозяйство</th><th>Дата</th><th>Согласие на публикацию</th><th></th></tr></thead>
         <tbody>
           <tr v-for="m in rows" :key="m.id">
             <td><b>{{ m.title || m.file || m.id }}</b><div class="mini">{{ m.note || '' }}</div></td>
@@ -45,8 +47,9 @@ const rows = computed(() =>
             <td>{{ m.pilotId || m.farmId || '—' }}</td>
             <td>{{ day(m.dateStr) }}</td>
             <td><span class="pill" :class="m.consent === 'Да' ? '' : 'amber'">{{ m.consent || 'Нет' }}</span></td>
+            <td><button class="btn slim ghost" title="Редактировать" @click.stop="openEdit(m in rows)">✎ Изменить</button></td>
           </tr>
-          <tr v-if="!rows.length"><td colspan="5" class="empty">
+          <tr v-if="!rows.length"><td colspan="6" class="empty">
             Материалов пока нет.<br />
             <span class="mini">Загрузка файлов появится вместе с привязкой к бэкенду; публикация кейсов — только с согласием хозяйства (§8).</span>
           </td></tr>
@@ -54,7 +57,7 @@ const rows = computed(() =>
       </table>
     </section>
   </div>
-  <CrmRowModal v-if="rowOpen" :coll="rowColl" @close="rowOpen = false" />
+  <CrmRowModal v-if="rowOpen" :coll="rowColl" :record="editRec" @close="rowOpen = false; editRec = null" />
 </template>
 
 <style scoped>.mini { font-size: 12px; color: var(--muted, #7b8a86); }</style>

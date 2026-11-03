@@ -11,6 +11,8 @@ import BackendBadge from '@/components/ui/BackendBadge.vue';
 import CrmRowModal from '@/components/CrmRowModal.vue';
 const rowColl = ref('pilots');
 const rowOpen = ref(false);
+const editRec = ref(null);
+function openEdit(rec) { editRec.value = rec; rowOpen.value = true; }
 
 const db = useDbStore();
 const ui = useUiStore();
@@ -52,7 +54,7 @@ const appsOf = (pid) => (db.data.applications || []).filter((a) => a.pilotId ===
 
     <section class="panel">
       <table class="table">
-        <thead><tr><th>Пилот</th><th>Культура</th><th>Площадь, га</th><th>Ответственный</th><th>След. контроль</th><th>Обработок</th><th>Статус</th><th></th></tr></thead>
+        <thead><tr><th>Пилот</th><th>Культура</th><th>Площадь, га</th><th>Ответственный</th><th>След. контроль</th><th>Обработок</th><th>Статус</th><th></th><th></th></tr></thead>
         <tbody>
           <tr v-for="p in pilots" :key="p.id" class="row-click" @click="ui.openRecord('pilot', p.id)">
             <td><b>{{ p.title || p.id }}</b><div class="mini">{{ p.farmName || '' }}</div></td>
@@ -63,8 +65,9 @@ const appsOf = (pid) => (db.data.applications || []).filter((a) => a.pilotId ===
             <td>{{ appsOf(p.id).length }}</td>
             <td><StatusPill :status="p.status" /></td>
             <td><button v-if="p.journeyId" class="btn slim" @click.stop="ui.openJourney(p.journeyId)">Процесс</button></td>
+            <td><button class="btn slim ghost" title="Редактировать" @click.stop="openEdit(p in pilots)">✎ Изменить</button></td>
           </tr>
-          <tr v-if="!pilots.length"><td colspan="8" class="empty">Пилотов нет. Пилот создаётся из сквозного процесса для агропроизводителя (§3 шаг 5).</td></tr>
+          <tr v-if="!pilots.length"><td colspan="9" class="empty">Пилотов нет. Пилот создаётся из сквозного процесса для агропроизводителя (§3 шаг 5).</td></tr>
         </tbody>
       </table>
     </section>
@@ -73,7 +76,7 @@ const appsOf = (pid) => (db.data.applications || []).filter((a) => a.pilotId ===
       Обработки фиксируются отдельными записями в карточке пилота; проверенные схемы применения — в «Базе знаний».
     </div>
   </div>
-  <CrmRowModal v-if="rowOpen" :coll="rowColl" @close="rowOpen = false" />
+  <CrmRowModal v-if="rowOpen" :coll="rowColl" :record="editRec" @close="rowOpen = false; editRec = null" />
 </template>
 
 <style scoped>

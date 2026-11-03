@@ -27,7 +27,9 @@ function switchMode(m) { mode.value = m; error.value = ''; info.value = ''; }
 // Надёжный вход в сервис: применяем профиль в ui-стор, скрываем экран входа
 // и подтягиваем данные с сервера — БЕЗ перезагрузки страницы.
 async function enterService(res) {
-  ui.applySession(res);
+  // токен уже сохранён в authState (applySession внутри login/register) —
+  // применяем профиль, скрываем экран входа и подтягиваем данные БЕЗ перезагрузки
+  ui.applySession(authState.user || res);
   emit('session', res);
   await nextTick();
   try {

@@ -121,6 +121,22 @@ async function save() {
     busy.value = false;
   }
 }
+
+async function removeRecord() {
+  if (!props.record) return;
+  const label = props.record.name || props.record.title || props.record.number || props.record.id;
+  if (!confirm(`Удалить запись «${label}» из таблицы «${COLL_RU[props.coll] || props.coll}»? Это действие необратимо.`)) return;
+  error.value = ''; busy.value = true;
+  try {
+    await db.deleteRow(props.coll, props.record.id);
+    emit('deleted', props.record.id);
+    emit('close');
+  } catch (e) {
+    error.value = e.message || String(e);
+  } finally {
+    busy.value = false;
+  }
+}
 </script>
 
 <template>
@@ -139,6 +155,8 @@ async function save() {
         <div v-if="error" class="err">{{ error }}</div>
       </div>
       <div class="foot">
+        <button v-if="isEdit" class="btn slim danger-text" :disabled="busy" @click="removeRecord">🗑 Удалить запись</button>
+        <span style="flex:1"></span>
         <button class="btn ghost slim" @click="emit('close')">Отмена</button>
         <button class="btn primary slim" :disabled="busy" @click="save">{{ busy ? 'Сохранение…' : 'Сохранить' }}</button>
       </div>

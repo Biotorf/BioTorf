@@ -9,6 +9,8 @@ import BackendBadge from '@/components/ui/BackendBadge.vue';
 import CrmRowModal from '@/components/CrmRowModal.vue';
 const rowColl = ref('production');
 const rowOpen = ref(false);
+const editRec = ref(null);
+function openEdit(rec) { editRec.value = rec; rowOpen.value = true; }
 
 const db = useDbStore();
 const { day, num } = useFormatters();
@@ -38,7 +40,7 @@ const STATUSES = ['Все', 'План', 'В работе', 'Завершено']
 
     <section class="panel">
       <table class="table">
-        <thead><tr><th>Партия</th><th>Продукт</th><th>Объем, шт</th><th>Дата плана</th><th>Номер лота</th><th>Статус</th></tr></thead>
+        <thead><tr><th>Партия</th><th>Продукт</th><th>Объем, шт</th><th>Дата плана</th><th>Номер лота</th><th>Статус</th><th></th></tr></thead>
         <tbody>
           <tr v-for="p in rows" :key="p.id">
             <td><b>{{ p.id }}</b></td>
@@ -47,13 +49,14 @@ const STATUSES = ['Все', 'План', 'В работе', 'Завершено']
             <td>{{ day((p.date || '').slice(0, 10)) }}</td>
             <td class="mono">{{ p.lot }}</td>
             <td><StatusPill :status="p.status" /></td>
+            <td><button class="btn slim ghost" title="Редактировать" @click.stop="openEdit(p in rows)">✎ Изменить</button></td>
           </tr>
-          <tr v-if="!rows.length"><td colspan="6" class="empty">Партий нет.</td></tr>
+          <tr v-if="!rows.length"><td colspan="7" class="empty">Партий нет.</td></tr>
         </tbody>
       </table>
     </section>
   </div>
-  <CrmRowModal v-if="rowOpen" :coll="rowColl" @close="rowOpen = false" />
+  <CrmRowModal v-if="rowOpen" :coll="rowColl" :record="editRec" @close="rowOpen = false; editRec = null" />
 </template>
 
 <style scoped>.mono { font-variant-numeric: tabular-nums; }</style>

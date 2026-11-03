@@ -9,6 +9,8 @@ import BackendBadge from '@/components/ui/BackendBadge.vue';
 import CrmRowModal from '@/components/CrmRowModal.vue';
 const rowColl = ref('knowledge');
 const rowOpen = ref(false);
+const editRec = ref(null);
+function openEdit(rec) { editRec.value = rec; rowOpen.value = true; }
 
 const db = useDbStore();
 const query = ref('');
@@ -42,7 +44,7 @@ const openId = ref(null);
 
     <section class="panel">
       <table class="table">
-        <thead><tr><th>Статья</th><th>Категория</th><th>Культура</th><th>Версия</th><th>Ответственный</th><th>Статус</th></tr></thead>
+        <thead><tr><th>Статья</th><th>Категория</th><th>Культура</th><th>Версия</th><th>Ответственный</th><th>Статус</th><th></th></tr></thead>
         <tbody>
           <template v-for="k in items" :key="k.id">
             <tr class="row-click" @click="openId = openId === k.id ? null : k.id">
@@ -52,14 +54,15 @@ const openId = ref(null);
               <td>v{{ k.version }}</td>
               <td>{{ k.owner }}</td>
               <td><StatusPill :status="k.status" /></td>
+              <td><button class="btn slim ghost" title="Редактировать" @click.stop="openEdit(k)">✎ Изменить</button></td>
             </tr>
-            <tr v-if="openId === k.id"><td colspan="6" style="white-space:normal;background:#f7faf8">
+            <tr v-if="openId === k.id"><td colspan="7" style="white-space:normal;background:#f7faf8">
               <div class="kb-text">{{ k.summary }}</div>
               <div class="mini" style="margin-top:8px">{{ k.public ? '🌐 Материал для публичного использования' : '🔒 Только для внутреннего использования' }}</div>
             </td></tr>
-            <CrmRowModal v-if="rowOpen" :coll="rowColl" @close="rowOpen = false" />
+            <CrmRowModal v-if="rowOpen" :coll="rowColl" :record="editRec" @close="rowOpen = false; editRec = null" />
 </template>
-          <tr v-if="!items.length"><td colspan="6" class="empty">Статей не найдено.</td></tr>
+          <tr v-if="!items.length"><td colspan="7" class="empty">Статей не найдено.</td></tr>
         </tbody>
       </table>
     </section>

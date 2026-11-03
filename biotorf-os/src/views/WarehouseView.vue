@@ -8,6 +8,8 @@ import BackendBadge from '@/components/ui/BackendBadge.vue';
 import CrmRowModal from '@/components/CrmRowModal.vue';
 const rowColl = ref('warehouse');
 const rowOpen = ref(false);
+const editRec = ref(null);
+function openEdit(rec) { editRec.value = rec; rowOpen.value = true; }
 
 const db = useDbStore();
 const { num } = useFormatters();
@@ -48,7 +50,7 @@ const totals = computed(() => ({
 
     <section class="panel">
       <table class="table">
-        <thead><tr><th>SKU</th><th>Продукт</th><th>Склад</th><th>Остаток</th><th>Резерв</th><th>Свободно</th></tr></thead>
+        <thead><tr><th>SKU</th><th>Продукт</th><th>Склад</th><th>Остаток</th><th>Резерв</th><th>Свободно</th><th></th></tr></thead>
         <tbody>
           <tr v-for="w in rows" :key="w.id">
             <td><b>{{ w.sku }}</b></td>
@@ -57,15 +59,16 @@ const totals = computed(() => ({
             <td class="mono">{{ num(w.qty) }} {{ w.unit }}</td>
             <td class="mono">{{ num(w.reserved) }} {{ w.unit }}</td>
             <td class="mono"><span class="pill" :class="w.free <= 0 ? 'red' : ''">{{ num(w.free) }} {{ w.unit }}</span></td>
+            <td><button class="btn slim ghost" title="Редактировать" @click.stop="openEdit(w in rows)">✎ Изменить</button></td>
           </tr>
-          <tr v-if="!rows.length"><td colspan="6" class="empty">Остатков нет.</td></tr>
+          <tr v-if="!rows.length"><td colspan="7" class="empty">Остатков нет.</td></tr>
         </tbody>
       </table>
     </section>
 
     <div class="note" style="margin-top:12px">Автоматические складские проводки отключены (§3, ОГРАНИЧЕНИЕ v0.9): резервы — справочные.</div>
   </div>
-  <CrmRowModal v-if="rowOpen" :coll="rowColl" @close="rowOpen = false" />
+  <CrmRowModal v-if="rowOpen" :coll="rowColl" :record="editRec" @close="rowOpen = false; editRec = null" />
 </template>
 
 <style scoped>.mono { font-variant-numeric: tabular-nums; }</style>

@@ -10,6 +10,8 @@ import BackendBadge from '@/components/ui/BackendBadge.vue';
 import CrmRowModal from '@/components/CrmRowModal.vue';
 const rowColl = ref('invoices');
 const rowOpen = ref(false);
+const editRec = ref(null);
+function openEdit(rec) { editRec.value = rec; rowOpen.value = true; }
 
 const db = useDbStore();
 const ui = useUiStore();
@@ -50,7 +52,7 @@ const orderFarm = (orderId) => {
 
     <section class="panel">
       <table class="table">
-        <thead><tr><th>Счёт</th><th>Заказ / клиент</th><th>Сумма</th><th>Срок оплаты</th><th>Статус</th><th></th></tr></thead>
+        <thead><tr><th>Счёт</th><th>Заказ / клиент</th><th>Сумма</th><th>Срок оплаты</th><th>Статус</th><th></th><th></th></tr></thead>
         <tbody>
           <tr v-for="i in invoices" :key="i.id" class="row-click" @click="ui.openRecord('invoice', i.id)">
             <td><b>{{ i.number || i.id }}</b></td>
@@ -59,13 +61,14 @@ const orderFarm = (orderId) => {
             <td :class="!i.paid && isLate(i.due) ? 'danger-text' : ''">{{ day((i.due || '').slice(0, 10)) }}</td>
             <td><StatusPill :status="i.paid ? 'Оплачен' : i.status" /></td>
             <td><button v-if="i.journeyId" class="btn slim" @click.stop="ui.openJourney(i.journeyId)">Процесс</button></td>
+            <td><button class="btn slim ghost" title="Редактировать" @click.stop="openEdit(i in invoices)">✎ Изменить</button></td>
           </tr>
           <tr v-if="!invoices.length"><td colspan="6" class="empty">Счетов нет. Счёт создаётся при подтверждении заказа в сквозном процессе (§3 шаг 19).</td></tr>
         </tbody>
       </table>
     </section>
   </div>
-  <CrmRowModal v-if="rowOpen" :coll="rowColl" @close="rowOpen = false" />
+  <CrmRowModal v-if="rowOpen" :coll="rowColl" :record="editRec" @close="rowOpen = false; editRec = null" />
 </template>
 
 <style scoped>

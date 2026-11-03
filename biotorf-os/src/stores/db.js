@@ -625,6 +625,16 @@ export const useDbStore = defineStore('db', {
       this.save(`Импорт ${coll}: +${created}/${updated}`, coll);
       return res || { created, updated, total: (this.data[coll] || []).length };
     },
+    // Удалить одну строку из таблицы (сервер + локальный кэш)
+    async deleteRow(coll, id) {
+      if (!SYNC_COLLECTIONS.includes(coll)) throw new Error('Неизвестная таблица: ' + coll);
+      const list = this.data[coll] || [];
+      const idx = list.findIndex((r) => r.id === id);
+      if (idx !== -1) list.splice(idx, 1);
+      if (apiOn()) await crmApi.remove(coll, id);
+      this.save(`Удалена запись ${id} (${coll})`, coll);
+      return true;
+    },
     async importCsvFile(coll, file, mode = 'merge') {
       const text = await file.text();
       return this.importCollection(coll, this.csvToRecords(text), mode);

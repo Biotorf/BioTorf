@@ -11,6 +11,8 @@ import BackendBadge from '@/components/ui/BackendBadge.vue';
 import CrmRowModal from '@/components/CrmRowModal.vue';
 const rowColl = ref('social');
 const rowOpen = ref(false);
+const editRec = ref(null);
+function openEdit(rec) { editRec.value = rec; rowOpen.value = true; }
 
 const db = useDbStore();
 const ui = useUiStore();
@@ -57,11 +59,12 @@ const pilotTitle = (pid) => {
           <div class="mini">Согласие на кейс: {{ s.consent }} · Кейс утверждён: {{ s.caseApproved }} · {{ s.owner }}</div>
         </div>
         <StatusPill :status="s.status" class="ml-auto" />
+        <button class="btn slim ghost" title="Редактировать" @click.stop="openEdit(s)">✎ Изменить</button>
       </article>
       <div v-if="!rows.length" class="empty">Публикаций нет.</div>
     </div>
   </div>
-  <CrmRowModal v-if="rowOpen" :coll="rowColl" @close="rowOpen = false" />
+  <CrmRowModal v-if="rowOpen" :coll="rowColl" :record="editRec" @close="rowOpen = false; editRec = null" />
 </template>
 
 

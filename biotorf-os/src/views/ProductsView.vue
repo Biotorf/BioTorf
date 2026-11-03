@@ -8,6 +8,8 @@ import BackendBadge from '@/components/ui/BackendBadge.vue';
 import CrmRowModal from '@/components/CrmRowModal.vue';
 const rowColl = ref('skus');
 const rowOpen = ref(false);
+const editRec = ref(null);
+function openEdit(rec) { editRec.value = rec; rowOpen.value = true; }
 
 const db = useDbStore();
 const { num, money } = useFormatters();
@@ -40,12 +42,13 @@ const lines = computed(() => {
     <section class="panel" style="margin-bottom:16px">
       <div class="panel-title" style="margin-bottom:12px">SKU продукции</div>
       <table class="table">
-        <thead><tr><th>Артикул</th><th>Название</th><th>Линейка</th><th>Фасовка, л</th><th>Рецептура (паста:вода)</th><th>Статус</th></tr></thead>
+        <thead><tr><th>Артикул</th><th>Название</th><th>Линейка</th><th>Фасовка, л</th><th>Рецептура (паста:вода)</th><th>Статус</th><th></th></tr></thead>
         <tbody>
           <tr v-for="s in skus" :key="s.id">
             <td><b>{{ s.id }}</b></td><td>{{ s.name }}</td>
             <td><span class="chip">{{ s.line }}</span></td>
             <td>{{ num(s.pack) }}</td><td>{{ s.recipe }}</td><td>{{ s.status }}</td>
+            <td><button class="btn slim ghost" title="Редактировать" @click.stop="openEdit(s in skus)">✎ Изменить</button></td>
           </tr>
         </tbody>
       </table>
@@ -75,7 +78,7 @@ const lines = computed(() => {
       </section>
     </div>
   </div>
-  <CrmRowModal v-if="rowOpen" :coll="rowColl" @close="rowOpen = false" />
+  <CrmRowModal v-if="rowOpen" :coll="rowColl" :record="editRec" @close="rowOpen = false; editRec = null" />
 </template>
 
 <style scoped>
