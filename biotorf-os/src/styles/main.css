@@ -56,3 +56,9 @@
 .search input:focus{background:#fff;border-color:#bfe3cc;box-shadow:0 0 0 3px #ddf3e4}
 
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
+
+/* ===== PWA: кнопка «Установить» в топбаре ===== */
+.install-btn{display:inline-flex;align-items:center;gap:6px;border:1px solid #863bff33;background:linear-gradient(135deg,#863bff,#5b2bb8);color:#fff;border-radius:11px;padding:8px 14px;font-size:12.5px;font-weight:600;cursor:pointer;transition:.18s;box-shadow:0 4px 14px rgba(134,59,255,.25)}
+.install-btn:hover{transform:translateY(-1px);box-shadow:0 6px 18px rgba(134,59,255,.35)}
+.install-btn:active{transform:translateY(0)}
+@media(max-width:750px){.install-btn{padding:7px 10px;font-size:11px}}
