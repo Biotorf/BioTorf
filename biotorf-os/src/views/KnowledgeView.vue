@@ -7,6 +7,7 @@ import StatusPill from '@/components/ui/StatusPill.vue';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 
 import CrmRowModal from '@/components/CrmRowModal.vue';
+import ManualLink from '@/components/ui/ManualLink.vue';
 const rowColl = ref('knowledge');
 const rowOpen = ref(false);
 const editRec = ref(null);
@@ -30,6 +31,7 @@ const openId = ref(null);
     <div class="pagehead">
       <div>
         <h1>База знаний</h1>
+        <ManualLink />
         <div class="subtitle">Проверенные схемы применения, регламенты и скрипты продаж</div>
       </div>
       <BackendBadge collection="knowledge" />

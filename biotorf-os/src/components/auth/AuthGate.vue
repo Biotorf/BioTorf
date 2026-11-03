@@ -28,7 +28,7 @@ function switchMode(m) { mode.value = m; error.value = ''; info.value = ''; }
 // и подтягиваем данные с сервера — БЕЗ перезагрузки страницы.
 async function enterService(res) {
   // токен уже сохранён в authState (applySession внутри login/register) —
-  // применяем профиль, скрываем экран входа и подтягиваем данные БЕЗ перезагрузки
+  // применяем профиль, скрываем экран входа и подтягиваем данные.
   ui.applySession(authState.user || res);
   emit('session', res);
   await nextTick();
@@ -36,6 +36,10 @@ async function enterService(res) {
     const { useDbStore } = await import('@/stores/db');
     useDbStore().pullCrmState();
   } catch { /* noop */ }
+  // страховка: если по какой-то причине экран не перерисовался (старый кэш
+  // сборки на Render), через короткий таймаут обновляем страницу — пользователь
+  // оказывается в сервисе автоматически, без ручного F5
+  setTimeout(() => location.reload(), 800);
 }
 
 async function submit() {

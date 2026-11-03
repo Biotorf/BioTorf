@@ -9,6 +9,7 @@ import StatusPill from '@/components/ui/StatusPill.vue';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 import CrmImportModal from '@/components/CrmImportModal.vue';
 import CrmRowModal from '@/components/CrmRowModal.vue';
+import ManualLink from '@/components/ui/ManualLink.vue';
 
 const rowModal = ref(null);
 
@@ -52,6 +53,7 @@ function move(d, dir) {
     <div class="pagehead">
       <div>
         <h1>Сделки и воронка</h1>
+        <ManualLink />
         <div class="subtitle">Открытая воронка: {{ money(totalPipeline) }} · сделок: {{ deals.length }}</div>
       <BackendBadge collection="deals" />
       </div>

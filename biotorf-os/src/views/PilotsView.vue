@@ -9,6 +9,7 @@ import StatusPill from '@/components/ui/StatusPill.vue';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 
 import CrmRowModal from '@/components/CrmRowModal.vue';
+import ManualLink from '@/components/ui/ManualLink.vue';
 const rowColl = ref('pilots');
 const rowOpen = ref(false);
 const editRec = ref(null);
@@ -39,6 +40,7 @@ const appsOf = (pid) => (db.data.applications || []).filter((a) => a.pilotId ===
     <div class="pagehead">
       <div>
         <h1>Агрономия · Пилоты</h1>
+        <ManualLink />
         <div class="subtitle">Пилоты, обработки и агрономические результаты</div>
       <BackendBadge collection="pilots" />
       </div>

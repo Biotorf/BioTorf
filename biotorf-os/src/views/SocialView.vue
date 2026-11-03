@@ -9,6 +9,7 @@ import StatusPill from '@/components/ui/StatusPill.vue';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 
 import CrmRowModal from '@/components/CrmRowModal.vue';
+import ManualLink from '@/components/ui/ManualLink.vue';
 const rowColl = ref('social');
 const rowOpen = ref(false);
 const editRec = ref(null);
@@ -37,6 +38,7 @@ const pilotTitle = (pid) => {
     <div class="pagehead">
       <div>
         <h1>Маркетинг и соцсети</h1>
+        <ManualLink />
         <div class="subtitle">Контент-план публикаций, связь с пилотами и согласование</div>
       </div>
       <BackendBadge collection="social" />

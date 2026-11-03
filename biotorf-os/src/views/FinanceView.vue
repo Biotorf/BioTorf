@@ -8,6 +8,7 @@ import StatusPill from '@/components/ui/StatusPill.vue';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 
 import CrmRowModal from '@/components/CrmRowModal.vue';
+import ManualLink from '@/components/ui/ManualLink.vue';
 const rowColl = ref('invoices');
 const rowOpen = ref(false);
 const editRec = ref(null);
@@ -34,6 +35,7 @@ const orderFarm = (orderId) => {
     <div class="pagehead">
       <div>
         <h1>Финансы</h1>
+        <ManualLink />
         <div class="subtitle">Счета, оплаты и дебиторская задолженность</div>
       </div>
       <BackendBadge collection="invoices" />

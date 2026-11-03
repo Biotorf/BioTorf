@@ -7,6 +7,7 @@ import StatusPill from '@/components/ui/StatusPill.vue';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 
 import CrmRowModal from '@/components/CrmRowModal.vue';
+import ManualLink from '@/components/ui/ManualLink.vue';
 const rowColl = ref('production');
 const rowOpen = ref(false);
 const editRec = ref(null);
@@ -25,6 +26,7 @@ const STATUSES = ['Все', 'План', 'В работе', 'Завершено']
     <div class="pagehead">
       <div>
         <h1>Производство</h1>
+        <ManualLink />
         <div class="subtitle">Планы розлива и производственные партии</div>
       </div>
       <BackendBadge collection="production" />

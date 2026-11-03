@@ -31,6 +31,7 @@ const newChat = ref({ kind: 'telegram', handle: '', phone: '', contact: '' });
 
 // ── динамические каналы (реестр бэкенда: Instagram, VK, Авито и т.д.) ──
 import { channelsApi } from '../api/channelsClient';
+import ManualLink from '@/components/ui/ManualLink.vue';
 const dynChannels = ref([]);            // [{id,label,icon,color,connected}]
 async function loadChannels() {
   if (!apiState.online) return;
@@ -301,6 +302,7 @@ onBeforeUnmount(() => {
     <div class="pagehead">
       <div>
         <h1>Коммуникации</h1>
+        <ManualLink />
         <div class="subtitle">Единая лента: звонки с телефона, Telegram и WhatsApp. Всё общение с клиентом — внутри сервиса.</div>
       <BackendBadge collection="comms" />
       </div>

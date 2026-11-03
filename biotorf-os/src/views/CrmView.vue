@@ -8,6 +8,7 @@ import StatusPill from '@/components/ui/StatusPill.vue';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 import CrmImportModal from '@/components/CrmImportModal.vue';
 import CrmRowModal from '@/components/CrmRowModal.vue';
+import ManualLink from '@/components/ui/ManualLink.vue';
 
 const rowModal = ref(null);   // { coll, record? } — ручное добавление/редактирование
 
@@ -54,6 +55,7 @@ const commsUnread = (farmId) => db.comms.filter((c) => c.farmId === farmId && !c
     <div class="pagehead">
       <div>
         <h1>Клиенты и хозяйства</h1>
+        <ManualLink />
         <div class="subtitle">Реестр хозяйств, контактов и входящих лидов</div>
       </div>
       <BackendBadge collection="farms" />

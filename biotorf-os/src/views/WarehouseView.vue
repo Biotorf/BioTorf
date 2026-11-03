@@ -6,6 +6,7 @@ import { useFormatters } from '@/composables/useFormatters';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 
 import CrmRowModal from '@/components/CrmRowModal.vue';
+import ManualLink from '@/components/ui/ManualLink.vue';
 const rowColl = ref('warehouse');
 const rowOpen = ref(false);
 const editRec = ref(null);
@@ -30,6 +31,7 @@ const totals = computed(() => ({
     <div class="pagehead">
       <div>
         <h1>Склад</h1>
+        <ManualLink />
         <div class="subtitle">Остатки продукции и резервы под заказы</div>
       </div>
       <BackendBadge collection="warehouse" />

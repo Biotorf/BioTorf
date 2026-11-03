@@ -6,6 +6,7 @@ import { useFormatters } from '@/composables/useFormatters';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 
 import CrmRowModal from '@/components/CrmRowModal.vue';
+import ManualLink from '@/components/ui/ManualLink.vue';
 const rowColl = ref('media');
 const rowOpen = ref(false);
 const editRec = ref(null);
@@ -26,6 +27,7 @@ const rows = computed(() =>
     <div class="pagehead">
       <div>
         <h1>Медиатека</h1>
+        <ManualLink />
         <div class="subtitle">Фото и видео ДО / ПОСЛЕ, материалы для кейсов и соцсетей</div>
       </div>
       <BackendBadge collection="media" />

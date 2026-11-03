@@ -4,6 +4,7 @@ import { computed } from 'vue';
 import { useDbStore } from '@/stores/db';
 import { useFormatters } from '@/composables/useFormatters';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
+import ManualLink from '@/components/ui/ManualLink.vue';
 
 const db = useDbStore();
 const { money, num } = useFormatters();
@@ -35,6 +36,7 @@ const funnel = computed(() => {
     <div class="pagehead">
       <div>
         <h1>Аналитика</h1>
+        <ManualLink />
         <div class="subtitle">Сводные показатели продаж, агрономии и финансов</div>
       </div>
       <BackendBadge />

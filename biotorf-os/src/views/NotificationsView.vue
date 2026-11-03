@@ -6,6 +6,7 @@ import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
 import { useFormatters } from '@/composables/useFormatters';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
+import ManualLink from '@/components/ui/ManualLink.vue';
 
 const db = useDbStore();
 const ui = useUiStore();
@@ -46,6 +47,7 @@ function open(it) { it.open(); }
     <div class="pagehead">
       <div>
         <h1>Уведомления</h1>
+        <ManualLink />
         <div class="subtitle">События, требующие внимания: {{ items.length }}</div>
       <BackendBadge />
       </div>

@@ -6,6 +6,7 @@ import { ref, computed, onMounted } from 'vue';
 import { COMMS_API_URL, checkApi } from '@/api/commsClient';
 import { authHeaders, logout } from '@/api/authClient';
 import { useUiStore } from '@/stores/ui';
+import ManualLink from '@/components/ui/ManualLink.vue';
 
 const ui = useUiStore();
 
@@ -67,6 +68,7 @@ onMounted(load);
     <div class="pagehead">
       <div>
         <h1>Сотрудники и роли</h1>
+        <ManualLink />
         <p class="subtitle">Первый зарегистрированный аккаунт — генеральный директор. Только он выдаёт роли остальным.</p>
       </div>
       <button class="btn slim" @click="load">⟳ Обновить</button>

@@ -6,6 +6,7 @@ import { useFormatters } from '@/composables/useFormatters';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 
 import CrmRowModal from '@/components/CrmRowModal.vue';
+import ManualLink from '@/components/ui/ManualLink.vue';
 const rowColl = ref('skus');
 const rowOpen = ref(false);
 const editRec = ref(null);
@@ -30,6 +31,7 @@ const lines = computed(() => {
     <div class="pagehead">
       <div>
         <h1>Продукция и цены</h1>
+        <ManualLink />
         <div class="subtitle">SKU, рецептуры производственных линий и модель себестоимости</div>
       </div>
       <BackendBadge collection="skus" />

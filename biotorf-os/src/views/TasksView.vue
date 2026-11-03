@@ -9,6 +9,7 @@ import StatusPill from '@/components/ui/StatusPill.vue';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 import CrmImportModal from '@/components/CrmImportModal.vue';
 import CrmRowModal from '@/components/CrmRowModal.vue';
+import ManualLink from '@/components/ui/ManualLink.vue';
 
 const rowModal = ref(null);
 
@@ -60,6 +61,7 @@ function create() {
     <div class="pagehead">
       <div>
         <h1>Задачи</h1>
+        <ManualLink />
         <div class="subtitle">Поручения с исполнителем, сроком и статусом · просрочено: <b :style="lateCount ? 'color:#c62828' : ''">{{ lateCount }}</b></div>
       <BackendBadge collection="tasks" />
       </div>

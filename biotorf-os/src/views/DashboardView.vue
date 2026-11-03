@@ -6,6 +6,7 @@ import { usePermissions } from '@/composables/usePermissions';
 import { useFormatters } from '@/composables/useFormatters';
 import StatCard from '@/components/ui/StatCard.vue';
 import StatusPill from '@/components/ui/StatusPill.vue';
+import ManualLink from '@/components/ui/ManualLink.vue';
 
 const db = useDbStore();
 const ui = useUiStore();
@@ -49,6 +50,7 @@ const pilotControl = computed(() =>
     <div class="pagehead">
       <div>
         <h1>Панель управления</h1>
+        <ManualLink />
         <div class="subtitle">
           Ситуация по компании, критические события и ключевые показатели
         </div>

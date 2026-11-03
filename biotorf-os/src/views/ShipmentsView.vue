@@ -13,6 +13,7 @@ import LogisticsDocEditor from '@/components/forms/LogisticsDocEditor.vue';
 import { toCsv, toXmlSpreadsheet, downloadBlob, printHtml } from '@/utils/spreadsheet';
 
 import CrmRowModal from '@/components/CrmRowModal.vue';
+import ManualLink from '@/components/ui/ManualLink.vue';
 const rowColl = ref('shipments');
 const rowOpen = ref(false);
 
@@ -119,6 +120,7 @@ const partyLabel = computed(() => tab.value === 'supply' ? 'Поставщик' 
     <div class="pagehead">
       <div>
         <h1>Логистика · поставки и выгрузки</h1>
+        <ManualLink />
         <div class="subtitle">Excel-подобные реестры документов движения товара с актами приёма-передачи</div>
       <BackendBadge collection="shipments" />
       </div>

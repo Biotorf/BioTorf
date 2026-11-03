@@ -3,6 +3,7 @@ import { useUiStore } from '@/stores/ui';
 import { useDbStore } from '@/stores/db';
 import { usePermissions } from '@/composables/usePermissions';
 import MiniProfile from '@/components/auth/MiniProfile.vue';
+import ManualLink from '@/components/ui/ManualLink.vue';
 
 const ui = useUiStore();
 const db = useDbStore();
@@ -27,6 +28,7 @@ const { ROLES } = usePermissions();
         ♢<i>{{ db.lateTasks.length }}</i>
       </button>
       <button class="toolbar-icon" @click="ui.go('calendar')" title="Календарь">▦</button>
+      <ManualLink />
       <!-- мини-профиль: аватар с выпадающим меню (Профиль / Выйти) -->
       <MiniProfile />
     </div>

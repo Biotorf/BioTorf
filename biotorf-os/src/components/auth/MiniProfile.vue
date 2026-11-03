@@ -32,7 +32,8 @@ function openProfile() {
 function doLogout() {
   open.value = false;
   logout(); ui.clearSession();
-  // AuthGate в App.vue подхватит отсутствие токена и покажет экран входа
+  // сразу показываем экран входа без ручного обновления страницы
+  location.reload();
 }
 </script>
 

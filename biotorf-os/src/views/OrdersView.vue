@@ -8,6 +8,7 @@ import StatusPill from '@/components/ui/StatusPill.vue';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 import CrmImportModal from '@/components/CrmImportModal.vue';
 import CrmRowModal from '@/components/CrmRowModal.vue';
+import ManualLink from '@/components/ui/ManualLink.vue';
 
 const rowModal = ref(null);
 
@@ -36,6 +37,7 @@ const skuName = (id) => db.skuById(id)?.name || id;
     <div class="pagehead">
       <div>
         <h1>Заказы</h1>
+        <ManualLink />
         <div class="subtitle">Коммерческие заказы: позиции, суммы и статусы</div>
       </div>
       <BackendBadge collection="orders" />
