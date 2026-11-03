@@ -3,7 +3,7 @@
    - навигация → network-first с fallback на кэшированный index.html (офлайн-экран SPA);
    - статика (шрифты/картинки/js/css) → cache-first;
    - API/бэкенд НЕ кэшируем — данные всегда свежие. */
-const VERSION = 'biotorf-pwa-v2';
+const VERSION = 'biotorf-pwa-v3';
 const STATIC_CACHE = `${VERSION}-static`;
 const NAV_CACHE = `${VERSION}-nav`;
 
