@@ -9,7 +9,7 @@ const apiOn = () => typeof apiEnabled === 'function' ? apiEnabled() : !!apiEnabl
 const KEY = 'biotorf-business-os-mvp-2026-10';
 // ключ миграции: если изменится — локальное демо-состояние будет сброшено
 const MIG_KEY = 'biotorf.storage.migration';
-const MIGRATION = 'empty-v2';   // 2026-11: полное удаление тестовых данных (локально + сервер)
+const MIGRATION = 'lists-v3';   // 2026-11: справочники списков (выпадающие с кнопкой «＋»)
 
 // Пустое состояние: без тестовых записей, только справочники и настройки
 function emptyState() {
@@ -22,6 +22,19 @@ function emptyState() {
     clientNotes: [], applications: [], payments: [], media: [], social: [],
     knowledge: [], skus: [], warehouse: [], production: [], clientDocs: [],
     comms: [], logistics: [], marketingAttributions: [], preferences: {},
+    // Справочники для выпадающих списков (значение + кнопка «＋» в модалке).
+    // Значения собираются автоматически из записей, сюда добавляются вручную.
+    lists: {
+      regions: ['Краснодарский край', 'Ростовская область', 'Ставропольский край', 'Алтайский край'],
+      crops: ['пшеница озимая', 'кукуруза', 'подсолнечник', 'соя', 'сахарная свёкла'],
+      sources: ['выставка', 'сайт', 'телеграм', 'реферал', 'холодный звонок'],
+      owners: [],
+      statuses: ['активное'],
+      types: ['агрохолдинг', 'КФХ', 'ИП'],
+      unitPack: ['5 л', '10 л', '200 мл', '1 л'],
+      locations: ['склад А', 'склад Б'],
+      transport: [], drivers: [], plates: [], shifts: [], operators: [], platforms: [],
+    },
     stages: ['Новый лид', 'Связаться', 'Контакт установлен', 'Квалификация',
       'Потенциальный клиент', 'Агрономическая диагностика', 'Предложен пилот',
       'Пилот согласован', 'Пилот идет', 'Результат получен', 'Экономика рассчитана',
@@ -76,6 +89,11 @@ function load() {
     parsed.quotes ??= [];
     parsed.comms ??= [];
     parsed.logistics ??= [];
+    // миграция v3 → v4: справочники выпадающих списков (данные пользователя сохраняются)
+    if (!parsed.lists || !parsed.lists.regions) {
+      parsed.lists = emptyState().lists;
+      parsed.version = 4;
+    }
     // миграция v2 → v3: связанные с маршрутами поля и реестры документов
     if (!parsed.version || parsed.version < 3) {
       for (const d of parsed.deals || []) { d.journeyId ??= null; }
@@ -449,9 +467,41 @@ export const useDbStore = defineStore('db', {
       this.data.invoices ??= [];
       this.data.invoices.unshift(inv);
       j.orderId = order.id; j.invoiceId = inv.id; j.stage = 'Счёт выставлен';
-      this.log(j, `Заказ ${order.id} подтверждён из КП, счёт ${inv.number} выставлен`);
+      // ── автоматическое производство из заказа (BIOTORF в пасте → розлив AGRO/HOME) ──
+      this.autoProductionFromOrder(order);
+      this.log(j, `Заказ ${order.id} подтверждён из КП, счёт ${inv.number} выставлен, партия в производстве`);
       this.save('Заказ и счёт из КП', `${j.id} → ${order.id}`);
       return { order, invoice: inv };
+    },
+    // Создать производственную партию автоматически при подтверждении заказа:
+    // продукт «паста» — начальное неразбавленное состояние, разбавление на
+    // BIOTORF Agro (5/10 л) и Home (200 мл/1 л) делает производство.
+    autoProductionFromOrder(order) {
+      this.data.production ??= [];
+      const skuRec = order.sku ? this.skuById(order.sku) : null;
+      const prodName = order.product || skuRec?.name || 'BIOTORF (паста → розлив)';
+      const lot = 'Л-' + new Date().toISOString().slice(2, 10).replace(/-/g, '') + '-' + String(Date.now()).slice(-4);
+      const batch = {
+        id: this.uid('P'), date: order.date || new Date().toISOString().slice(0, 10),
+        product: prodName, batch: lot, qty: order.qty || order.volumeL || 0, unit: order.unit || 'шт.',
+        shift: 'Автоматически', operator: order.owner || 'Производство',
+        status: 'План', orderId: order.id,
+        notes: `Автопартия из заказа ${order.num || order.id}. Основание: паста (концентрат), розлив: Agro 5/10 л · Home 200 мл/1 л.`,
+      };
+      this.data.production.unshift(batch);
+      order.status = 'В производство';
+      // резерв с пометкой на складе (без автосписания фактического остатка)
+      this.data.warehouse ??= [];
+      for (const it of order.items || []) {
+        const name = it.sku ? this.skuById(it.sku)?.name : it.name;
+        if (!name) continue;
+        this.data.warehouse.unshift({
+          id: this.uid('W'), sku: it.sku || name, batch: lot, qty: it.qty || 0, unit: it.unit || 'л',
+          location: 'склад А', expiry: '', status: 'Зарезервировано', orderId: order.id,
+          notes: `Резерв под заказ ${order.num || order.id} (авто)`,
+        });
+      }
+      return batch;
     },
     markInvoicePaid(invoiceId) {
       const inv = this.invoiceById(invoiceId);
@@ -638,6 +688,36 @@ export const useDbStore = defineStore('db', {
     async importCsvFile(coll, file, mode = 'merge') {
       const text = await file.text();
       return this.importCollection(coll, this.csvToRecords(text), mode);
+    },
+    // ── Справочники выпадающих списков ────────────────────────────────
+    // Добавить значение в список вручную (кнопка «＋» в модалке) или
+    // автоматически при сохранении записи. Без дубликатов, регистронезависимо.
+    addListItem(listKey, value) {
+      const v = String(value ?? '').trim();
+      if (!v) return false;
+      this.data.lists ??= {};
+      const arr = (this.data.lists[listKey] ??= []);
+      if (arr.some((x) => String(x).toLowerCase() === v.toLowerCase())) return false;
+      arr.push(v);
+      this.save(`Справочник «${listKey}»: ${v}`, 'lists');
+      this.queueCrmSync?.();
+      return true;
+    },
+    // Собрать значения поля из всех записей коллекции в справочник
+    collectList(listKey, coll, field) {
+      for (const rec of this.data[coll] || []) {
+        const v = rec?.[field];
+        if (typeof v === 'string' && v.trim()) this.addListItem(listKey, v);
+      }
+    },
+    // Список для модалки: справочник + все уникальные значения из существующих записей
+    optionsFor(listKey, coll, field) {
+      const set = new Set(this.data.lists?.[listKey] || []);
+      for (const rec of this.data[coll] || []) {
+        const v = rec?.[field];
+        if (typeof v === 'string' && v.trim()) set.add(v.trim());
+      }
+      return [...set].sort((a, b) => a.localeCompare(b, 'ru'));
     },
     async wipeCollection(coll) {
       if (!SYNC_COLLECTIONS.includes(coll)) throw new Error('Неизвестная таблица: ' + coll);

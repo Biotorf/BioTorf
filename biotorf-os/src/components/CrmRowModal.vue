@@ -36,6 +36,8 @@ const SCHEMAS = {
   social:     ['id', 'platform', 'title', 'status', 'scheduledDate', 'link'],
 };
 
+// Статусы пилотов — из справочника этапов (db.pilotStages), они же ENUM для status в pilots
+
 const NUM_FIELDS = new Set(['area', 'volumeL', 'amount', 'qty', 'price', 'stock', 'primary']);
 const BOOL_FIELDS = new Set(['paid']);
 const LONG_FIELDS = new Set(['notes', 'text', 'route', 'result', 'tags']);
@@ -48,6 +50,64 @@ const COLL_RU = {
   pilots: 'Пилоты', quotes: 'КП', journeys: 'Маршруты клиентов', knowledge: 'База знаний',
   media: 'Медиа', social: 'Соцсети',
 };
+
+// ── Выпадающие списки с кнопкой «＋» ────────────────────────────────
+// Ключ справочника db.lists → откуда брать значения. optionsFor() объединяет
+// справочник со всеми уникальными значениями поля из существующих записей,
+// поэтому новые хозяйства/контакты/товары появляются в списках автоматически.
+const LIST_FIELD = {
+  region: 'regions', crop: 'crops', source: 'sources', owner: 'owners',
+  status: 'statuses', type: 'types', stage: null, unit: 'unitPack',
+  location: 'locations', transport: 'transport', driver: 'drivers',
+  plate: 'plates', shift: 'shifts', operator: 'operators', platform: 'platforms',
+  product: 'products', priority: 'priorities', method: 'methods', category: 'categories',
+};
+// Поля-ссылки на записи других таблиц (value = ID, подпись = название)
+const REF_FIELD = { farmId: 'farms', dealId: 'deals', orderId: 'orders', invoiceId: 'invoices', leadId: 'leads', sku: 'skus' };
+// Жёсткие перечисления (этапы воронки, приоритеты и т.п.)
+const ENUM_FIELD = {
+  stage: () => [...(db.data.stages || [])],
+  pilotStage: () => [...(db.data.pilotStages || [])],
+  priority: () => ['Низкий', 'Обычный', 'Высокий', 'Критический'],
+  paid: () => ['нет', 'да'],
+  primary: () => ['нет', 'да'],
+  refKind: () => ['deal', 'lead', 'farm', 'order', 'invoice', 'shipment', 'pilot', 'journey', 'quote', 'task'],
+  method: () => db.optionsFor('methods', 'payments', 'method'),
+  category: () => db.optionsFor('categories', 'skus', 'category'),
+  // статусы по коллекциям: фиксированный набор + то, что уже есть в данных
+  status: () => {
+    if (props.coll === 'pilots') return [...(db.data.pilotStages || [])];
+    const base = {
+      orders: ['Новый', 'Подтверждён', 'В производство', 'Готов к отгрузке', 'Оплачен', 'Отгружен', 'Отменён'],
+      invoices: ['Выставлен', 'Оплачен', 'Просрочен'],
+      shipments: ['Запланирована', 'В пути', 'Доставлена', 'Получено клиентом'],
+      warehouse: ['В наличии', 'Зарезервировано', 'Списан'],
+      production: ['План', 'В работе', 'Завершено'],
+      tasks: ['Открыта', 'В работе', 'Выполнена'],
+      quotes: ['Черновик', 'Отправлено', 'Принят', 'Отклонено'],
+      leads: ['Новый', 'В работе', 'Квалифицирован', 'Отказ'],
+      deals: [], pilots: [], social: ['Идея', 'В работе', 'Запланировано', 'Опубликовано'],
+      media: [], knowledge: [], contacts: [], farms: [], skus: [],
+    }[props.coll] || [];
+    const seen = new Set(base);
+    for (const r of db.data[props.coll] || []) {
+      if (typeof r.status === 'string' && r.status.trim()) seen.add(r.status.trim());
+    }
+    return [...seen];
+  },
+};
+function listKeyFor(k) { return LIST_FIELD[k]; }
+function isSelectField(k) {
+  return k in ENUM_FIELD || k in REF_FIELD || !!LIST_FIELD[k];
+}
+function selectOptions(k) {
+  if (k in ENUM_FIELD) return ENUM_FIELD[k]();
+  if (k in REF_FIELD) {
+    const coll = REF_FIELD[k];
+    return (db.data[coll] || []).map((r) => ({ value: r.id, label: `${r.name || r.title || r.number || r.id} · ${r.id}` }));
+  }
+  return db.optionsFor(LIST_FIELD[k], props.coll, k).map((v) => ({ value: v, label: v }));
+}
 const FIELD_RU = {
   id: 'ID (не менять)', name: 'Название', contactName: 'Контактное лицо', phone: 'Телефон',
   company: 'Компания', region: 'Регион', source: 'Источник', owner: 'Ответственный',
@@ -113,6 +173,14 @@ async function save() {
       rec.id = `${props.coll.slice(0, 2).toUpperCase()}-${String(Date.now()).slice(-8)}-${Math.floor(Math.random() * 900 + 100)}`;
     }
     await db.importCollection(props.coll, [rec], 'merge');
+    // автопополнение выпадающих списков: регионы/культуры/ответственные из новой
+    // записи попадают в справочник — в следующих таблицах они уже в списке
+    for (const k of fields.value) {
+      const lk = listKeyFor(k);
+      if (lk && typeof rec[k] === 'string' && rec[k].trim()) db.addListItem(lk, rec[k]);
+    }
+    // новые хозяйства/товары автоматически становятся опциями в связанных таблицах
+    if (props.coll === 'farms' && rec.name) db.addListItem('owners', rec.owner || '');
     emit('saved', rec);
     emit('close');
   } catch (e) {
@@ -120,6 +188,18 @@ async function save() {
   } finally {
     busy.value = false;
   }
+}
+
+// ── ручное добавление значения в справочник прямо из модалки (кнопка «＋») ──
+const adding = ref({});   // field -> значение инпута
+const addingOpen = ref('');  // поле, у которого открыта строка ввода нового значения
+function quickAdd(k) {
+  const lk = LIST_FIELD[k];
+  const v = (adding.value[k] || '').trim();
+  if (!lk || !v) return;
+  db.addListItem(lk, v);
+  form.value[k] = v;
+  adding.value[k] = '';
 }
 
 async function removeRecord() {
@@ -147,9 +227,26 @@ async function removeRecord() {
         <button class="x" @click="emit('close')">✕</button>
       </div>
       <div class="body">
-        <label v-for="k in fields" :key="k" class="field">
+        <label v-for="k in fields" :key="k" class="field" :class="{ wide: LONG_FIELDS.has(k) }">
           <span class="fname">{{ fieldLabel(k) }}</span>
-          <textarea v-if="LONG_FIELDS.has(k)" v-model="form[k]" rows="3"></textarea>
+          <!-- выпадающий список + кнопка «＋» добавления нового значения -->
+          <template v-if="isSelectField(k)">
+            <div class="selrow">
+              <select class="input" v-model="form[k]">
+                <option value="">— не выбрано —</option>
+                <option v-for="o in selectOptions(k)" :key="o.value ?? o" :value="o.value ?? o">{{ o.label ?? o }}</option>
+                <!-- значение может быть введено раньше и отсутствовать в списке — оставляем его -->
+                <option v-if="form[k] && !selectOptions(k).some((o) => (o.value ?? o) === form[k])" :value="form[k]">{{ form[k] }} (текущее)</option>
+              </select>
+              <button v-if="LIST_FIELD[k]" type="button" class="btn slim plus" title="Добавить новое значение в список"
+                      @click.prevent="addingOpen = addingOpen === k ? '' : k">＋</button>
+            </div>
+            <div v-if="LIST_FIELD[k] && addingOpen === k" class="addrow">
+              <input class="input" v-model="adding[k]" placeholder="Новое значение…" @keyup.enter="quickAdd(k); addingOpen = ''" />
+              <button type="button" class="btn primary slim" @click="quickAdd(k); addingOpen = ''">Добавить</button>
+            </div>
+          </template>
+          <textarea v-else-if="LONG_FIELDS.has(k)" v-model="form[k]" rows="3"></textarea>
           <input v-else v-model="form[k]" :type="NUM_FIELDS.has(k) ? 'number' : 'text'" />
         </label>
         <div v-if="error" class="err">{{ error }}</div>
@@ -174,6 +271,12 @@ async function removeRecord() {
 .fname { color: #5d7168; }
 .field input, .field textarea { border: 1px solid #cfddd5; border-radius: 8px; padding: 7px 9px; font: inherit; background: #fbfdfc; }
 .field textarea { resize: vertical; }
+.field.wide { grid-column: 1 / -1; }
+.selrow { display: flex; gap: 6px; align-items: stretch; }
+.selrow select { flex: 1; border: 1px solid #cfddd5; border-radius: 8px; padding: 7px 9px; font: inherit; background: #fbfdfc; min-width: 0; }
+.btn.plus { flex: none; width: 34px; padding: 0; font-size: 16px; line-height: 1; border-radius: 8px; }
+.addrow { display: flex; gap: 6px; margin-top: 6px; }
+.addrow .input { flex: 1; min-width: 0; }
 .err { grid-column: 1 / -1; color: #c0392b; font-size: 12px; }
 .foot { padding: 12px 16px; border-top: 1px solid #e3ece7; display: flex; justify-content: flex-end; gap: 8px; }
 </style>

@@ -34,7 +34,7 @@ const STATUSES = ['Все', 'План', 'В работе', 'Завершено']
       <button class="btn primary slim" @click="rowOpen = true" title="Добавить запись вручную">＋ Добавить</button>
     </div>
 
-    <div class="note">Статусы партий не списывают сырьё и не резервируют склад автоматически — сверяйте остатки на складе.</div>
+    <div class="note">Партии создаются автоматически при подтверждении заказа (раздел «Заказы»). Статусы партий не списывают сырьё и не резервируют склад автоматически — сверяйте остатки на складе. Основание производства — паста (концентрат), розлив: BIOTORF Agro 5/10 л, Home 200 мл/1 л.</div>
 
     <div class="toolbar">
       <select v-model="statusFilter" class="select" style="max-width:220px"><option v-for="s in STATUSES" :key="s">{{ s }}</option></select>

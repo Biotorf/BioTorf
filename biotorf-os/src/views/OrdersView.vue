@@ -50,6 +50,8 @@ const skuName = (id) => db.skuById(id)?.name || id;
       <button class="btn primary slim" @click="rowModal = { coll: 'orders' }">＋ Заказ</button>
     </div>
 
+    <div class="note">При подтверждении заказа производственная партия создаётся автоматически (раздел «Производство»), склад резервирует позиции. Основание — паста (концентрат), розлив на BIOTORF Agro (5/10 л) и Home (200 мл/1 л) выполняет производство.</div>
+
     <section class="panel">
       <table class="table">
         <thead><tr><th>Заказ</th><th>Хозяйство</th><th>Продукт</th><th>Кол-во</th><th>Сумма</th><th>Дата</th><th>Статус</th><th></th></tr></thead>
