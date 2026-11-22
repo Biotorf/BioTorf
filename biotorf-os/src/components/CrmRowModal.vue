@@ -3,7 +3,7 @@
 // Поля выводятся по типовому набору для коллекции (или по ключам существующих
 // записей). Сохранение идёт через db.importCollection(coll, [rec], 'merge') —
 // тот же путь, что и CSV-импорт: сервер + локальный кэш.
-import { ref, computed, watch } from 'vue';
+import { ref, computed, watch, onMounted } from 'vue';
 import { useDbStore } from '@/stores/db';
 
 const props = defineProps({
@@ -102,7 +102,10 @@ function isSelectField(k) {
   return k in ENUM_FIELD || k in REF_FIELD || !!LIST_FIELD[k];
 }
 function selectOptions(k) {
-  if (k in ENUM_FIELD) return ENUM_FIELD[k]();
+  if (k in ENUM_FIELD) {
+    const base = ENUM_FIELD[k]();
+    return LIST_FIELD[k] ? [...new Set([...base, ...db.optionsFor(LIST_FIELD[k], props.coll, k)])] : base;
+  }
   if (k in REF_FIELD) {
     const coll = REF_FIELD[k];
     return (db.data[coll] || []).map((r) => ({ value: r.id, label: `${r.name || r.title || r.number || r.id} · ${r.id}` }));
@@ -188,13 +191,14 @@ async function save() {
       rec[k] = v;
     }
     await db.importCollection(props.coll, [rec], 'merge');
-    // автопополнение выпадающих списков: регионы/культуры/ответственные из новой
-    // записи попадают в справочник — в следующих таблицах они уже в списке
+    const options = {};
     for (const k of fields.value) {
-      const lk = listKeyFor(k);
-      if (lk && typeof rec[k] === 'string' && rec[k].trim()) db.addListItem(lk, rec[k]);
+      const key = listKeyFor(k);
+      if (key && typeof rec[k] === 'string' && rec[k].trim()) {
+        (options[key] ??= []).push(rec[k].trim());
+      }
     }
-    // новые хозяйства/товары автоматически становятся опциями в связанных таблицах
+    db.mergeListOptions(options);
     emit('saved', rec);
     emit('close');
   } catch (e) {
@@ -207,13 +211,32 @@ async function save() {
 // ── ручное добавление значения в справочник прямо из модалки (кнопка «＋») ──
 const adding = ref({});   // field -> значение инпута
 const addingOpen = ref('');  // поле, у которого открыта строка ввода нового значения
-function quickAdd(k) {
-  const lk = LIST_FIELD[k];
-  const v = (adding.value[k] || '').trim();
-  if (!lk || !v) return;
-  db.addListItem(lk, v);
-  form.value[k] = v;
-  adding.value[k] = '';
+const addingBusy = ref(false);
+const optionsError = ref('');
+
+onMounted(async () => {
+  try {
+    await db.refreshListOptions();
+  } catch {
+    optionsError.value = 'Не удалось обновить общий справочник.';
+  }
+});
+
+async function quickAdd(k) {
+  const key = LIST_FIELD[k];
+  const value = (adding.value[k] || '').trim();
+  if (!key || !value || addingBusy.value || busy.value) return;
+  addingBusy.value = true;
+  optionsError.value = '';
+  try {
+    form.value[k] = await db.addListItem(key, value);
+    adding.value[k] = '';
+    addingOpen.value = '';
+  } catch (e) {
+    optionsError.value = e.message;
+  } finally {
+    addingBusy.value = false;
+  }
 }
 
 async function removeRecord() {
@@ -256,20 +279,21 @@ async function removeRecord() {
                       @click.prevent="addingOpen = addingOpen === k ? '' : k">＋</button>
             </div>
             <div v-if="LIST_FIELD[k] && addingOpen === k" class="addrow">
-              <input class="input" v-model="adding[k]" placeholder="Новое значение…" @keyup.enter="quickAdd(k); addingOpen = ''" />
-              <button type="button" class="btn primary slim" @click="quickAdd(k); addingOpen = ''">Добавить</button>
+              <input class="input" v-model="adding[k]" placeholder="Новое значение…" maxlength="500" @keyup.enter="quickAdd(k)" />
+              <button type="button" class="btn primary slim" :disabled="addingBusy || busy" @click="quickAdd(k)">Добавить</button>
             </div>
           </template>
           <textarea v-else-if="LONG_FIELDS.has(k)" v-model="form[k]" rows="3"></textarea>
           <input v-else v-model="form[k]" :readonly="k === 'id' && isEdit" :inputmode="NUM_FIELDS.has(k) ? 'decimal' : undefined" />
         </label>
+        <div v-if="optionsError" class="err" role="alert">{{ optionsError }}</div>
         <div v-if="error" class="err">{{ error }}</div>
       </div>
       <div class="foot">
         <button v-if="isEdit" class="btn slim danger-text" :disabled="busy" @click="removeRecord">🗑 Удалить запись</button>
         <span style="flex:1"></span>
         <button class="btn ghost slim" @click="emit('close')">Отмена</button>
-        <button class="btn primary slim" :disabled="busy" @click="save">{{ busy ? 'Сохранение…' : 'Сохранить' }}</button>
+        <button class="btn primary slim" :disabled="busy || addingBusy" @click="save">{{ busy ? 'Сохранение…' : 'Сохранить' }}</button>
       </div>
     </div>
   </div>

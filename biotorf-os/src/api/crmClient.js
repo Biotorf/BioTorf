@@ -19,6 +19,8 @@ async function req(path, options = {}) {
 export const crmApi = {
   online: () => checkApi(),
   getState: () => req('/api/crm/state'),
+  getOptions: () => req('/api/crm/options'),
+  addOptions: (options) => req('/api/crm/options', { method: 'POST', body: JSON.stringify(options) }),
   putState: (payload) => req('/api/crm/state', { method: 'PUT', body: JSON.stringify(payload) }),
   seed: (payload) => req('/api/crm/seed', { method: 'POST', body: JSON.stringify(payload) }),
   list: (coll) => req(`/api/crm/${coll}`).then((r) => r.items),

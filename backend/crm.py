@@ -21,6 +21,7 @@ API (подключается в main.py префиксом /api/crm):
          shipment + tasks (всё, что связано с маршрутом)
 """
 
+import hashlib
 import json
 import sqlite3
 from datetime import datetime, timezone
@@ -31,6 +32,43 @@ COLLECTIONS = (
     "applications", "payments", "media", "social", "knowledge", "skus",
     "warehouse", "production", "clientDocs",
 )
+
+OPTION_LISTS = frozenset({
+    "regions", "crops", "sources", "owners", "statuses", "types", "unitPack",
+    "locations", "transport", "drivers", "plates", "shifts", "operators",
+    "platforms", "products", "priorities", "methods", "categories",
+})
+OPTION_COLLECTION = "crmOptions"
+
+
+def get_options(conn) -> dict:
+    options = {}
+    for record in list_records(conn, OPTION_COLLECTION):
+        options.setdefault(record["listKey"], []).append(record["value"])
+    return options
+
+
+def add_options(conn, options: dict) -> dict:
+    rows = []
+    for key, values in options.items():
+        if key not in OPTION_LISTS or not isinstance(values, list):
+            raise ValueError("Неизвестный справочник или неверный список значений")
+        for raw in values:
+            if not isinstance(raw, str) or not (value := raw.strip()) or len(value) > 500:
+                raise ValueError("Значение справочника должно содержать от 1 до 500 символов")
+            identity = hashlib.sha256(f"{key}:{value.casefold()}".encode()).hexdigest()
+            data = json.dumps({"listKey": key, "value": value}, ensure_ascii=False)
+            rows.append((identity, OPTION_COLLECTION, data, _now()))
+
+    for row in rows:
+        conn.execute(
+            "INSERT INTO crm_records (id, coll, data, updated) VALUES (?,?,?,?) "
+            "ON CONFLICT(coll,id) DO NOTHING",
+            row,
+        )
+    conn.commit()
+    return get_options(conn)
+
 
 SCHEMA_CRM = """
 CREATE TABLE IF NOT EXISTS crm_records (

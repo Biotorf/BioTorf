@@ -1205,6 +1205,21 @@ def crm_state():
     return crm.get_state(store.connect())
 
 
+@app.get("/api/crm/options")
+def crm_options():
+    with store.connect() as conn:
+        return crm.get_options(conn)
+
+
+@app.post("/api/crm/options")
+def crm_add_options(body: dict):
+    try:
+        with store.connect() as conn:
+            return crm.add_options(conn, body)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+
 @app.post("/api/crm/seed")
 def crm_seed(body: dict):
     """Первичное наполнение сервера демо-данными (однократно, пустые коллекции)."""

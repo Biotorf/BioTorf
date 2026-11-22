@@ -699,25 +699,31 @@ export const useDbStore = defineStore('db', {
       const text = await file.text();
       return this.importCollection(coll, this.csvToRecords(text), mode);
     },
-    // ── Справочники выпадающих списков ────────────────────────────────
-    // Добавить значение в список вручную (кнопка «＋» в модалке) или
-    // автоматически при сохранении записи. Без дубликатов, регистронезависимо.
-    addListItem(listKey, value) {
-      const v = String(value ?? '').trim();
-      if (!v) return false;
-      this.data.lists ??= {};
-      const arr = (this.data.lists[listKey] ??= []);
-      if (arr.some((x) => String(x).toLowerCase() === v.toLowerCase())) return false;
-      arr.push(v);
-      this.save(`Справочник «${listKey}»: ${v}`, 'lists', false);
-      return true;
-    },
-    // Собрать значения поля из всех записей коллекции в справочник
-    collectList(listKey, coll, field) {
-      for (const rec of this.data[coll] || []) {
-        const v = rec?.[field];
-        if (typeof v === 'string' && v.trim()) this.addListItem(listKey, v);
+    async refreshListOptions() {
+      if (!apiOn() && !(await checkApi())) return;
+      const shared = await crmApi.getOptions();
+      const defaults = emptyState().lists;
+      const pending = {};
+      for (const [key, values] of Object.entries(this.data.lists || {})) {
+        const known = new Set([...(defaults[key] || []), ...(shared[key] || [])].map((v) => v.toLowerCase()));
+        const local = values.filter((v) => v.trim() && v.length <= 500 && !known.has(v.trim().toLowerCase()));
+        if (local.length) pending[key] = local;
       }
+      this.mergeListOptions(Object.keys(pending).length ? await crmApi.addOptions(pending) : shared);
+    },
+    async addListItem(listKey, value) {
+      if (!apiOn() && !(await checkApi())) throw new Error('Сервер недоступен. Значение не сохранено в общем справочнике.');
+      const shared = await crmApi.addOptions({ [listKey]: [value] });
+      this.mergeListOptions(shared);
+      return shared[listKey].find((v) => v.toLowerCase() === value.toLowerCase()) || value;
+    },
+    mergeListOptions(shared) {
+      this.data.lists ??= {};
+      for (const [key, values] of Object.entries(shared)) {
+        const merged = new Map([...(this.data.lists[key] || []), ...values].map((v) => [v.toLowerCase(), v]));
+        this.data.lists[key] = [...merged.values()];
+      }
+      try { localStorage.setItem(KEY, JSON.stringify(this.data)); } catch { /* noop */ }
     },
     // Список для модалки: справочник + все уникальные значения из существующих записей
     optionsFor(listKey, coll, field) {
