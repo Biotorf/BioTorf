@@ -1,11 +1,10 @@
 <script setup>
+import CrmDataTable from '@/components/CrmDataTable.vue';
 // «Агрономия» (руководство v0.9 §8): список пилотов, регистрации обработок и
 // результатов; клик — карточка пилота (§5) + переход в связанный сквозной процесс.
 import { computed, ref } from 'vue';
 import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
-import { useFormatters } from '@/composables/useFormatters';
-import StatusPill from '@/components/ui/StatusPill.vue';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 
 import CrmRowModal from '@/components/CrmRowModal.vue';
@@ -17,7 +16,6 @@ function openEdit(rec) { editRec.value = rec; rowOpen.value = true; }
 
 const db = useDbStore();
 const ui = useUiStore();
-const { day, num } = useFormatters();
 
 const STATUSES = computed(() => ['Все', ...new Set([...(db.data.pilotStages || []), ...db.pilots.map((p) => p.status).filter(Boolean)])]);
 const statusFilter = ref('Все');
@@ -32,7 +30,6 @@ const pilots = computed(() =>
     })
 );
 
-const appsOf = (pid) => (db.data.applications || []).filter((a) => a.pilotId === pid);
 </script>
 
 <template>
@@ -55,23 +52,13 @@ const appsOf = (pid) => (db.data.applications || []).filter((a) => a.pilotId ===
     </div>
 
     <section class="panel">
-      <table class="table">
-        <thead><tr><th>Пилот</th><th>Культура</th><th>Площадь, га</th><th>Ответственный</th><th>След. контроль</th><th>Обработок</th><th>Статус</th><th></th><th></th></tr></thead>
-        <tbody>
-          <tr v-for="p in pilots" :key="p.id" class="row-click" @click="ui.openRecord('pilot', p.id)">
-            <td><b>{{ p.title || p.id }}</b><div class="mini">{{ p.farmName || '' }}</div></td>
-            <td>{{ p.crop || '—' }}</td>
-            <td>{{ num(p.area) }}</td>
-            <td>{{ p.owner || '—' }}</td>
-            <td>{{ day(p.nextCheck || p.next) }}</td>
-            <td>{{ appsOf(p.id).length }}</td>
-            <td><StatusPill :status="p.status" /></td>
-            <td><button v-if="p.journeyId" class="btn slim" @click.stop="ui.openJourney(p.journeyId)">Процесс</button></td>
-            <td><button class="btn slim ghost" title="Редактировать" @click.stop="openEdit(p)">✎ Изменить</button></td>
-          </tr>
-          <tr v-if="!pilots.length"><td colspan="9" class="empty">Пилотов нет. Пилот создаётся из сквозного процесса для агропроизводителя (§3 шаг 5).</td></tr>
-        </tbody>
-      </table>
+      <CrmDataTable coll="pilots" :rows="pilots" empty="Пилотов нет.">
+        <template #actions="{ row: p }">
+          <button class="btn slim ghost" @click="ui.openRecord('pilot', p.id)">Открыть</button>
+          <button v-if="p.journeyId" class="btn slim ghost" @click="ui.openJourney(p.journeyId)">Процесс</button>
+          <button class="btn slim ghost" @click="openEdit(p)">Изменить</button>
+        </template>
+      </CrmDataTable>
     </section>
 
     <div class="note" style="margin-top:12px">

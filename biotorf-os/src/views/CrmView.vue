@@ -1,10 +1,9 @@
 <script setup>
+import CrmDataTable from '@/components/CrmDataTable.vue';
 import { computed, ref } from 'vue';
 import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
 import { usePermissions } from '@/composables/usePermissions';
-import { useFormatters } from '@/composables/useFormatters';
-import StatusPill from '@/components/ui/StatusPill.vue';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 import CrmImportModal from '@/components/CrmImportModal.vue';
 import CrmRowModal from '@/components/CrmRowModal.vue';
@@ -17,7 +16,6 @@ const importColl = ref('');   // непусто — открыта модалк�
 const db = useDbStore();
 const ui = useUiStore();
 const { canSeeFarm } = usePermissions();
-const { num, day } = useFormatters();
 
 const farms = computed(() =>
   db.farms
@@ -44,9 +42,7 @@ const leads = computed(() =>
         .join(' ').toLowerCase().includes(q);
     })
 );
-const journeyOf = (leadId) => db.journeys.find((j) => j.leadId === leadId);
 
-const commsCount = (farmId) => db.comms.filter((c) => c.farmId === farmId).length;
 const commsUnread = (farmId) => db.comms.filter((c) => c.farmId === farmId && !c.read).length;
 </script>
 
@@ -77,79 +73,22 @@ const commsUnread = (farmId) => db.comms.filter((c) => c.farmId === farmId && !c
       <span class="mini">{{ leads.length }} записей</span>
     </div>
     <div class="table-wrap" style="margin-bottom:18px">
-      <table class="table">
-        <thead>
-          <tr>
-            <th>Тема обращения</th>
-            <th>Контакт / телефон</th>
-            <th>Компания / регион</th>
-            <th>Источник</th>
-            <th>Ответственный</th>
-            <th>Статус</th>
-            <th>Следующий контакт</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="l in leads" :key="l.id" class="clickrow" @click="ui.openLeadCard(l.id)">
-            <td>
-              <span class="txt-link">{{ l.name }}</span>
-              <div class="mini">{{ l.id }}<template v-if="l.farmId"> · хозяйство {{ l.farmId }}</template><template v-else> · Не известно / создадим при квалификации</template></div>
-            </td>
-            <td>{{ l.contactName || '—' }}<div class="mini">{{ l.phone || '' }}</div></td>
-            <td>{{ l.company || '—' }}<div class="mini">{{ l.region || '' }}</div></td>
-            <td>{{ l.source || '—' }}</td>
-            <td>{{ l.owner }}</td>
-            <td><StatusPill :status="l.status" /></td>
-            <td>{{ day(l.next) }}</td>
-            <td @click.stop><button class="btn slim ghost" @click="rowModal = { coll: 'leads', record: l }">✎</button></td>
-          </tr>
-        </tbody>
-      </table>
-      <div v-if="!leads.length" class="empty">Нет входящих обращений по текущему фильтру.</div>
+      <CrmDataTable coll="leads" :rows="leads" empty="Нет входящих обращений по текущему фильтру.">
+        <template #actions="{ row: l }">
+          <button class="btn slim ghost" @click="ui.openLeadCard(l.id)">Открыть лид</button>
+          <button class="btn slim ghost" @click="rowModal = { coll: 'leads', record: l }">Изменить</button>
+        </template>
+      </CrmDataTable>
     </div>
 
     <div class="table-wrap">
-      <table class="table">
-        <thead>
-          <tr>
-            <th>Клиент / хозяйство</th>
-            <th>Регион</th>
-            <th>Культура</th>
-            <th>Площадь</th>
-            <th>Менеджер</th>
-            <th>Статус</th>
-            <th>След. контакт</th>
-            <th>Связь</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="f in farms"
-            :key="f.id"
-            class="clickrow"
-            @click="ui.openClient(f.id)"
-          >
-            <td>
-              <span class="txt-link">{{ f.name }}</span>
-              <div class="mini">{{ f.type }} · {{ f.id }}</div>
-            </td>
-            <td>{{ f.region }}</td>
-            <td>{{ f.crop }}</td>
-            <td>{{ num(f.area) }} га</td>
-            <td>{{ f.owner }}</td>
-            <td><StatusPill :status="f.status" /></td>
-            <td>{{ day(f.next) }}</td>
-            <td @click.stop>
-              <button class="btn slim ghost" title="Открыть переписку и звонки" @click="ui.openComms(f.id)">
-                ☎ {{ commsCount(f.id) }}<template v-if="commsUnread(f.id)"> · <span class="pill red">{{ commsUnread(f.id) }}</span></template>
-              </button>
-            </td>
-            <td @click.stop><button class="btn slim ghost" @click="rowModal = { coll: 'farms', record: f }">✎ Изменить</button></td>
-          </tr>
-        </tbody>
-      </table>
+      <CrmDataTable coll="farms" :rows="farms" empty="Хозяйств нет.">
+        <template #actions="{ row: f }">
+          <button class="btn slim ghost" @click="ui.openClient(f.id)">Карточка клиента</button>
+          <button class="btn slim ghost" @click="ui.openComms(f.id)">Переписка<template v-if="commsUnread(f.id)"> · {{ commsUnread(f.id) }}</template></button>
+          <button class="btn slim ghost" @click="rowModal = { coll: 'farms', record: f }">Изменить</button>
+        </template>
+      </CrmDataTable>
     </div>
 
     <CrmImportModal v-if="importColl" :coll="importColl" @close="importColl = ''" />

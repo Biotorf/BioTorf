@@ -1,11 +1,11 @@
 <script setup>
+import { crmFieldLabel } from '@/data/crmFields';
+import CrmDataTable from '@/components/CrmDataTable.vue';
 // «Задачи» (руководство v0.9 §7): реестр поручений — исполнитель, срок, статус.
 // Клик по строке открывает карточку задачи; из неё — переход к связанному объекту.
 import { computed, ref } from 'vue';
 import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
-import { useFormatters } from '@/composables/useFormatters';
-import StatusPill from '@/components/ui/StatusPill.vue';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 import CrmImportModal from '@/components/CrmImportModal.vue';
 import CrmRowModal from '@/components/CrmRowModal.vue';
@@ -17,7 +17,6 @@ const importColl = ref('');   // непусто — открыта модалк�
 
 const db = useDbStore();
 const ui = useUiStore();
-const { day } = useFormatters();
 
 const STATUSES = ['Все', 'Открыта', 'В работе', 'Выполнена', 'Отменена'];
 const PRIORITIES = ['Низкий', 'Средний', 'Высокий', 'Критический'];
@@ -71,8 +70,8 @@ function create() {
         </div></div>
 
     <div v-if="showNew" class="insight" style="flex-wrap:wrap;gap:8px;margin-bottom:14px">
-      <input v-model="form.title" class="input" style="min-width:280px" placeholder="Название (измеримый результат)…" @keyup.enter="create" />
-      <input v-model="form.owner" class="input" style="max-width:150px" placeholder="Исполнитель" />
+      <input v-model="form.title" class="input" style="min-width:280px" :placeholder="crmFieldLabel('tasks', 'title')" @keyup.enter="create" />
+      <input v-model="form.owner" class="input" style="max-width:150px" :placeholder="crmFieldLabel('tasks', 'owner')" />
       <input v-model="form.due" type="date" class="input" style="max-width:160px" />
       <select v-model="form.priority" class="select" style="max-width:150px"><option v-for="p in PRIORITIES" :key="p">{{ p }}</option></select>
       <select v-model="form.refKind" class="select" style="max-width:170px">
@@ -89,23 +88,13 @@ function create() {
     </div>
 
     <section class="panel">
-      <table class="table">
-        <thead><tr><th>Задача</th><th>Исполнитель</th><th>Срок</th><th>Приоритет</th><th>Статус</th><th></th></tr></thead>
-        <tbody>
-          <tr v-for="t in tasks" :key="t.id" class="row-click" @click="ui.openRecord('task', t.id)">
-            <td><b>{{ t.title }}</b></td>
-            <td>{{ t.owner }}</td>
-            <td :style="t.status !== 'Выполнена' && isLate(t.due) ? 'color:#c62828;font-weight:600' : ''">{{ day(t.due) }}</td>
-            <td>{{ t.priority }}</td>
-            <td><StatusPill :status="t.status" /></td>
-            <td>
-              <button v-if="t.status !== 'Выполнена'" class="btn slim" @click.stop="db.updateTask(t.id, { status: 'Выполнена' })">✓ Выполнить</button>
-              <button class="btn slim ghost" @click.stop="rowModal = { coll: 'tasks', record: t }">✎</button>
-            </td>
-          </tr>
-          <tr v-if="!tasks.length"><td colspan="6" class="empty">Задач нет — создайте первую или измените фильтр</td></tr>
-        </tbody>
-      </table>
+      <CrmDataTable coll="tasks" :rows="tasks" empty="Задач нет.">
+        <template #actions="{ row: t }">
+          <button class="btn slim ghost" @click="ui.openRecord('task', t.id)">Открыть</button>
+          <button v-if="t.status !== 'Выполнена'" class="btn slim ghost" @click="db.updateTask(t.id, { status: 'Выполнена' })">Выполнить</button>
+          <button class="btn slim ghost" @click="rowModal = { coll: 'tasks', record: t }">Изменить</button>
+        </template>
+      </CrmDataTable>
     </section>
 
     <CrmImportModal v-if="importColl" :coll="importColl" @close="importColl = ''" />

@@ -14,13 +14,13 @@ const SCHEMAS = {
   pilots:     ['id', 'title', 'farmId', 'dealId', 'journeyId', 'crop', 'area', 'startDate', 'endDate', 'nextCheck', 'status', 'owner', 'result'],
   quotes:     ['id', 'number', 'dealId', 'farmId', 'journeyId', 'date', 'items', 'terms', 'total', 'status'],
   journeys:   ['id', 'leadId', 'farmId', 'dealId', 'pilotId', 'quoteId', 'orderId', 'invoiceId', 'shipmentId', 'stage', 'owner', 'next', 'qualification', 'history'],
-  knowledge:  ['id', 'title', 'category', 'tags', 'text'],
+  knowledge:  ['id', 'title', 'category', 'crop', 'version', 'owner', 'status', 'public', 'source', 'tags', 'text'],
   media:      ['id', 'title', 'kind', 'url', 'tag', 'date', 'pilotId', 'farmId', 'consent', 'note'],
   clientNotes: ['id', 'farmId', 'ts', 'text'],
   applications: ['id', 'pilotId', 'farmId', 'date', 'dose', 'method', 'notes'],
   clientDocs: ['id', 'farmId', 'title', 'type', 'date', 'url', 'notes'],
   logistics: ['id', 'kind', 'number', 'date', 'status', 'party', 'farmId', 'orderId', 'warehouse', 'vehicle', 'driver', 'base', 'note', 'items', 'act'],
-  social:     ['id', 'platform', 'title', 'status', 'scheduledDate', 'link'],
+  social:     ['id', 'platform', 'title', 'kind', 'pilotId', 'caption', 'consent', 'caseApproved', 'owner', 'status', 'scheduledDate', 'link'],
 };
 
 export const COLL_RU = {
@@ -56,6 +56,8 @@ export const FIELD_RU = {
   carrier: 'Перевозчик', vehicle: 'Автомобиль', received: 'Получено',
   ts: 'Дата и время', dose: 'Дозировка', qualification: 'Квалификация', history: 'История',
   party: 'Контрагент', base: 'Основание', act: 'Акт', createdAt: 'Создано',
+  caption: 'Текст публикации', caseApproved: 'Кейс утверждён', public: 'Публичный материал', version: 'Версия',
+  packs: 'Количество', skuId: 'Артикул (SKU)', sum: 'Сумма', liters: 'Объём, л',
   scheduledDate: 'Дата публикации', link: 'Ссылка',
 };
 
@@ -66,6 +68,8 @@ const legacyFields = {
   warehouse: { warehouse: 'location' },
   production: { lot: 'batch' },
   pilots: { nextCheck: 'next' },
+  knowledge: { text: 'summary' },
+  social: { platform: 'channel', scheduledDate: 'date', link: 'publicUrl' },
   media: { kind: 'type', date: 'uploadedAt', note: 'notes' },
 };
 export const REF_KINDS = {
@@ -95,4 +99,19 @@ export function crmReferences(coll, record) {
     if (item) refs.push({ field: 'items', coll: 'skus', id: item.sku || item.skuId });
   }
   return refs.filter((link) => link.id && (link.coll !== coll || link.id !== record.id));
+}
+
+export function crmFieldLabel(coll, key) {
+  if (coll === 'logistics' && key === 'kind') return 'Тип документа';
+  if (coll === 'logistics' && key === 'vehicle') return 'Транспорт';
+  return FIELD_RU[key] || key;
+}
+
+export const LOGISTICS_KINDS = { supply: 'Поставка (приход)', dispatch: 'Выгрузка / отгрузка' };
+
+export function crmDisplayValue(value) {
+  if (value == null || value === '') return '—';
+  if (typeof value === 'boolean') return value ? 'Да' : 'Нет';
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
 }

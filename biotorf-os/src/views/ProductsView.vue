@@ -1,4 +1,5 @@
 <script setup>
+import CrmDataTable from '@/components/CrmDataTable.vue';
 // «Продукция и цены» + калькуляция себестоимости (демо v0.9). Без бэкенда.
 import { computed, ref } from 'vue';
 import { useDbStore } from '@/stores/db';
@@ -43,17 +44,11 @@ const lines = computed(() => {
 
     <section class="panel" style="margin-bottom:16px">
       <div class="panel-title" style="margin-bottom:12px">SKU продукции</div>
-      <table class="table">
-        <thead><tr><th>Артикул</th><th>Название</th><th>Линейка</th><th>Фасовка, л</th><th>Рецептура (паста:вода)</th><th>Статус</th><th></th></tr></thead>
-        <tbody>
-          <tr v-for="s in skus" :key="s.id">
-            <td><b>{{ s.id }}</b></td><td>{{ s.name }}</td>
-            <td><span class="chip">{{ s.line }}</span></td>
-            <td>{{ num(s.pack) }}</td><td>{{ s.recipe }}</td><td>{{ s.status }}</td>
-            <td><button class="btn slim ghost" title="Редактировать" @click.stop="openEdit(s)">✎ Изменить</button></td>
-          </tr>
-        </tbody>
-      </table>
+      <CrmDataTable coll="skus" :rows="skus" empty="Товаров нет.">
+        <template #actions="{ row: s }">
+          <button class="btn slim ghost" @click="openEdit(s)">Изменить</button>
+        </template>
+      </CrmDataTable>
     </section>
 
     <div class="cards2">

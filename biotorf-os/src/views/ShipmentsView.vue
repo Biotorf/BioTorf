@@ -1,4 +1,5 @@
 <script setup>
+import CrmDataTable from '@/components/CrmDataTable.vue';
 // Раздел «Логистика»: реестры ПОСТАВОК (приход) и ВЫГРУЗОК (отгрузка) товара.
 // Таблицы в стиле Excel: итоговые карточки, поиск, фильтр по статусу,
 // редактирование позиций в модалке, экспорт всего реестра в .xls/.csv,
@@ -7,7 +8,6 @@ import { computed, onMounted, ref } from 'vue';
 import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
 import { useFormatters } from '@/composables/useFormatters';
-import StatusPill from '@/components/ui/StatusPill.vue';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 import LogisticsDocEditor from '@/components/forms/LogisticsDocEditor.vue';
 import { toCsv, toXmlSpreadsheet, downloadBlob, printHtml } from '@/utils/spreadsheet';
@@ -16,10 +16,12 @@ import CrmRowModal from '@/components/CrmRowModal.vue';
 import ManualLink from '@/components/ui/ManualLink.vue';
 const rowColl = ref('shipments');
 const rowOpen = ref(false);
+const editRec = ref(null);
+function editShipment(record) { editRec.value = record; rowOpen.value = true; }
 
 const db = useDbStore();
 const ui = useUiStore();
-const { money, num, day } = useFormatters();
+const { money, num } = useFormatters();
 
 const tab = ref('dispatch');                 // dispatch | supply
 const syncing = ref(false);
@@ -116,7 +118,6 @@ function quickAct(d) {
   openEditor(d);
 }
 
-const partyLabel = computed(() => tab.value === 'supply' ? 'Поставщик' : 'Клиент / получатель');
 </script>
 
 <template>
@@ -135,7 +136,7 @@ const partyLabel = computed(() => tab.value === 'supply' ? 'Поставщик' 
         <button class="btn primary" @click="openEditor()">＋ {{ tab === 'supply' ? 'Новая поставка' : 'Новая выгрузка' }}</button>
       </div>
         <div class="actionbar" style="margin-top:10px">
-          <button class="btn primary slim" @click="rowOpen = true" title="Добавить запись вручную">＋ Добавить</button>
+          <button class="btn primary slim" @click="editShipment(null)" title="Добавить отгрузку CRM">＋ Отгрузка CRM</button>
         </div></div>
 
     <div class="chips" style="margin-bottom:16px">
@@ -162,81 +163,34 @@ const partyLabel = computed(() => tab.value === 'supply' ? 'Поставщик' 
       </select>
     </div>
 
-    <div class="table-wrap">
-      <table class="table reg-table">
-        <thead>
-          <tr>
-            <th>Номер / дата</th>
-            <th>{{ partyLabel }}</th>
-            <th>Склад</th>
-            <th v-if="tab === 'dispatch'">Транспорт / водитель</th>
-            <th>Позиции</th>
-            <th class="right-h">Кол-во</th>
-            <th class="right-h">Сумма</th>
-            <th>Статус</th>
-            <th>Акт</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="d in filtered" :key="d.id" class="clickrow" @click="openEditor(d)">
-            <td>
-              <span class="txt-link">{{ d.number }}</span>
-              <div class="mini">{{ day(d.date) }}</div>
-            </td>
-            <td>
-              {{ d.party || '—' }}
-              <div class="mini" v-if="d.farmId">{{ db.farmById(d.farmId)?.name || d.farmId }}</div>
-              <div class="mini" v-else-if="d.base">{{ d.base }}</div>
-            </td>
-            <td>{{ d.warehouse || '—' }}</td>
-            <td v-if="tab === 'dispatch'">
-              {{ d.vehicle || '—' }}
-              <div class="mini">{{ d.driver }}</div>
-            </td>
-            <td :title="(d.items || []).map(i => `${i.name} · ${i.qty} ${i.unit}`).join('\n')">
-              {{ itemsSummary(d) }}
-              <div class="mini">{{ (d.items || []).length }} поз.</div>
-            </td>
-            <td class="right mono">{{ num(qtyOf(d)) }}</td>
-            <td class="right mono"><b>{{ money(sumOf(d)) }}</b></td>
-            <td><StatusPill :status="d.status" /></td>
-            <td>
-              <span v-if="d.act" class="pill" :title="`${d.act.type} № ${d.act.number} от ${d.act.date}`">✓ {{ d.act.type.split(' ')[0] }} №{{ d.act.number }}</span>
-              <button v-else class="btn slim ghost" @click.stop="quickAct(d)" title="Создать акт под документ">+ акт</button>
-            </td>
-            <td @click.stop>
-              <div style="display:flex;gap:4px">
-                <button class="btn slim ghost" title="Редактировать" @click="openEditor(d)">✎</button>
-                <button class="btn slim ghost danger-text" title="Удалить" @click="removeDoc(d)">✕</button>
-              </div>
-            </td>
-          </tr>
-          <tr v-if="!filtered.length">
-            <td colspan="11"><div class="empty">
-              {{ docs.length ? 'Ничего не найдено по фильтру' :
-                 `Реестр пуст — создайте первую ${tab === 'supply' ? 'поставку' : 'выгрузку'} кнопкой выше` }}
-            </div></td>
-          </tr>
-        </tbody>
-        <tfoot v-if="filtered.length">
-          <tr>
-            <td :colspan="tab === 'dispatch' ? 5 : 4"><b>Итого по {{ filtered.length }} док.</b></td>
-            <td class="right mono">{{ num(filtered.reduce((s, d) => s + qtyOf(d), 0)) }}</td>
-            <td class="right mono"><b>{{ money(filtered.reduce((s, d) => s + sumOf(d), 0)) }}</b></td>
-            <td colspan="3"></td>
-          </tr>
-        </tfoot>
-      </table>
-    </div>
+    <CrmDataTable coll="logistics" :rows="filtered" empty="Документов нет.">
+        <template #actions="{ row: d }">
+          <button class="btn slim ghost" @click="openEditor(d)">Изменить</button>
+          <button class="btn slim ghost" @click="removeDoc(d)">Удалить</button>
+          <button v-if="!d.act" class="btn slim ghost" @click="quickAct(d)">Создать акт</button>
+        </template>
+      </CrmDataTable>
+    <p v-if="filtered.length">
+      Документов {{ filtered.length }} · Количество {{ num(filtered.reduce((sum, d) => sum + qtyOf(d), 0)) }}
+      · Сумма {{ money(filtered.reduce((sum, d) => sum + sumOf(d), 0)) }}
+    </p>
+    <section v-if="tab === 'dispatch'">
+      <h2>Отгрузки CRM</h2>
+      <CrmDataTable coll="shipments" :rows="db.data.shipments || []" empty="Отгрузок CRM нет.">
+        <template #actions="{ row: s }">
+          <button class="btn slim ghost" @click="editShipment(s)">Изменить</button>
+          <button v-if="s.journeyId" class="btn slim ghost" @click="ui.openJourney(s.journeyId)">Процесс</button>
+        </template>
+      </CrmDataTable>
+    </section>
 
     <div class="note" style="margin-top:18px">
       Документы хранятся в общей базе (backend → SQLite), если сервис запущен — реестры видны всем сотрудникам.
-      Клик по строке открывает редактор с таблицей позиций; там же создаётся <b>акт приёма-передачи</b>
+      Кнопка «Изменить» открывает редактор с таблицей позиций; там же создаётся <b>акт приёма-передачи</b>
       (печатная форма A4 → PDF) и скачиваются выгрузки в Excel/CSV.
     </div>
   </div>
-  <CrmRowModal v-if="rowOpen" :coll="rowColl" @close="rowOpen = false" />
+  <CrmRowModal v-if="rowOpen" :coll="rowColl" :record="editRec" @close="rowOpen = false; editRec = null" />
 </template>
 
 <style scoped>

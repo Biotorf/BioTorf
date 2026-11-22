@@ -6,6 +6,7 @@
 // скачать .xls / .csv всего реестра — в ShipmentsView.
 import { computed, reactive, ref } from 'vue';
 import { useDbStore } from '@/stores/db';
+import { crmFieldLabel, LOGISTICS_KINDS } from '@/data/crmFields';
 import { useUiStore } from '@/stores/ui';
 import { useFormatters } from '@/composables/useFormatters';
 import { toCsv, toXmlSpreadsheet, downloadBlob, printHtml } from '@/utils/spreadsheet';
@@ -20,6 +21,7 @@ const db = useDbStore();
 const ui = useUiStore();
 const { money, num } = useFormatters();
 
+const label = (key) => crmFieldLabel('logistics', key);
 const isNew = !props.doc || String(props.doc.id).startsWith('NEW');
 const today = new Date().toISOString().slice(0, 10);
 
@@ -181,60 +183,59 @@ function exportCsv() {
   <div>
     <div class="formgrid" style="margin-bottom:16px">
       <div class="field">
-        <label>Тип документа</label>
+        <label>{{ label('kind') }}</label>
         <select v-model="form.kind" class="select" :disabled="!isNew">
-          <option value="supply">Поставка (приход)</option>
-          <option value="dispatch">Выгрузка / отгрузка</option>
+          <option v-for="(name, kind) in LOGISTICS_KINDS" :key="kind" :value="kind">{{ name }}</option>
         </select>
       </div>
-      <div class="field"><label>Номер</label><input v-model="form.number" class="input" placeholder="П-001"></div>
-      <div class="field"><label>Дата</label><input v-model="form.date" type="date" class="input"></div>
+      <div class="field"><label>{{ label('number') }}</label><input v-model="form.number" class="input" placeholder="П-001"></div>
+      <div class="field"><label>{{ label('date') }}</label><input v-model="form.date" type="date" class="input"></div>
       <div class="field">
-        <label>Статус</label>
+        <label>{{ label('status') }}</label>
         <select v-model="form.status" class="select">
           <option v-for="s in STATUSES" :key="s">{{ s }}</option>
         </select>
       </div>
       <div class="field">
-        <label>{{ isDispatch ? 'Клиент / получатель' : 'Поставщик' }}</label>
+        <label>{{ label('party') }}</label>
         <input v-model="form.party" class="input" :placeholder="isDispatch ? 'Хозяйство или контрагент' : 'Компания-поставщик'">
       </div>
       <div class="field" v-if="isDispatch">
-        <label>Привязка к хозяйству</label>
+        <label>{{ label('farmId') }}</label>
         <select v-model="form.farmId" class="select">
           <option value="">— не выбрано —</option>
           <option v-for="f in db.farms" :key="f.id" :value="f.id">{{ f.name }}</option>
         </select>
       </div>
       <div class="field">
-        <label>{{ isDispatch ? 'Склад-источник' : 'Склад назначения' }}</label>
+        <label>{{ label('warehouse') }}</label>
         <input v-model="form.warehouse" class="input" placeholder="Склад Бишкек">
       </div>
       <div class="field">
-        <label>Основание (договор / заявка)</label>
+        <label>{{ label('base') }}</label>
         <input v-model="form.base" class="input" placeholder="Договор №…">
       </div>
       <template v-if="isDispatch">
-        <div class="field"><label>Транспорт</label><input v-model="form.vehicle" class="input" placeholder="MB Sprinter · 01 AA 123 KG"></div>
-        <div class="field"><label>Водитель / экспедитор</label><input v-model="form.driver" class="input"></div>
+        <div class="field"><label>{{ label('vehicle') }}</label><input v-model="form.vehicle" class="input" placeholder="MB Sprinter · 01 AA 123 KG"></div>
+        <div class="field"><label>{{ label('driver') }}</label><input v-model="form.driver" class="input"></div>
       </template>
       <div class="field full">
-        <label>Примечание</label>
+        <label>{{ label('note') }}</label>
         <textarea v-model="form.note" class="textarea" rows="2"></textarea>
       </div>
     </div>
 
-    <h3 style="margin-bottom:8px">Позиции документа</h3>
+    <h3 style="margin-bottom:8px">{{ label('items') }}</h3>
     <div class="table-wrap" style="margin-bottom:10px">
       <table class="table items-table">
         <thead>
           <tr>
-            <th style="width:26%">Товар (SKU)</th>
-            <th style="width:10%" class="right-h">Кол-во</th>
-            <th style="width:9%">Ед.</th>
-            <th style="width:13%" class="right-h">Цена, сом</th>
-            <th style="width:14%" class="right-h">Сумма, сом</th>
-            <th>Примечание</th>
+            <th style="width:26%">{{ label('skuId') }}</th>
+            <th style="width:10%" class="right-h">{{ label('qty') }}</th>
+            <th style="width:9%">{{ label('unit') }}</th>
+            <th style="width:13%" class="right-h">{{ label('price') }}</th>
+            <th style="width:14%" class="right-h">{{ label('amount') }}</th>
+            <th>{{ label('note') }}</th>
             <th style="width:34px"></th>
           </tr>
         </thead>
@@ -251,6 +252,7 @@ function exportCsv() {
             <td><input v-model.number="it.qty" type="number" min="0" step="0.5" class="input slim-in num-in"></td>
             <td>
               <select v-model="it.unit" class="input slim-in">
+                <option v-if="it.unit && !UNITS.includes(it.unit)" :value="it.unit">{{ it.unit }}</option>
                 <option v-for="u in UNITS" :key="u">{{ u }}</option>
               </select>
             </td>

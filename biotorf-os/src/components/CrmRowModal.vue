@@ -5,7 +5,7 @@
 // тот же путь, что и CSV-импорт: сервер + локальный кэш.
 import { ref, computed, watch, onMounted } from 'vue';
 import { useDbStore } from '@/stores/db';
-import { COLL_RU, FIELD_RU, REF_FIELD, REF_KINDS, crmFields, crmTitle, crmValue } from '@/data/crmFields';
+import { COLL_RU, crmFieldLabel, REF_FIELD, REF_KINDS, crmFields, crmTitle, crmValue } from '@/data/crmFields';
 
 const props = defineProps({
   coll: { type: String, required: true },     // farms, leads, deals…
@@ -16,9 +16,9 @@ const emit = defineEmits(['close', 'saved', 'deleted']);
 
 const db = useDbStore();
 
-const NUM_FIELDS = new Set(['area', 'volumeL', 'amount', 'qty', 'price', 'stock', 'pack', 'reserved', 'total']);
-const BOOL_FIELDS = new Set(['paid', 'primary', 'received']);
-const LONG_FIELDS = new Set(['notes', 'text', 'route', 'result', 'tags']);
+const NUM_FIELDS = new Set(['area', 'volumeL', 'amount', 'qty', 'price', 'stock', 'pack', 'reserved', 'total', 'version']);
+const BOOL_FIELDS = new Set(['paid', 'primary', 'received', 'public']);
+const LONG_FIELDS = new Set(['notes', 'text', 'route', 'result', 'tags', 'caption']);
 
 // ── Выпадающие списки с кнопкой «＋» ────────────────────────────────
 // Ключ справочника db.lists → откуда брать значения. optionsFor() объединяет
@@ -38,6 +38,8 @@ const ENUM_FIELD = {
   priority: () => ['Низкий', 'Обычный', 'Высокий', 'Критический'],
   consent: () => ['Нет', 'Да'],
   received: () => ['нет', 'да'],
+  public: () => ['нет', 'да'],
+  caseApproved: () => ['Нет', 'Да'],
   paid: () => ['нет', 'да'],
   primary: () => ['нет', 'да'],
   refKind: () => ['deal', 'lead', 'farm', 'order', 'invoice', 'shipment', 'pilot', 'journey', 'quote', 'task'],
@@ -81,10 +83,7 @@ function selectOptions(k) {
   return db.optionsFor(LIST_FIELD[k], props.coll, k).map((v) => ({ value: v, label: v }));
 }
 
-function fieldLabel(k) {
-  if (k === 'id') return isEdit.value ? 'ID (не менять)' : 'ID (можно оставить пустым)';
-  return FIELD_RU[k] || k;
-}
+function fieldLabel(key) { return crmFieldLabel(props.coll, key); }
 
 const isEdit = computed(() => !!props.record);
 
@@ -243,9 +242,9 @@ async function removeRecord() {
       </div>
       <div class="body">
         <fieldset v-if="fields.includes('items')" class="items wide">
-          <legend>Товарные позиции</legend>
+          <legend>{{ fieldLabel('items') }}</legend>
           <div v-for="(item, index) in lineItems" :key="index" class="item">
-            <label>Артикул
+            <label>{{ fieldLabel('sku') }}
               <select v-model="item.sku" class="input" @change="selectSku(item)">
                 <option value="">Без артикула</option>
                 <option v-if="item.sku && !db.skuById(item.sku)" :value="item.sku">{{ item.sku }}</option>
@@ -280,7 +279,7 @@ async function removeRecord() {
             </div>
           </template>
           <textarea v-else-if="LONG_FIELDS.has(k) || isJsonField(k)" v-model="form[k]" rows="3"></textarea>
-          <input v-else v-model="form[k]" :readonly="k === 'id' && isEdit" :inputmode="NUM_FIELDS.has(k) ? 'decimal' : undefined" />
+          <input v-else v-model="form[k]" :readonly="k === 'id' && isEdit" :placeholder="k === 'id' && !isEdit ? 'Можно оставить пустым' : undefined" :inputmode="NUM_FIELDS.has(k) ? 'decimal' : undefined" />
         </label>
         <div v-if="optionsError" class="err" role="alert">{{ optionsError }}</div>
         <div v-if="error" class="err">{{ error }}</div>

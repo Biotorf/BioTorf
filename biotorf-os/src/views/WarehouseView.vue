@@ -1,4 +1,5 @@
 <script setup>
+import CrmDataTable from '@/components/CrmDataTable.vue';
 // «Склад» (демо v0.9): остатки по SKU с резервами под заказы.
 import { computed, ref } from 'vue';
 import { useDbStore } from '@/stores/db';
@@ -10,28 +11,22 @@ import ManualLink from '@/components/ui/ManualLink.vue';
 const rowColl = ref('warehouse');
 const rowOpen = ref(false);
 const editRec = ref(null);
-function openEdit(rec) { editRec.value = db.data.warehouse.find((row) => row.id === rec.id); rowOpen.value = true; }
+function openEdit(rec) { editRec.value = rec; rowOpen.value = true; }
 
 const db = useDbStore();
 const { num } = useFormatters();
 const query = ref('');
 const rows = computed(() =>
   (db.warehouse || [])
-    .map((w) => {
-      const legacyReserve = w.orderId && w.status === 'Зарезервировано' && w.reserved == null;
-      const qty = legacyReserve ? 0 : Number(w.qty) || 0;
-      const reserved = Number(legacyReserve ? w.qty : w.reserved) || 0;
-      return {
-        ...w, qty, reserved, free: qty - reserved,
-        skuName: db.skuById(w.sku)?.name || w.sku, warehouse: w.warehouse ?? w.location,
-      };
-    })
-    .filter((w) => !query.value || [w.sku, w.skuName, w.warehouse].join(' ').toLowerCase().includes(query.value.toLowerCase()))
+    .filter((w) => !query.value || [w.sku, db.skuById(w.sku)?.name, w.warehouse ?? w.location]
+      .join(' ').toLowerCase().includes(query.value.toLowerCase()))
 );
-const totals = computed(() => ({
-  qty: rows.value.reduce((s, w) => s + w.qty, 0),
-  reserved: rows.value.reduce((s, w) => s + w.reserved, 0),
-}));
+const totals = computed(() => rows.value.reduce((sum, row) => {
+  const legacyReserve = row.orderId && row.status === 'Зарезервировано' && row.reserved == null;
+  sum.qty += legacyReserve ? 0 : Number(row.qty) || 0;
+  sum.reserved += Number(legacyReserve ? row.qty : row.reserved) || 0;
+  return sum;
+}, { qty: 0, reserved: 0 }));
 </script>
 
 <template>
@@ -59,21 +54,11 @@ const totals = computed(() => ({
     </div>
 
     <section class="panel">
-      <table class="table">
-        <thead><tr><th>SKU</th><th>Продукт</th><th>Склад</th><th>Остаток</th><th>Резерв</th><th>Свободно</th><th></th></tr></thead>
-        <tbody>
-          <tr v-for="w in rows" :key="w.id">
-            <td><b>{{ w.sku }}</b></td>
-            <td>{{ w.skuName }}</td>
-            <td>{{ w.warehouse }}</td>
-            <td class="mono">{{ num(w.qty) }} {{ w.unit }}</td>
-            <td class="mono">{{ num(w.reserved) }} {{ w.unit }}</td>
-            <td class="mono"><span class="pill" :class="w.free <= 0 ? 'red' : ''">{{ num(w.free) }} {{ w.unit }}</span></td>
-            <td><button class="btn slim ghost" title="Редактировать" @click.stop="openEdit(w)">✎ Изменить</button></td>
-          </tr>
-          <tr v-if="!rows.length"><td colspan="7" class="empty">Остатков нет.</td></tr>
-        </tbody>
-      </table>
+      <CrmDataTable coll="warehouse" :rows="rows" empty="Остатков нет.">
+        <template #actions="{ row: w }">
+          <button class="btn slim ghost" @click="openEdit(w)">Изменить</button>
+        </template>
+      </CrmDataTable>
     </section>
 
     <div class="note" style="margin-top:12px">Автоматические складские проводки отключены (§3, ОГРАНИЧЕНИЕ v0.9): резервы — справочные.</div>

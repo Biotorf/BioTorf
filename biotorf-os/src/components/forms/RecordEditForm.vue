@@ -3,6 +3,7 @@
 // «Следующее действие» → «К списку». Охватывает основные сущности системы.
 import { ref, computed } from 'vue';
 import { useDbStore } from '@/stores/db';
+import { crmFieldLabel, REF_KINDS } from '@/data/crmFields';
 import { useUiStore } from '@/stores/ui';
 
 const props = defineProps({ kind: { type: String, required: true }, id: { type: String, required: true } });
@@ -11,27 +12,15 @@ const ui = useUiStore();
 
 const TITLES = { task: 'Задача', deal: 'Сделка', lead: 'Лид', farm: 'Хозяйство', pilot: 'Пилот', order: 'Заказ', invoice: 'Счёт', shipment: 'Отгрузка', quote: 'КП' };
 const rec = computed(() => {
-  const maps = { task: 'tasks', deal: 'deals', lead: 'leads', farm: 'farms', pilot: 'pilots', order: 'orders', invoice: 'invoices', shipment: 'shipments', quote: 'quotes' };
-  return (db.data[maps[props.kind]] || []).find((x) => x.id === props.id);
+  return (db.data[REF_KINDS[props.kind]] || []).find((x) => x.id === props.id);
 });
 
 const fields = computed(() => {
   if (!rec.value) return [];
-  const r = rec.value;
-  const common = [];
-  if ('name' in r) common.push(['name', props.kind === 'lead' ? 'Тема обращения' : 'Название']);
-  if ('title' in r) common.push(['title', 'Название']);
-  if ('number' in r) common.push(['number', 'Номер документа']);
-  if ('stage' in r) common.push(['stage', 'Стадия']);
-  if ('status' in r) common.push(['status', 'Статус']);
-  if ('owner' in r) common.push(['owner', 'Ответственный']);
-  if ('due' in r) common.push(['due', 'Срок', 'date']);
-  if ('next' in r) common.push(['next', 'Следующий контакт', 'date']);
-  if ('amount' in r) common.push(['amount', 'Сумма, сом', 'number']);
-  if ('area' in r) common.push(['area', 'Площадь, га', 'number']);
-  if ('phone' in r) common.push(['phone', 'Телефон']);
-  if ('priority' in r) common.push(['priority', 'Приоритет']);
-  return common;
+  const types = { due: 'date', next: 'date', amount: 'number', area: 'number' };
+  return ['name', 'title', 'number', 'stage', 'status', 'owner', 'due', 'next', 'amount', 'area', 'phone', 'priority']
+    .filter((key) => key in rec.value)
+    .map((key) => [key, crmFieldLabel(REF_KINDS[props.kind], key), types[key]]);
 });
 
 const editing = ref(false);

@@ -1,11 +1,11 @@
 <script setup>
+import CrmDataTable from '@/components/CrmDataTable.vue';
 // «Сделки и воронка» (руководство v0.9 §2, §3 шаг 4): канбан по стадиям +
 // таблица сделок; клик — карточка сделки (§5), переход в сквозной процесс.
 import { computed, ref } from 'vue';
 import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
 import { useFormatters } from '@/composables/useFormatters';
-import StatusPill from '@/components/ui/StatusPill.vue';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 import CrmImportModal from '@/components/CrmImportModal.vue';
 import CrmRowModal from '@/components/CrmRowModal.vue';
@@ -82,20 +82,13 @@ function move(d, dir) {
     <!-- Таблица -->
     <section class="panel" style="margin-top:14px">
       <div class="panel-head"><div class="panel-title">Реестр сделок</div></div>
-      <table class="table">
-        <thead><tr><th>Сделка</th><th>Стадия</th><th>Объём, л</th><th>Сумма</th><th>Ответственный</th><th></th></tr></thead>
-        <tbody>
-          <tr v-for="d in deals" :key="d.id" class="row-click" @click="ui.openRecord('deal', d.id)">
-            <td><b>{{ d.title }}</b></td>
-            <td><StatusPill :status="d.stage" /></td>
-            <td>{{ num(d.volumeL) }}</td>
-            <td>{{ money(d.amount) }}</td>
-            <td>{{ d.owner }}</td>
-            <td><button v-if="d.journeyId" class="btn slim" @click.stop="ui.openJourney(d.journeyId)">Открыть процесс</button> <button class="btn slim ghost" @click.stop="rowModal = { coll: 'deals', record: d }">✎</button></td>
-          </tr>
-          <tr v-if="!deals.length"><td colspan="6" class="empty">Нет сделок по текущему фильтру</td></tr>
-        </tbody>
-      </table>
+      <CrmDataTable coll="deals" :rows="deals" empty="Нет сделок по текущему фильтру.">
+        <template #actions="{ row: d }">
+          <button class="btn slim ghost" @click="ui.openRecord('deal', d.id)">Открыть</button>
+          <button v-if="d.journeyId" class="btn slim ghost" @click="ui.openJourney(d.journeyId)">Процесс</button>
+          <button class="btn slim ghost" @click="rowModal = { coll: 'deals', record: d }">Изменить</button>
+        </template>
+      </CrmDataTable>
     </section>
 
     <CrmImportModal v-if="importColl" :coll="importColl" @close="importColl = ''" />

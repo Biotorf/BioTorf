@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
 import { usePermissions } from '@/composables/usePermissions';
-import { COLL_RU, FIELD_RU, REF_KINDS, crmFields, crmReferences, crmTitle, crmValue } from '@/data/crmFields';
+import { COLL_RU, crmFieldLabel, crmDisplayValue, REF_KINDS, crmFields, crmReferences, crmTitle, crmValue } from '@/data/crmFields';
 import CrmRowModal from '@/components/CrmRowModal.vue';
 
 const db = useDbStore();
@@ -27,7 +27,7 @@ const fields = computed(() => crmFields(coll.value, records.value));
 const matches = computed(() => {
   const value = search.value.trim().toLowerCase();
   return records.value.filter((row) => !value || fields.value.some((key) =>
-    cellText(crmValue(coll.value, row, key)).toLowerCase().includes(value),
+    crmDisplayValue(crmValue(coll.value, row, key)).toLowerCase().includes(value),
   ));
 });
 const page = ref(1);
@@ -84,13 +84,6 @@ watch(pageCount, (total) => { page.value = Math.min(page.value, total); });
 watch(coll, (table) => {
   if (table === 'logistics') db.syncLogistics().catch(() => { status.value = 'Не удалось обновить документы логистики.'; });
 }, { immediate: true });
-
-function cellText(value) {
-  if (value == null || value === '') return '—';
-  if (typeof value === 'boolean') return value ? 'Да' : 'Нет';
-  if (typeof value === 'object') return JSON.stringify(value);
-  return String(value);
-}
 
 function linksFor(row, key) {
   return crmReferences(coll.value, row)
@@ -193,7 +186,7 @@ async function remove(row) {
       <input v-if="shareUrl" class="input" :value="shareUrl" readonly aria-label="Ссылка на запись" @focus="$event.target.select()" />
       <dl class="details">
         <template v-for="key in fields" :key="key">
-          <dt>{{ FIELD_RU[key] || key }}</dt>
+          <dt>{{ crmFieldLabel(coll, key) }}</dt>
           <dd>
             <template v-if="linksFor(record, key).length">
               <template v-for="link in linksFor(record, key)" :key="link.id">
@@ -201,7 +194,7 @@ async function remove(row) {
                 <span v-else>{{ link.id }}</span>
               </template>
             </template>
-            <span v-else>{{ cellText(crmValue(coll, record, key)) }}</span>
+            <span v-else>{{ crmDisplayValue(crmValue(coll, record, key)) }}</span>
           </dd>
         </template>
       </dl>
@@ -223,7 +216,7 @@ async function remove(row) {
 
     <div v-if="matches.length" class="table-wrap registry-scroll" tabindex="0" aria-label="Все поля таблицы">
       <table class="table">
-        <thead><tr><th scope="col">Запись</th><th v-for="key in fields" :key="key" scope="col">{{ FIELD_RU[key] || key }}</th></tr></thead>
+        <thead><tr><th scope="col">Запись</th><th v-for="key in fields" :key="key" scope="col">{{ crmFieldLabel(coll, key) }}</th></tr></thead>
         <tbody>
           <tr v-for="row in visibleRows" :key="row.id">
             <td>
@@ -235,7 +228,7 @@ async function remove(row) {
             </td>
             <td v-for="key in fields" :key="key">
               <a v-if="linksFor(row, key)[0]?.target" :href="href(linksFor(row, key)[0].coll, linksFor(row, key)[0].id)">{{ crmTitle(linksFor(row, key)[0].target) }}</a>
-              <span v-else class="value" :title="cellText(crmValue(coll, row, key))">{{ cellText(crmValue(coll, row, key)) }}</span>
+              <span v-else class="value" :title="crmDisplayValue(crmValue(coll, row, key))">{{ crmDisplayValue(crmValue(coll, row, key)) }}</span>
             </td>
           </tr>
         </tbody>

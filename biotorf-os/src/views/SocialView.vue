@@ -1,11 +1,10 @@
 <script setup>
+import CrmDataTable from '@/components/CrmDataTable.vue';
 // «Маркетинг и соцсети» (демо v0.9 §8): контент-план публикаций, привязка к пилотам,
 // согласование. Прямые публикации в Instagram в v0.9 не выполняются.
 import { computed, ref } from 'vue';
 import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
-import { useFormatters } from '@/composables/useFormatters';
-import StatusPill from '@/components/ui/StatusPill.vue';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 
 import CrmRowModal from '@/components/CrmRowModal.vue';
@@ -17,20 +16,13 @@ function openEdit(rec) { editRec.value = rec; rowOpen.value = true; }
 
 const db = useDbStore();
 const ui = useUiStore();
-const { day } = useFormatters();
 const statusFilter = ref('Все');
-const monthShort = (d) => (d ? new Date(d + 'T12:00:00').toLocaleDateString('ru-RU', { month: 'short' }).replace('.', '') : '');
 const rows = computed(() =>
   (db.social || [])
     .filter((s) => statusFilter.value === 'Все' || s.status === statusFilter.value)
-    .slice().sort((a, b) => ((a.date || '') > (b.date || '') ? 1 : -1))
+    .slice().sort((a, b) => String(a.scheduledDate ?? a.date ?? '').localeCompare(String(b.scheduledDate ?? b.date ?? '')))
 );
 const STATUSES = ['Все', 'Черновик', 'На согласовании', 'Готово к публикации', 'Опубликовано'];
-const pilotTitle = (pid) => {
-  if (!pid || pid === 'Без привязки') return 'Без привязки';
-  const p = db.pilotById(pid);
-  return p ? `${p.crop || pid} · ${p.id}` : pid;
-};
 </script>
 
 <template>
@@ -52,31 +44,12 @@ const pilotTitle = (pid) => {
       <select v-model="statusFilter" class="select" style="max-width:240px"><option v-for="s in STATUSES" :key="s">{{ s }}</option></select>
     </div>
 
-    <div class="social-calendar">
-      <article v-for="s in rows" :key="s.id" class="calendar-item actionable" @click="s.pilotId && s.pilotId !== 'Без привязки' ? ui.openRecord('pilot', s.pilotId) : null">
-        <div class="calendar-day">{{ (s.date || '').slice(8, 10) || '—' }}<small>{{ monthShort(s.date) }}</small></div>
-        <div style="min-width:0">
-          <b>{{ s.title }}</b>
-          <div class="mini">{{ s.channel }} · {{ s.kind }} · пилот: {{ pilotTitle(s.pilotId) }}</div>
-          <div class="mini">Согласие на кейс: {{ s.consent }} · Кейс утверждён: {{ s.caseApproved }} · {{ s.owner }}</div>
-        </div>
-        <StatusPill :status="s.status" class="ml-auto" />
-        <button class="btn slim ghost" title="Редактировать" @click.stop="openEdit(s)">✎ Изменить</button>
-      </article>
-      <div v-if="!rows.length" class="empty">Публикаций нет.</div>
-    </div>
+    <CrmDataTable coll="social" :rows="rows" empty="Публикаций нет.">
+        <template #actions="{ row: s }">
+          <button v-if="s.pilotId && s.pilotId !== 'Без привязки'" class="btn slim ghost" @click="ui.openRecord('pilot', s.pilotId)">Открыть пилот</button>
+          <button class="btn slim ghost" @click="openEdit(s)">Изменить</button>
+        </template>
+      </CrmDataTable>
   </div>
   <CrmRowModal v-if="rowOpen" :coll="rowColl" :record="editRec" @close="rowOpen = false; editRec = null" />
 </template>
-
-
-<style scoped>
-.social-calendar { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-.calendar-item { display: flex; align-items: center; gap: 12px; border: 1px solid #e6ede8; border-radius: 12px; padding: 10px; background: #fff; }
-.calendar-day { border-radius: 9px; background: #ecf9ee; min-width: 48px; padding: 7px; text-align: center; color: #257747; font-weight: 800; font-size: 18px; }
-.calendar-day small { display: block; font-size: 10px; font-weight: 500; }
-.actionable { cursor: pointer; }
-.ml-auto { margin-left: auto; }
-.mini { font-size: 12px; color: var(--muted, #7b8a86); }
-@media (max-width: 800px) { .social-calendar { grid-template-columns: 1fr; } }
-</style>

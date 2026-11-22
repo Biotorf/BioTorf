@@ -1,8 +1,8 @@
 <script setup>
+import CrmDataTable from '@/components/CrmDataTable.vue';
 // «Медиатека» (демо v0.9 §8): фото/видео ДО-ПОСЛЕ по пилотам и кейсам.
 import { computed, ref } from 'vue';
 import { useDbStore } from '@/stores/db';
-import { useFormatters } from '@/composables/useFormatters';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 
 import CrmRowModal from '@/components/CrmRowModal.vue';
@@ -10,14 +10,12 @@ import ManualLink from '@/components/ui/ManualLink.vue';
 const rowColl = ref('media');
 const rowOpen = ref(false);
 const editRec = ref(null);
-function openEdit(rec) { editRec.value = db.data.media.find((row) => row.id === rec.id); rowOpen.value = true; }
+function openEdit(rec) { editRec.value = rec; rowOpen.value = true; }
 
 const db = useDbStore();
-const { day } = useFormatters();
 const query = ref('');
 const rows = computed(() =>
   (db.data.media || [])
-    .map((m) => ({ ...m, dateStr: (m.date || m.uploadedAt || '').slice(0, 10) }))
     .filter((m) => !query.value || [m.title, m.pilotId, m.farmId, m.kind].join(' ').toLowerCase().includes(query.value.toLowerCase()))
 );
 </script>
@@ -40,23 +38,11 @@ const rows = computed(() =>
     </div>
 
     <section class="panel">
-      <table class="table">
-        <thead><tr><th>Материал</th><th>Тип</th><th>Пилот / хозяйство</th><th>Дата</th><th>Согласие на публикацию</th><th></th></tr></thead>
-        <tbody>
-          <tr v-for="m in rows" :key="m.id">
-            <td><b>{{ m.title || m.file || m.id }}</b><div class="mini">{{ m.note ?? m.notes ?? '' }}</div></td>
-            <td><span class="chip neutral">{{ m.kind ?? m.type ?? 'Фото' }}</span></td>
-            <td>{{ m.pilotId || m.farmId || '—' }}</td>
-            <td>{{ day(m.dateStr) }}</td>
-            <td><span class="pill" :class="m.consent === 'Да' ? '' : 'amber'">{{ m.consent || 'Нет' }}</span></td>
-            <td><button class="btn slim ghost" title="Редактировать" @click.stop="openEdit(m)">✎ Изменить</button></td>
-          </tr>
-          <tr v-if="!rows.length"><td colspan="6" class="empty">
-            Материалов пока нет.<br />
-            <span class="mini">Загрузка файлов появится вместе с привязкой к бэкенду; публикация кейсов — только с согласием хозяйства (§8).</span>
-          </td></tr>
-        </tbody>
-      </table>
+      <CrmDataTable coll="media" :rows="rows" empty="Материалов нет.">
+        <template #actions="{ row: m }">
+          <button class="btn slim ghost" @click="openEdit(m)">Изменить</button>
+        </template>
+      </CrmDataTable>
     </section>
   </div>
   <CrmRowModal v-if="rowOpen" :coll="rowColl" :record="editRec" @close="rowOpen = false; editRec = null" />
