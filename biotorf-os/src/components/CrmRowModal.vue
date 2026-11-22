@@ -19,27 +19,27 @@ const SCHEMAS = {
   farms:      ['id', 'name', 'type', 'region', 'crop', 'area', 'owner', 'status', 'next', 'phone', 'notes'],
   leads:      ['id', 'name', 'contactName', 'phone', 'company', 'region', 'source', 'owner', 'status', 'next'],
   deals:      ['id', 'title', 'farmId', 'stage', 'volumeL', 'amount', 'owner', 'next'],
-  orders:     ['id', 'number', 'farmId', 'dealId', 'date', 'volumeL', 'amount', 'status', 'owner'],
-  invoices:   ['id', 'number', 'orderId', 'dealId', 'date', 'amount', 'paid', 'status'],
+  orders:     ['id', 'number', 'farmId', 'dealId', 'date', 'sku', 'product', 'qty', 'unit', 'amount', 'status', 'owner'],
+  invoices:   ['id', 'number', 'orderId', 'dealId', 'date', 'due', 'amount', 'paid', 'status'],
   payments:   ['id', 'invoiceId', 'date', 'amount', 'method', 'comment'],
   shipments:  ['id', 'orderId', 'date', 'transport', 'driver', 'plate', 'route', 'status'],
   tasks:      ['id', 'title', 'owner', 'due', 'priority', 'status', 'refKind', 'refId'],
   contacts:   ['id', 'farmId', 'name', 'role', 'phone', 'email', 'primary'],
-  skus:       ['id', 'name', 'category', 'unit', 'price', 'stock', 'notes'],
-  warehouse:  ['id', 'sku', 'batch', 'qty', 'unit', 'location', 'expiry', 'status'],
-  production: ['id', 'date', 'product', 'batch', 'qty', 'unit', 'shift', 'operator', 'notes'],
-  pilots:     ['id', 'farmId', 'crop', 'area', 'startDate', 'endDate', 'status', 'owner', 'result'],
+  skus:       ['id', 'name', 'line', 'pack', 'recipe', 'status', 'category', 'unit', 'price', 'stock', 'notes'],
+  warehouse:  ['id', 'sku', 'batch', 'qty', 'reserved', 'unit', 'warehouse', 'expiry', 'status'],
+  production: ['id', 'date', 'sku', 'product', 'lot', 'qty', 'unit', 'status', 'shift', 'operator', 'notes'],
+  pilots:     ['id', 'title', 'farmId', 'crop', 'area', 'startDate', 'endDate', 'nextCheck', 'status', 'owner', 'result'],
   quotes:     ['id', 'number', 'dealId', 'date', 'amount', 'status'],
   journeys:   ['id', 'leadId', 'farmId', 'stage', 'owner', 'next'],
   knowledge:  ['id', 'title', 'category', 'tags', 'text'],
-  media:      ['id', 'title', 'type', 'url', 'tag', 'date'],
+  media:      ['id', 'title', 'kind', 'url', 'tag', 'date', 'pilotId', 'farmId', 'consent', 'note'],
   social:     ['id', 'platform', 'title', 'status', 'scheduledDate', 'link'],
 };
 
 // Статусы пилотов — из справочника этапов (db.pilotStages), они же ENUM для status в pilots
 
-const NUM_FIELDS = new Set(['area', 'volumeL', 'amount', 'qty', 'price', 'stock', 'primary']);
-const BOOL_FIELDS = new Set(['paid']);
+const NUM_FIELDS = new Set(['area', 'volumeL', 'amount', 'qty', 'price', 'stock', 'pack', 'reserved']);
+const BOOL_FIELDS = new Set(['paid', 'primary']);
 const LONG_FIELDS = new Set(['notes', 'text', 'route', 'result', 'tags']);
 
 // Русские подписи коллекций и полей для модальных окон
@@ -58,17 +58,18 @@ const COLL_RU = {
 const LIST_FIELD = {
   region: 'regions', crop: 'crops', source: 'sources', owner: 'owners',
   status: 'statuses', type: 'types', stage: null, unit: 'unitPack',
-  location: 'locations', transport: 'transport', driver: 'drivers',
+  location: 'locations', warehouse: 'locations', transport: 'transport', driver: 'drivers',
   plate: 'plates', shift: 'shifts', operator: 'operators', platform: 'platforms',
   product: 'products', priority: 'priorities', method: 'methods', category: 'categories',
 };
 // Поля-ссылки на записи других таблиц (value = ID, подпись = название)
-const REF_FIELD = { farmId: 'farms', dealId: 'deals', orderId: 'orders', invoiceId: 'invoices', leadId: 'leads', sku: 'skus' };
+const REF_FIELD = { farmId: 'farms', dealId: 'deals', orderId: 'orders', invoiceId: 'invoices', leadId: 'leads', pilotId: 'pilots', sku: 'skus' };
 // Жёсткие перечисления (этапы воронки, приоритеты и т.п.)
 const ENUM_FIELD = {
   stage: () => [...(db.data.stages || [])],
   pilotStage: () => [...(db.data.pilotStages || [])],
   priority: () => ['Низкий', 'Обычный', 'Высокий', 'Критический'],
+  consent: () => ['Нет', 'Да'],
   paid: () => ['нет', 'да'],
   primary: () => ['нет', 'да'],
   refKind: () => ['deal', 'lead', 'farm', 'order', 'invoice', 'shipment', 'pilot', 'journey', 'quote', 'task'],
@@ -76,7 +77,7 @@ const ENUM_FIELD = {
   category: () => db.optionsFor('categories', 'skus', 'category'),
   // статусы по коллекциям: фиксированный набор + то, что уже есть в данных
   status: () => {
-    if (props.coll === 'pilots') return [...(db.data.pilotStages || [])];
+    if (props.coll === 'pilots') return [...new Set([...(db.data.pilotStages || []), ...(db.data.pilots || []).map((p) => p.status).filter(Boolean)])];
     const base = {
       orders: ['Новый', 'Подтверждён', 'В производство', 'Готов к отгрузке', 'Оплачен', 'Отгружен', 'Отменён'],
       invoices: ['Выставлен', 'Оплачен', 'Просрочен'],
@@ -123,6 +124,9 @@ const FIELD_RU = {
   expiry: 'Срок годности', product: 'Продукт', shift: 'Смена', operator: 'Оператор',
   startDate: 'Начало', endDate: 'Окончание', result: 'Результат', leadId: 'Лид (ID)',
   tags: 'Теги', text: 'Текст', url: 'Ссылка', tag: 'Метка', platform: 'Платформа',
+  line: 'Линейка', pack: 'Фасовка, л', recipe: 'Рецептура', reserved: 'Резерв', warehouse: 'Склад',
+  lot: 'Номер лота', nextCheck: 'Следующий контроль', pilotId: 'Пилот',
+  kind: 'Тип материала', consent: 'Согласие на публикацию', note: 'Примечание',
   scheduledDate: 'Дата публикации', link: 'Ссылка',
 };
 function fieldLabel(k) {
@@ -141,17 +145,27 @@ const fields = computed(() => {
     const first = (db.data[props.coll] || [])[0];
     if (first) Object.keys(first).forEach((k) => keys.add(k));
   }
-  return [...keys].filter((k) => k !== '_updatedAt');
+  return [...keys].filter((k) => !k.startsWith('_') && !Object.values(legacyFields[props.coll] || {}).includes(k));
 });
 
 const form = ref({});
+let initial = {};
+const legacyFields = {
+  orders: { number: 'num' },
+  warehouse: { warehouse: 'location' },
+  production: { lot: 'batch' },
+  pilots: { nextCheck: 'next' },
+  media: { kind: 'type', date: 'uploadedAt', note: 'notes' },
+};
 function initForm() {
   const f = {};
   for (const k of fields.value) {
-    const v = props.record ? props.record[k] : '';
-    f[k] = v === undefined || v === null ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
+    const record = props.record;
+    const v = record?.[k] ?? record?.[legacyFields[props.coll]?.[k]];
+    f[k] = v == null ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
   }
-  form.value = f;
+  initial = f;
+  form.value = { ...f };
 }
 watch(fields, initForm, { immediate: true });
 
@@ -164,13 +178,14 @@ async function save() {
     const rec = {};
     for (const k of fields.value) {
       let v = form.value[k];
-      if (v === '' || v === undefined) continue;
-      if (NUM_FIELDS.has(k)) { const n = Number(String(v).replace(',', '.')); if (!Number.isNaN(n)) v = n; }
-      if (BOOL_FIELDS.has(k)) v = /^(1|true|да|yes)$/i.test(String(v));
+      if (k !== 'id' && (isEdit.value ? v === initial[k] : v === '')) continue;
+      if (v !== '' && NUM_FIELDS.has(k)) {
+        v = Number(String(v).replace(',', '.'));
+        if (!Number.isFinite(v)) throw new Error(`Введите число в поле «${fieldLabel(k)}»`);
+      }
+      if (v !== '' && BOOL_FIELDS.has(k)) v = /^(1|true|да|yes)$/i.test(String(v));
+      if (props.record?.[k] && typeof props.record[k] === 'object' && v !== '') v = JSON.parse(v);
       rec[k] = v;
-    }
-    if (!rec.id) {
-      rec.id = `${props.coll.slice(0, 2).toUpperCase()}-${String(Date.now()).slice(-8)}-${Math.floor(Math.random() * 900 + 100)}`;
     }
     await db.importCollection(props.coll, [rec], 'merge');
     // автопополнение выпадающих списков: регионы/культуры/ответственные из новой
@@ -180,7 +195,6 @@ async function save() {
       if (lk && typeof rec[k] === 'string' && rec[k].trim()) db.addListItem(lk, rec[k]);
     }
     // новые хозяйства/товары автоматически становятся опциями в связанных таблицах
-    if (props.coll === 'farms' && rec.name) db.addListItem('owners', rec.owner || '');
     emit('saved', rec);
     emit('close');
   } catch (e) {
@@ -247,7 +261,7 @@ async function removeRecord() {
             </div>
           </template>
           <textarea v-else-if="LONG_FIELDS.has(k)" v-model="form[k]" rows="3"></textarea>
-          <input v-else v-model="form[k]" :type="NUM_FIELDS.has(k) ? 'number' : 'text'" />
+          <input v-else v-model="form[k]" :readonly="k === 'id' && isEdit" :inputmode="NUM_FIELDS.has(k) ? 'decimal' : undefined" />
         </label>
         <div v-if="error" class="err">{{ error }}</div>
       </div>

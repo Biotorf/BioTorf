@@ -10,14 +10,22 @@ import ManualLink from '@/components/ui/ManualLink.vue';
 const rowColl = ref('warehouse');
 const rowOpen = ref(false);
 const editRec = ref(null);
-function openEdit(rec) { editRec.value = rec; rowOpen.value = true; }
+function openEdit(rec) { editRec.value = db.data.warehouse.find((row) => row.id === rec.id); rowOpen.value = true; }
 
 const db = useDbStore();
 const { num } = useFormatters();
 const query = ref('');
 const rows = computed(() =>
   (db.warehouse || [])
-    .map((w) => ({ ...w, skuName: db.skuById(w.sku)?.name || w.sku, free: (w.qty || 0) - (w.reserved || 0) }))
+    .map((w) => {
+      const legacyReserve = w.orderId && w.status === 'Зарезервировано' && w.reserved == null;
+      const qty = legacyReserve ? 0 : Number(w.qty) || 0;
+      const reserved = Number(legacyReserve ? w.qty : w.reserved) || 0;
+      return {
+        ...w, qty, reserved, free: qty - reserved,
+        skuName: db.skuById(w.sku)?.name || w.sku, warehouse: w.warehouse ?? w.location,
+      };
+    })
     .filter((w) => !query.value || [w.sku, w.skuName, w.warehouse].join(' ').toLowerCase().includes(query.value.toLowerCase()))
 );
 const totals = computed(() => ({
@@ -61,7 +69,7 @@ const totals = computed(() => ({
             <td class="mono">{{ num(w.qty) }} {{ w.unit }}</td>
             <td class="mono">{{ num(w.reserved) }} {{ w.unit }}</td>
             <td class="mono"><span class="pill" :class="w.free <= 0 ? 'red' : ''">{{ num(w.free) }} {{ w.unit }}</span></td>
-            <td><button class="btn slim ghost" title="Редактировать" @click.stop="openEdit(w in rows)">✎ Изменить</button></td>
+            <td><button class="btn slim ghost" title="Редактировать" @click.stop="openEdit(w)">✎ Изменить</button></td>
           </tr>
           <tr v-if="!rows.length"><td colspan="7" class="empty">Остатков нет.</td></tr>
         </tbody>

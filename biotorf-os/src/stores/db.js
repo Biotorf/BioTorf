@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { commsApi, apiEnabled, checkApi, COMMS_API_URL } from '@/api/commsClient';
+import { commsApi, apiEnabled, checkApi } from '@/api/commsClient';
 import { logisticsApi } from '@/api/logisticsClient';
 import { crmApi } from '@/api/crmClient';
 
@@ -7,9 +7,6 @@ import { crmApi } from '@/api/crmClient';
 const apiOn = () => typeof apiEnabled === 'function' ? apiEnabled() : !!apiEnabled;
 
 const KEY = 'biotorf-business-os-mvp-2026-10';
-// ключ миграции: если изменится — локальное демо-состояние будет сброшено
-const MIG_KEY = 'biotorf.storage.migration';
-const MIGRATION = 'lists-v3';   // 2026-11: справочники списков (выпадающие с кнопкой «＋»)
 
 // Пустое состояние: без тестовых записей, только справочники и настройки
 function emptyState() {
@@ -49,15 +46,6 @@ function emptyState() {
       'Пилот прекращен', 'Передан в продажи', 'Завершен'],
   };
 }
-
-// Один раз после обновления: стираем localStorage со старыми демо-данными
-try {
-  if (localStorage.getItem(MIG_KEY) !== MIGRATION) {
-    localStorage.removeItem(KEY);
-    localStorage.setItem(MIG_KEY, MIGRATION);
-    localStorage.setItem('biotorf.needsServerWipe', '1');   // просим сервер стереть свои таблицы
-  }
-} catch { /* localStorage недоступен */ }
 
 // Коллекции, которые синхронизируются с бэкендом (backend/crm.py)
 const SYNC_COLLECTIONS = [
@@ -426,7 +414,7 @@ export const useDbStore = defineStore('db', {
         .map((it) => {
           const sku = this.skuById(it.sku);
           const packs = Number(it.packs) || 0, price = Number(it.price) || 0;
-          return { sku: it.sku, name: sku.name || it.sku, pack: sku.pack || 1, packs, liters: packs * (sku.pack || 1), price, sum: packs * price };
+          return { sku: it.sku, name: sku?.name || it.sku, pack: sku?.pack || 1, packs, liters: packs * (sku?.pack || 1), price, sum: packs * price };
         });
       const total = items.reduce((s, it) => s + it.sum, 0);
       const quote = {
@@ -453,7 +441,7 @@ export const useDbStore = defineStore('db', {
       const order = {
         id: this.uid('O'), num: 'З-' + String(Date.now()).slice(-6), farmId: j.farmId, journeyId: j.id, quoteId: quote.id,
         date: new Date().toISOString().slice(0, 10),
-        items: structuredClone(quote.items), amount: quote.total, status: 'Подтверждён',
+        items: (quote.items || []).map((item) => ({ ...item })), amount: quote.total, status: 'Подтверждён',
       };
       this.data.orders.push(order);
       quote.status = 'Принят';
@@ -483,7 +471,9 @@ export const useDbStore = defineStore('db', {
       const lot = 'Л-' + new Date().toISOString().slice(2, 10).replace(/-/g, '') + '-' + String(Date.now()).slice(-4);
       const batch = {
         id: this.uid('P'), date: order.date || new Date().toISOString().slice(0, 10),
-        product: prodName, batch: lot, qty: order.qty || order.volumeL || 0, unit: order.unit || 'шт.',
+        sku: order.sku, product: prodName, lot,
+        qty: order.qty ?? order.items?.reduce((sum, item) => sum + (Number(item.packs ?? item.qty) || 0), 0) ?? order.volumeL ?? 0,
+        unit: order.unit || 'шт.',
         shift: 'Автоматически', operator: order.owner || 'Производство',
         status: 'План', orderId: order.id,
         notes: `Автопартия из заказа ${order.num || order.id}. Основание: паста (концентрат), розлив: Agro 5/10 л · Home 200 мл/1 л.`,
@@ -492,12 +482,12 @@ export const useDbStore = defineStore('db', {
       order.status = 'В производство';
       // резерв с пометкой на складе (без автосписания фактического остатка)
       this.data.warehouse ??= [];
-      for (const it of order.items || []) {
-        const name = it.sku ? this.skuById(it.sku)?.name : it.name;
+      for (const [index, it] of (order.items || []).entries()) {
+        const name = this.skuById(it.sku)?.name || it.name || it.sku;
         if (!name) continue;
         this.data.warehouse.unshift({
-          id: this.uid('W'), sku: it.sku || name, batch: lot, qty: it.qty || 0, unit: it.unit || 'л',
-          location: 'склад А', expiry: '', status: 'Зарезервировано', orderId: order.id,
+          id: `${order.id}-W-${index + 1}`, sku: it.sku || name, batch: lot, qty: 0, reserved: it.packs ?? it.qty ?? 0, unit: it.unit || 'шт.',
+          warehouse: 'склад А', expiry: '', status: 'Зарезервировано', orderId: order.id,
           notes: `Резерв под заказ ${order.num || order.id} (авто)`,
         });
       }
@@ -527,7 +517,7 @@ export const useDbStore = defineStore('db', {
         id: this.uid('SH'), number: 'ОТ-' + String(Date.now()).slice(-6), journeyId: j.id,
         farmId: j.farmId, orderId: j.orderId, date: new Date().toISOString().slice(0, 10),
         planDate: s.planDate || null, carrier: s.carrier || '', vehicle: s.vehicle || '', driver: s.driver || '',
-        items: order ? structuredClone(order.items) : [], amount: order?.amount || 0,
+        items: (order?.items || []).map((item) => ({ ...item })), amount: order?.amount || 0,
         status: 'Запланирована', received: false, actId: null,
       };
       this.data.shipments ??= [];
@@ -607,7 +597,7 @@ export const useDbStore = defineStore('db', {
       return rec;
     },
 
-    save(action = 'Изменены данные', object = 'Система') {
+    save(action = 'Изменены данные', object = 'Система', sync = true) {
       this.data.audit ??= [];
       this.data.audit.unshift({ time: new Date().toISOString(), action, object });
       this.data.audit = this.data.audit.slice(0, 300);
@@ -617,7 +607,7 @@ export const useDbStore = defineStore('db', {
         console.warn('localStorage full');
       }
       // фоновая синхронизация с бэкендом (если доступен) — общая база для всех
-      this.queueCrmSync();
+      if (sync) this.queueCrmSync();
     },
 
     // ── Синхронизация CRM-состояния с сервером (backend /api/crm/state) ──
@@ -625,7 +615,7 @@ export const useDbStore = defineStore('db', {
     // ── Наполнение таблиц: CSV/JSON-импорт и очистка ───────────────────
     // Вызывается из UI («Импорт» в табличных разделах). records — массив
     // объектов [{col: value}]; заголовки CSV используются как имена полей.
-    parseCsv(text) {
+    parseCsv(text, delimiter) {
       const rows = [];
       let row = [], field = '', inQ = false;
       for (let i = 0; i < text.length; i++) {
@@ -635,7 +625,7 @@ export const useDbStore = defineStore('db', {
           else if (ch === '"') inQ = false;
           else field += ch;
         } else if (ch === '"') inQ = true;
-        else if (ch === ',' || ch === ';') { row.push(field); field = ''; }
+        else if (ch === delimiter) { row.push(field); field = ''; }
         else if (ch === '\n' || ch === '\r') {
           if (ch === '\r' && text[i + 1] === '\n') i++;
           row.push(field); field = '';
@@ -648,31 +638,51 @@ export const useDbStore = defineStore('db', {
       return rows;
     },
     csvToRecords(csvText) {
-      const rows = this.parseCsv(String(csvText || '').replace(/^\uFEFF/, ''));
+      const text = String(csvText || '').replace(/^\uFEFF/, '');
+      const commaRows = this.parseCsv(text, ',');
+      const semicolonRows = this.parseCsv(text, ';');
+      const rows = (semicolonRows[0]?.length ?? 0) > (commaRows[0]?.length ?? 0)
+        ? semicolonRows : commaRows;
       if (!rows.length) return [];
       const headers = rows[0].map((h) => h.trim());
+      if (headers.some((h) => !h) || new Set(headers).size !== headers.length) {
+        throw new Error('В CSV есть пустые или повторяющиеся заголовки');
+      }
       return rows.slice(1).map((r) => {
-        const o = {};
-        headers.forEach((h, i) => { if (h) o[h] = (r[i] ?? '').trim(); });
-        return o;
+        if (r.length !== headers.length) {
+          throw new Error('Количество значений в строке CSV не совпадает с числом заголовков');
+        }
+        return Object.fromEntries(headers.map((h, i) => [h, r[i].trim()]));
       }).filter((o) => Object.values(o).some((v) => v !== ''));
     },
     async importCollection(coll, records, mode = 'merge') {
       if (!SYNC_COLLECTIONS.includes(coll)) throw new Error('Неизвестная таблица: ' + coll);
       if (!Array.isArray(records) || !records.length) throw new Error('Пустой набор данных для импорта');
+      const prepared = records.map((raw) => {
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+          throw new Error('Каждая строка импорта должна быть объектом');
+        }
+        const { _updatedAt, _expectedRev, ...rec } = raw;
+        return { ...rec, id: String(rec.id ?? '').trim() || `${coll}-${Math.random().toString(36).slice(2) + '-' + Date.now().toString(36)}` };
+      });
       const res = apiOn()
-        ? await crmApi.importCollection(coll, records, mode)
+        ? await crmApi.importCollection(coll, prepared, mode)
         : null;
       if (mode === 'replace') this.data[coll] = [];
       const byId = new Map((this.data[coll] || []).map((r) => [r.id, r]));
       let created = 0, updated = 0;
-      for (const raw of records) {
-        const rec = { ...raw };
-        if (!rec.id) rec.id = `${coll.slice(0, 2).toUpperCase()}-${String(Date.now()).slice(-8)}-${Math.floor(Math.random() * 900 + 100)}`;
-        const ex = byId.get(rec.id);
-        if (ex) { Object.assign(ex, rec); updated++; } else { (this.data[coll] ??= []).push(rec); created++; }
+      for (const rec of prepared) {
+        const existing = byId.get(rec.id);
+        if (existing) {
+          Object.assign(existing, rec);
+          updated++;
+        } else {
+          (this.data[coll] ??= []).push(rec);
+          byId.set(rec.id, rec);
+          created++;
+        }
       }
-      this.save(`Импорт ${coll}: +${created}/${updated}`, coll);
+      this.save(`Импорт ${coll}: +${created}/${updated}`, coll, false);
       return res || { created, updated, total: (this.data[coll] || []).length };
     },
     // Удалить одну строку из таблицы (сервер + локальный кэш)
@@ -680,9 +690,9 @@ export const useDbStore = defineStore('db', {
       if (!SYNC_COLLECTIONS.includes(coll)) throw new Error('Неизвестная таблица: ' + coll);
       const list = this.data[coll] || [];
       const idx = list.findIndex((r) => r.id === id);
-      if (idx !== -1) list.splice(idx, 1);
       if (apiOn()) await crmApi.remove(coll, id);
-      this.save(`Удалена запись ${id} (${coll})`, coll);
+      if (idx !== -1) list.splice(idx, 1);
+      this.save(`Удалена запись ${id} (${coll})`, coll, false);
       return true;
     },
     async importCsvFile(coll, file, mode = 'merge') {
@@ -699,8 +709,7 @@ export const useDbStore = defineStore('db', {
       const arr = (this.data.lists[listKey] ??= []);
       if (arr.some((x) => String(x).toLowerCase() === v.toLowerCase())) return false;
       arr.push(v);
-      this.save(`Справочник «${listKey}»: ${v}`, 'lists');
-      this.queueCrmSync?.();
+      this.save(`Справочник «${listKey}»: ${v}`, 'lists', false);
       return true;
     },
     // Собрать значения поля из всех записей коллекции в справочник
@@ -724,7 +733,7 @@ export const useDbStore = defineStore('db', {
       const n = (this.data[coll] || []).length;
       this.data[coll] = [];
       if (apiOn()) await crmApi.wipeCollection(coll);
-      this.save(`Очищена таблица ${coll} (${n} записей)`, coll);
+      this.save(`Очищена таблица ${coll} (${n} записей)`, coll, false);
       return { removed: n };
     },
 
@@ -750,37 +759,10 @@ export const useDbStore = defineStore('db', {
       return state;
     },
     async pullCrmState() {
-      // первичная загрузка: берём снимок с сервера (пустой сервер = пустой UI;
-      // тестовые данные больше не засываются — см. wipeServerDemo ниже)
       if (!(await checkApi())) { this.serverOnline = false; return false; }
       this.serverOnline = true;
       try {
-        // однократно после миграции: принудительно стираем ВСЕ таблицы на
-        // сервере и локально (тестовые данные не должны пережить обновление)
-        let forcedWipe = false;
-        try { forcedWipe = localStorage.getItem('biotorf.needsServerWipe') === '1'; } catch { /* noop */ }
-        if (forcedWipe) {
-          const res = await this.wipeServerDemo();
-          if (res && res.ok) {
-            for (const coll of SYNC_COLLECTIONS) this.data[coll] = [];
-            this.data.comms = [];
-            this.data.logistics = this.data.logistics || [];
-            try {
-              localStorage.setItem(KEY, JSON.stringify(this.data));
-              localStorage.removeItem('biotorf.needsServerWipe');
-            } catch { /* noop */ }
-            return true;   // состояние уже чистое, тянуть со сервера не нужно
-          }
-          // сервер ещё не обновлён (нет /api/dev/wipe) или требует авторизации —
-          // в следующий заход попробуем снова
-        }
-        let state = await crmApi.getState();
-        const empty = SYNC_COLLECTIONS.every((c) => !(state[c] || []).length);
-        if (empty) {
-          // при первой встрече чистим сервер от демо-записей (однократно)
-          await this.wipeServerDemo().catch(() => {});
-          state = await crmApi.getState();
-        }
+        const state = await crmApi.getState();
         for (const coll of SYNC_COLLECTIONS) {
           if (Array.isArray(state[coll])) this.data[coll] = state[coll];
         }
@@ -791,18 +773,6 @@ export const useDbStore = defineStore('db', {
         this.crmSyncError = e.message;
         return false;
       }
-    },
-    // Удалить все демо-записи с бэкенда (POST /api/dev/wipe, collections=all).
-    async wipeServerDemo() {
-      try {
-        const resp = await fetch(`${COMMS_API_URL}/api/dev/wipe`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ collections: 'all', confirm: 'WIPE_ALL_DATA' }),
-          signal: AbortSignal.timeout(15000),
-        });
-        return resp.ok ? await resp.json() : null;
-      } catch { return null; }
     },
     reset() {
       this.data = emptyState();

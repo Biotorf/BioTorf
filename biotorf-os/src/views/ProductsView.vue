@@ -50,7 +50,7 @@ const lines = computed(() => {
             <td><b>{{ s.id }}</b></td><td>{{ s.name }}</td>
             <td><span class="chip">{{ s.line }}</span></td>
             <td>{{ num(s.pack) }}</td><td>{{ s.recipe }}</td><td>{{ s.status }}</td>
-            <td><button class="btn slim ghost" title="Редактировать" @click.stop="openEdit(s in skus)">✎ Изменить</button></td>
+            <td><button class="btn slim ghost" title="Редактировать" @click.stop="openEdit(s)">✎ Изменить</button></td>
           </tr>
         </tbody>
       </table>

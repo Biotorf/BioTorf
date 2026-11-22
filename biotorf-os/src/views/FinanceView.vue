@@ -63,9 +63,9 @@ const orderFarm = (orderId) => {
             <td :class="!i.paid && isLate(i.due) ? 'danger-text' : ''">{{ day((i.due || '').slice(0, 10)) }}</td>
             <td><StatusPill :status="i.paid ? 'Оплачен' : i.status" /></td>
             <td><button v-if="i.journeyId" class="btn slim" @click.stop="ui.openJourney(i.journeyId)">Процесс</button></td>
-            <td><button class="btn slim ghost" title="Редактировать" @click.stop="openEdit(i in invoices)">✎ Изменить</button></td>
+            <td><button class="btn slim ghost" title="Редактировать" @click.stop="openEdit(i)">✎ Изменить</button></td>
           </tr>
-          <tr v-if="!invoices.length"><td colspan="6" class="empty">Счетов нет. Счёт создаётся при подтверждении заказа в сквозном процессе (§3 шаг 19).</td></tr>
+          <tr v-if="!invoices.length"><td colspan="7" class="empty">Счетов нет. Счёт создаётся при подтверждении заказа в сквозном процессе (§3 шаг 19).</td></tr>
         </tbody>
       </table>
     </section>

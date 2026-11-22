@@ -46,12 +46,12 @@ const STATUSES = ['Все', 'План', 'В работе', 'Завершено']
         <tbody>
           <tr v-for="p in rows" :key="p.id">
             <td><b>{{ p.id }}</b></td>
-            <td>{{ skuName(p.sku) }}</td>
+            <td>{{ skuName(p.sku) || p.product }}</td>
             <td>{{ num(p.qty) }}</td>
             <td>{{ day((p.date || '').slice(0, 10)) }}</td>
-            <td class="mono">{{ p.lot }}</td>
+            <td class="mono">{{ p.lot ?? p.batch }}</td>
             <td><StatusPill :status="p.status" /></td>
-            <td><button class="btn slim ghost" title="Редактировать" @click.stop="openEdit(p in rows)">✎ Изменить</button></td>
+            <td><button class="btn slim ghost" title="Редактировать" @click.stop="openEdit(p)">✎ Изменить</button></td>
           </tr>
           <tr v-if="!rows.length"><td colspan="7" class="empty">Партий нет.</td></tr>
         </tbody>

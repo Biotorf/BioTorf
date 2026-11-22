@@ -19,7 +19,7 @@ const db = useDbStore();
 const ui = useUiStore();
 const { day, num } = useFormatters();
 
-const STATUSES = ['Все', 'Запланирован', 'Идёт', 'Контроль', 'Завершен', 'Пилот прекращен'];
+const STATUSES = computed(() => ['Все', ...new Set([...(db.data.pilotStages || []), ...db.pilots.map((p) => p.status).filter(Boolean)])]);
 const statusFilter = ref('Все');
 
 const pilots = computed(() =>
@@ -67,7 +67,7 @@ const appsOf = (pid) => (db.data.applications || []).filter((a) => a.pilotId ===
             <td>{{ appsOf(p.id).length }}</td>
             <td><StatusPill :status="p.status" /></td>
             <td><button v-if="p.journeyId" class="btn slim" @click.stop="ui.openJourney(p.journeyId)">Процесс</button></td>
-            <td><button class="btn slim ghost" title="Редактировать" @click.stop="openEdit(p in pilots)">✎ Изменить</button></td>
+            <td><button class="btn slim ghost" title="Редактировать" @click.stop="openEdit(p)">✎ Изменить</button></td>
           </tr>
           <tr v-if="!pilots.length"><td colspan="9" class="empty">Пилотов нет. Пилот создаётся из сквозного процесса для агропроизводителя (§3 шаг 5).</td></tr>
         </tbody>

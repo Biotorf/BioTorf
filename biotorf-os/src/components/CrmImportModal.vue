@@ -46,7 +46,10 @@ async function onFile(e) {
     if (/\.json$/i.test(f.name) || text.trim().startsWith('[')) {
       const parsed = JSON.parse(text);
       if (!Array.isArray(parsed)) throw new Error('JSON должен быть массивом объектов');
-      records.value = parsed.filter((r) => r && typeof r === 'object');
+      if (parsed.some((r) => !r || typeof r !== 'object' || Array.isArray(r))) {
+        throw new Error('Каждая строка JSON должна быть объектом');
+      }
+      records.value = parsed;
     } else {
       records.value = db.csvToRecords(text);
     }

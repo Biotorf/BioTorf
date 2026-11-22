@@ -24,12 +24,13 @@ const rows = computed(() =>
     .filter((o) => statusFilter.value === 'Все' || o.status === statusFilter.value)
     .filter((o) => {
       const q = ui.search.toLowerCase();
-      return !q || [o.id, o.farmName, db.farmById(o.farmId)?.name, o.sku, o.status].join(' ').toLowerCase().includes(q);
+      return !q || [o.id, o.number, o.num, o.farmName, db.farmById(o.farmId)?.name, o.sku, o.status].join(' ').toLowerCase().includes(q);
     })
     .slice().sort((a, b) => (a.date < b.date ? 1 : -1))
 );
 const farmName = (id) => db.farmById(id)?.name || '—';
 const skuName = (id) => db.skuById(id)?.name || id;
+const itemName = (item) => item.name || skuName(item.sku);
 </script>
 
 <template>
@@ -57,10 +58,10 @@ const skuName = (id) => db.skuById(id)?.name || id;
         <thead><tr><th>Заказ</th><th>Хозяйство</th><th>Продукт</th><th>Кол-во</th><th>Сумма</th><th>Дата</th><th>Статус</th><th></th></tr></thead>
         <tbody>
           <tr v-for="o in rows" :key="o.id" class="row-click" @click="ui.openRecord('order', o.id)">
-            <td><b>{{ o.id }}</b><div class="mini" v-if="o.journeyId">Маршрут {{ o.journeyId }}</div></td>
+            <td><b>{{ o.number ?? o.num ?? o.id }}</b><div class="mini" v-if="o.journeyId">Маршрут {{ o.journeyId }}</div></td>
             <td>{{ o.farmName || farmName(o.farmId) }}</td>
-            <td>{{ o.product || skuName(o.sku) }}</td>
-            <td>{{ num(o.qty) }} {{ o.unit || 'шт.' }}</td>
+            <td>{{ o.product || skuName(o.sku) || o.items?.map(itemName).filter(Boolean).join(', ') }}</td>
+            <td><template v-if="o.qty != null">{{ num(o.qty) }} {{ o.unit || 'шт.' }}</template><template v-else>{{ o.items?.map((item) => `${num(item.packs ?? item.qty)} ${item.unit || 'шт.'}`).join(' / ') || '—' }}</template></td>
             <td class="mono">{{ money(o.amount) }}</td>
             <td>{{ day((o.date || '').slice(0, 10)) }}</td>
             <td><StatusPill :status="o.status" /></td>
