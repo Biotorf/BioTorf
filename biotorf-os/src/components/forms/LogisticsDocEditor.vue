@@ -13,6 +13,7 @@ import { toCsv, toXmlSpreadsheet, downloadBlob, printHtml } from '@/utils/spread
 const props = defineProps({
   doc: { type: Object, default: null },   // существующий документ или null (создание)
   kind: { type: String, default: 'supply' },
+  initialValues: { type: Object, default: () => ({}) },
 });
 
 const db = useDbStore();
@@ -22,21 +23,22 @@ const { money, num } = useFormatters();
 const isNew = !props.doc || String(props.doc.id).startsWith('NEW');
 const today = new Date().toISOString().slice(0, 10);
 
+const source = props.doc || props.initialValues;
 const form = reactive({
-  kind: props.doc?.kind || props.kind,
-  number: props.doc?.number || genNumber(props.doc?.kind || props.kind),
-  date: props.doc?.date || today,
-  status: props.doc?.status || 'Черновик',
-  party: props.doc?.party || '',
-  farmId: props.doc?.farmId || '',
-  orderId: props.doc?.orderId || '',
-  warehouse: props.doc?.warehouse || '',
-  vehicle: props.doc?.vehicle || '',
-  driver: props.doc?.driver || '',
-  base: props.doc?.base || '',
-  note: props.doc?.note || '',
-  items: props.doc?.items?.length
-    ? props.doc.items.map((it) => ({ ...it }))
+  kind: source?.kind || props.kind,
+  number: source?.number || genNumber(source?.kind || props.kind),
+  date: source?.date || today,
+  status: source?.status || 'Черновик',
+  party: source?.party || '',
+  farmId: source?.farmId || '',
+  orderId: source?.orderId || '',
+  warehouse: source?.warehouse || '',
+  vehicle: source?.vehicle || '',
+  driver: source?.driver || '',
+  base: source?.base || '',
+  note: source?.note || '',
+  items: source?.items?.length
+    ? source.items.map((it) => ({ ...it }))
     : [emptyItem()],
 });
 

@@ -5,51 +5,20 @@
 // тот же путь, что и CSV-импорт: сервер + локальный кэш.
 import { ref, computed, watch, onMounted } from 'vue';
 import { useDbStore } from '@/stores/db';
+import { COLL_RU, FIELD_RU, REF_FIELD, REF_KINDS, crmFields, crmTitle, crmValue } from '@/data/crmFields';
 
 const props = defineProps({
   coll: { type: String, required: true },     // farms, leads, deals…
+  initialValues: { type: Object, default: () => ({}) },
   record: { type: Object, default: null },    // непусто — режим редактирования
 });
-const emit = defineEmits(['close', 'saved']);
+const emit = defineEmits(['close', 'saved', 'deleted']);
 
 const db = useDbStore();
 
-// Типовые поля коллекций (совпадают с заголовками CSV-шаблонов импорта)
-const SCHEMAS = {
-  farms:      ['id', 'name', 'type', 'region', 'crop', 'area', 'owner', 'status', 'next', 'phone', 'notes'],
-  leads:      ['id', 'name', 'contactName', 'phone', 'company', 'region', 'source', 'owner', 'status', 'next'],
-  deals:      ['id', 'title', 'farmId', 'stage', 'volumeL', 'amount', 'owner', 'next'],
-  orders:     ['id', 'number', 'farmId', 'dealId', 'date', 'sku', 'product', 'qty', 'unit', 'amount', 'status', 'owner'],
-  invoices:   ['id', 'number', 'orderId', 'dealId', 'date', 'due', 'amount', 'paid', 'status'],
-  payments:   ['id', 'invoiceId', 'date', 'amount', 'method', 'comment'],
-  shipments:  ['id', 'orderId', 'date', 'transport', 'driver', 'plate', 'route', 'status'],
-  tasks:      ['id', 'title', 'owner', 'due', 'priority', 'status', 'refKind', 'refId'],
-  contacts:   ['id', 'farmId', 'name', 'role', 'phone', 'email', 'primary'],
-  skus:       ['id', 'name', 'line', 'pack', 'recipe', 'status', 'category', 'unit', 'price', 'stock', 'notes'],
-  warehouse:  ['id', 'sku', 'batch', 'qty', 'reserved', 'unit', 'warehouse', 'expiry', 'status'],
-  production: ['id', 'date', 'sku', 'product', 'lot', 'qty', 'unit', 'status', 'shift', 'operator', 'notes'],
-  pilots:     ['id', 'title', 'farmId', 'crop', 'area', 'startDate', 'endDate', 'nextCheck', 'status', 'owner', 'result'],
-  quotes:     ['id', 'number', 'dealId', 'date', 'amount', 'status'],
-  journeys:   ['id', 'leadId', 'farmId', 'stage', 'owner', 'next'],
-  knowledge:  ['id', 'title', 'category', 'tags', 'text'],
-  media:      ['id', 'title', 'kind', 'url', 'tag', 'date', 'pilotId', 'farmId', 'consent', 'note'],
-  social:     ['id', 'platform', 'title', 'status', 'scheduledDate', 'link'],
-};
-
-// Статусы пилотов — из справочника этапов (db.pilotStages), они же ENUM для status в pilots
-
-const NUM_FIELDS = new Set(['area', 'volumeL', 'amount', 'qty', 'price', 'stock', 'pack', 'reserved']);
-const BOOL_FIELDS = new Set(['paid', 'primary']);
+const NUM_FIELDS = new Set(['area', 'volumeL', 'amount', 'qty', 'price', 'stock', 'pack', 'reserved', 'total']);
+const BOOL_FIELDS = new Set(['paid', 'primary', 'received']);
 const LONG_FIELDS = new Set(['notes', 'text', 'route', 'result', 'tags']);
-
-// Русские подписи коллекций и полей для модальных окон
-const COLL_RU = {
-  farms: 'Хозяйства', leads: 'Лиды', deals: 'Сделки', orders: 'Заказы',
-  invoices: 'Счета', payments: 'Платежи', shipments: 'Отгрузки', tasks: 'Задачи',
-  contacts: 'Контакты', skus: 'Товары (SKU)', warehouse: 'Склад', production: 'Производство',
-  pilots: 'Пилоты', quotes: 'КП', journeys: 'Маршруты клиентов', knowledge: 'База знаний',
-  media: 'Медиа', social: 'Соцсети',
-};
 
 // ── Выпадающие списки с кнопкой «＋» ────────────────────────────────
 // Ключ справочника db.lists → откуда брать значения. optionsFor() объединяет
@@ -62,14 +31,13 @@ const LIST_FIELD = {
   plate: 'plates', shift: 'shifts', operator: 'operators', platform: 'platforms',
   product: 'products', priority: 'priorities', method: 'methods', category: 'categories',
 };
-// Поля-ссылки на записи других таблиц (value = ID, подпись = название)
-const REF_FIELD = { farmId: 'farms', dealId: 'deals', orderId: 'orders', invoiceId: 'invoices', leadId: 'leads', pilotId: 'pilots', sku: 'skus' };
 // Жёсткие перечисления (этапы воронки, приоритеты и т.п.)
 const ENUM_FIELD = {
   stage: () => [...(db.data.stages || [])],
   pilotStage: () => [...(db.data.pilotStages || [])],
   priority: () => ['Низкий', 'Обычный', 'Высокий', 'Критический'],
   consent: () => ['Нет', 'Да'],
+  received: () => ['нет', 'да'],
   paid: () => ['нет', 'да'],
   primary: () => ['нет', 'да'],
   refKind: () => ['deal', 'lead', 'farm', 'order', 'invoice', 'shipment', 'pilot', 'journey', 'quote', 'task'],
@@ -99,39 +67,20 @@ const ENUM_FIELD = {
 };
 function listKeyFor(k) { return LIST_FIELD[k]; }
 function isSelectField(k) {
-  return k in ENUM_FIELD || k in REF_FIELD || !!LIST_FIELD[k];
+  return k in ENUM_FIELD || k in REF_FIELD || (k === 'refId' && !!REF_KINDS[form.value.refKind]) || !!LIST_FIELD[k];
 }
 function selectOptions(k) {
   if (k in ENUM_FIELD) {
     const base = ENUM_FIELD[k]();
     return LIST_FIELD[k] ? [...new Set([...base, ...db.optionsFor(LIST_FIELD[k], props.coll, k)])] : base;
   }
-  if (k in REF_FIELD) {
-    const coll = REF_FIELD[k];
-    return (db.data[coll] || []).map((r) => ({ value: r.id, label: `${r.name || r.title || r.number || r.id} · ${r.id}` }));
+  if (k in REF_FIELD || k === 'refId') {
+    const coll = REF_FIELD[k] || REF_KINDS[form.value.refKind];
+    return (db.data[coll] || []).map((r) => ({ value: r.id, label: `${crmTitle(r)} · ${r.id}` }));
   }
   return db.optionsFor(LIST_FIELD[k], props.coll, k).map((v) => ({ value: v, label: v }));
 }
-const FIELD_RU = {
-  id: 'ID (не менять)', name: 'Название', contactName: 'Контактное лицо', phone: 'Телефон',
-  company: 'Компания', region: 'Регион', source: 'Источник', owner: 'Ответственный',
-  status: 'Статус', next: 'Следующее действие', notes: 'Заметки', type: 'Тип',
-  crop: 'Культура', area: 'Площадь', title: 'Название / тема', farmId: 'Хозяйство (ID)',
-  stage: 'Этап', volumeL: 'Объём, л', amount: 'Сумма', number: 'Номер', dealId: 'Сделка (ID)',
-  date: 'Дата', orderId: 'Заказ (ID)', invoiceId: 'Счёт (ID)', paid: 'Оплачен (да/нет)',
-  method: 'Способ оплаты', comment: 'Комментарий', transport: 'Транспорт', driver: 'Водитель',
-  plate: 'Гос. номер', route: 'Маршрут', due: 'Срок', priority: 'Приоритет',
-  refKind: 'Связь · тип', refId: 'Связь · ID', role: 'Должность', email: 'E-mail',
-  primary: 'Основной контакт', sku: 'Артикул (SKU)', category: 'Категория', unit: 'Ед. изм.',
-  price: 'Цена', stock: 'Остаток', batch: 'Партия', qty: 'Количество', location: 'Локация',
-  expiry: 'Срок годности', product: 'Продукт', shift: 'Смена', operator: 'Оператор',
-  startDate: 'Начало', endDate: 'Окончание', result: 'Результат', leadId: 'Лид (ID)',
-  tags: 'Теги', text: 'Текст', url: 'Ссылка', tag: 'Метка', platform: 'Платформа',
-  line: 'Линейка', pack: 'Фасовка, л', recipe: 'Рецептура', reserved: 'Резерв', warehouse: 'Склад',
-  lot: 'Номер лота', nextCheck: 'Следующий контроль', pilotId: 'Пилот',
-  kind: 'Тип материала', consent: 'Согласие на публикацию', note: 'Примечание',
-  scheduledDate: 'Дата публикации', link: 'Ссылка',
-};
+
 function fieldLabel(k) {
   if (k === 'id') return isEdit.value ? 'ID (не менять)' : 'ID (можно оставить пустым)';
   return FIELD_RU[k] || k;
@@ -139,34 +88,49 @@ function fieldLabel(k) {
 
 const isEdit = computed(() => !!props.record);
 
-const fields = computed(() => {
-  const base = SCHEMAS[props.coll] || [];
-  const keys = new Set(base);
-  if (props.record) Object.keys(props.record).forEach((k) => keys.add(k));
-  // если схемы нет — берём ключи из первой записи коллекции
-  if (!keys.size) {
-    const first = (db.data[props.coll] || [])[0];
-    if (first) Object.keys(first).forEach((k) => keys.add(k));
-  }
-  return [...keys].filter((k) => !k.startsWith('_') && !Object.values(legacyFields[props.coll] || {}).includes(k));
-});
-
+const fields = computed(() => crmFields(props.coll, [props.record || props.initialValues]));
 const form = ref({});
 let initial = {};
-const legacyFields = {
-  orders: { number: 'num' },
-  warehouse: { warehouse: 'location' },
-  production: { lot: 'batch' },
-  pilots: { nextCheck: 'next' },
-  media: { kind: 'type', date: 'uploadedAt', note: 'notes' },
-};
+const jsonFields = new Set(['history', 'qualification']);
+const lineItems = ref([]);
+const initialItems = ref('[]');
+function addLine() {
+  lineItems.value.push({ sku: '', name: '', packs: 1, unit: 'шт.', price: 0 });
+}
+function selectSku(item) {
+  const sku = db.skuById(item.sku);
+  if (!sku) return;
+  item.name = sku.name;
+  item.price = sku.price ?? item.price;
+  item.pack = sku.pack ?? 1;
+}
+function buildItems() {
+  return lineItems.value.map((item) => {
+    const packs = Number(item.packs);
+    const price = Number(item.price);
+    if ((!item.sku && !item.name?.trim()) || !Number.isFinite(packs) || packs <= 0 || !Number.isFinite(price) || price < 0) {
+      throw new Error('Укажите товар, положительное количество и цену для каждой позиции.');
+    }
+    const pack = Number(item.pack) || db.skuById(item.sku)?.pack || 1;
+    return { ...item, packs, qty: packs, price, pack, liters: packs * pack, sum: packs * price };
+  });
+}
+function isJsonField(key) {
+  const value = crmValue(props.coll, props.record, key);
+  return jsonFields.has(key) || (value != null && typeof value === 'object');
+}
 function initForm() {
   const f = {};
   for (const k of fields.value) {
-    const record = props.record;
-    const v = record?.[k] ?? record?.[legacyFields[props.coll]?.[k]];
+    const v = crmValue(props.coll, props.record || props.initialValues, k);
     f[k] = v == null ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
   }
+  const items = (props.record || props.initialValues).items;
+  lineItems.value = Array.isArray(items) ? items.filter(Boolean).map((item) => ({
+    ...item, sku: item.sku || item.skuId || '', packs: item.packs ?? item.qty ?? 1,
+    price: item.price ?? 0, unit: item.unit || 'шт.',
+  })) : [];
+  initialItems.value = JSON.stringify(lineItems.value);
   initial = f;
   form.value = { ...f };
 }
@@ -180,6 +144,7 @@ async function save() {
   try {
     const rec = {};
     for (const k of fields.value) {
+      if (k === 'items') continue;
       let v = form.value[k];
       if (k !== 'id' && (isEdit.value ? v === initial[k] : v === '')) continue;
       if (v !== '' && NUM_FIELDS.has(k)) {
@@ -187,8 +152,21 @@ async function save() {
         if (!Number.isFinite(v)) throw new Error(`Введите число в поле «${fieldLabel(k)}»`);
       }
       if (v !== '' && BOOL_FIELDS.has(k)) v = /^(1|true|да|yes)$/i.test(String(v));
-      if (props.record?.[k] && typeof props.record[k] === 'object' && v !== '') v = JSON.parse(v);
+      if (isJsonField(k)) {
+        try {
+          v = v === '' ? (['items', 'history'].includes(k) ? [] : null) : JSON.parse(v);
+          if (['items', 'history'].includes(k) && !Array.isArray(v)) throw new Error();
+        } catch {
+          throw new Error(`Проверьте формат JSON в поле «${fieldLabel(k)}»`);
+        }
+      }
       rec[k] = v;
+    }
+    if (fields.value.includes('items') && (!isEdit.value || JSON.stringify(lineItems.value) !== initialItems.value)) {
+      rec.items = buildItems();
+      const total = rec.items.reduce((sum, item) => sum + item.sum, 0);
+      if (props.coll === 'quotes') rec.total = total;
+      if (props.coll === 'orders' && rec.amount == null) rec.amount = total;
     }
     await db.importCollection(props.coll, [rec], 'merge');
     const options = {};
@@ -264,12 +242,30 @@ async function removeRecord() {
         <button class="x" @click="emit('close')">✕</button>
       </div>
       <div class="body">
-        <label v-for="k in fields" :key="k" class="field" :class="{ wide: LONG_FIELDS.has(k) }">
+        <fieldset v-if="fields.includes('items')" class="items wide">
+          <legend>Товарные позиции</legend>
+          <div v-for="(item, index) in lineItems" :key="index" class="item">
+            <label>Артикул
+              <select v-model="item.sku" class="input" @change="selectSku(item)">
+                <option value="">Без артикула</option>
+                <option v-if="item.sku && !db.skuById(item.sku)" :value="item.sku">{{ item.sku }}</option>
+                <option v-for="sku in db.skus" :key="sku.id" :value="sku.id">{{ crmTitle(sku) }}</option>
+              </select>
+            </label>
+            <label>Название <input v-model="item.name" class="input" /></label>
+            <label>Количество <input v-model="item.packs" class="input" type="number" min="0" step="any" /></label>
+            <label>Ед. изм. <input v-model="item.unit" class="input" /></label>
+            <label>Цена <input v-model="item.price" class="input" type="number" min="0" step="any" /></label>
+            <button type="button" class="btn slim danger-text" @click="lineItems.splice(index, 1)">Удалить позицию</button>
+          </div>
+          <button type="button" class="btn slim" @click="addLine">＋ Позиция</button>
+        </fieldset>
+        <label v-for="k in fields.filter((key) => key !== 'items')" :key="k" class="field" :class="{ wide: (LONG_FIELDS.has(k) || isJsonField(k)) }">
           <span class="fname">{{ fieldLabel(k) }}</span>
           <!-- выпадающий список + кнопка «＋» добавления нового значения -->
           <template v-if="isSelectField(k)">
             <div class="selrow">
-              <select class="input" v-model="form[k]">
+              <select class="input" v-model="form[k]" @change="k === 'refKind' && (form.refId = '')">
                 <option value="">— не выбрано —</option>
                 <option v-for="o in selectOptions(k)" :key="o.value ?? o" :value="o.value ?? o">{{ o.label ?? o }}</option>
                 <!-- значение может быть введено раньше и отсутствовать в списке — оставляем его -->
@@ -283,7 +279,7 @@ async function removeRecord() {
               <button type="button" class="btn primary slim" :disabled="addingBusy || busy" @click="quickAdd(k)">Добавить</button>
             </div>
           </template>
-          <textarea v-else-if="LONG_FIELDS.has(k)" v-model="form[k]" rows="3"></textarea>
+          <textarea v-else-if="LONG_FIELDS.has(k) || isJsonField(k)" v-model="form[k]" rows="3"></textarea>
           <input v-else v-model="form[k]" :readonly="k === 'id' && isEdit" :inputmode="NUM_FIELDS.has(k) ? 'decimal' : undefined" />
         </label>
         <div v-if="optionsError" class="err" role="alert">{{ optionsError }}</div>
@@ -309,12 +305,15 @@ async function removeRecord() {
 .fname { color: #5d7168; }
 .field input, .field textarea { border: 1px solid #cfddd5; border-radius: 8px; padding: 7px 9px; font: inherit; background: #fbfdfc; }
 .field textarea { resize: vertical; }
-.field.wide { grid-column: 1 / -1; }
+.wide { grid-column: 1 / -1; }
 .selrow { display: flex; gap: 6px; align-items: stretch; }
 .selrow select { flex: 1; border: 1px solid #cfddd5; border-radius: 8px; padding: 7px 9px; font: inherit; background: #fbfdfc; min-width: 0; }
 .btn.plus { flex: none; width: 34px; padding: 0; font-size: 16px; line-height: 1; border-radius: 8px; }
 .addrow { display: flex; gap: 6px; margin-top: 6px; }
 .addrow .input { flex: 1; min-width: 0; }
+.items { min-width: 0; border: 1px solid #cfddd5; border-radius: 8px; }
+.item { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 6px; align-items: end; margin-bottom: 8px; }
+.item label { min-width: 0; font-size: 12px; }
 .err { grid-column: 1 / -1; color: #c0392b; font-size: 12px; }
 .foot { padding: 12px 16px; border-top: 1px solid #e3ece7; display: flex; justify-content: flex-end; gap: 8px; }
 </style>

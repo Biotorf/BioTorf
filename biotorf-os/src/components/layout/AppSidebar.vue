@@ -28,6 +28,7 @@ function onLogout() {
 const GROUPS = [
   { label: 'ОБЗОР И ПРОЦЕСС', items: [
     ['dashboard', '▦', 'Обзор'],
+    ['registry', '▤', 'Реестр CRM'],
     ['crm', '♙', 'Клиенты и хозяйства'],
     ['comms', '☎', 'Коммуникации'],
     ['pipeline', '▥', 'Сделки и воронка'],
@@ -63,7 +64,7 @@ const VIS = {
 };
 
 // ключи разделов, которые видны всем ролям (общая рабочая лента связи)
-const ALWAYS = ['comms'];
+const ALWAYS = ['comms', 'registry'];
 
 
 const visibleMenu = computed(() => {

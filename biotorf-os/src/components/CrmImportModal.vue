@@ -5,14 +5,7 @@
 import { ref, computed } from 'vue';
 import { useDbStore } from '@/stores/db';
 
-// Русские подписи коллекций (совпадают с CrmRowModal)
-const COLL_RU = {
-  farms: 'Хозяйства', leads: 'Лиды', deals: 'Сделки', orders: 'Заказы',
-  invoices: 'Счета', payments: 'Платежи', shipments: 'Отгрузки', tasks: 'Задачи',
-  contacts: 'Контакты', skus: 'Товары (SKU)', warehouse: 'Склад', production: 'Производство',
-  pilots: 'Пилоты', quotes: 'КП', journeys: 'Маршруты клиентов', knowledge: 'База знаний',
-  media: 'Медиа', social: 'Соцсети',
-};
+import { COLL_RU } from '@/data/crmFields';
 
 const props = defineProps({
   coll: { type: String, required: true },   // коллекция db.js: farms, leads, deals…

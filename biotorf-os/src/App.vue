@@ -46,7 +46,7 @@ onMounted(() => window.addEventListener('unhandledrejection', (ev) => {
 
 // навигация кнопкой «назад/вперёд» браузера тоже меняет раздел
 function onHashChange() {
-  const v = (location.hash || '').replace(/^#\/?/, '');
+  const v = (location.hash || '').replace(/^#\/?/, '').split('?')[0];
   if (v && views[v]) ui.view = v;
 }
 onMounted(() => window.addEventListener('hashchange', onHashChange));
@@ -54,6 +54,7 @@ onBeforeUnmount(() => window.removeEventListener('hashchange', onHashChange));
 
 const views = {
   dashboard: markRaw(defineAsyncComponent(() => import('@/views/DashboardView.vue'))),
+  registry: markRaw(defineAsyncComponent(() => import('@/views/RegistryView.vue'))),
   crm: markRaw(defineAsyncComponent(() => import('@/views/CrmView.vue'))),
   comms: markRaw(defineAsyncComponent(() => import('@/views/CommsView.vue'))),
   pipeline: markRaw(defineAsyncComponent(() => import('@/views/PipelineView.vue'))),
@@ -76,6 +77,11 @@ const views = {
   channels: markRaw(defineAsyncComponent(() => import('@/views/ChannelsView.vue'))),
 };
 
+const registryTables = {
+  crm: 'farms', pipeline: 'deals', journey: 'journeys', pilots: 'pilots', knowledge: 'knowledge',
+  social: 'social', products: 'skus', orders: 'orders', production: 'production',
+  warehouse: 'warehouse', shipments: 'logistics', finance: 'invoices', tasks: 'tasks', media: 'media',
+};
 const currentView = computed(() => views[ui.view] || views.dashboard);
 </script>
 
@@ -88,15 +94,13 @@ const currentView = computed(() => views[ui.view] || views.dashboard);
     <main class="main">
       <AppTopbar />
       <div class="content">
+        <a v-if="registryTables[ui.view]" class="btn slim ghost" :href="'#/registry?table=' + registryTables[ui.view]">Все поля и записи</a>
         <Suspense>
           <component :is="currentView" />
           <template #fallback>
             <div class="empty">Загрузка раздела…</div>
           </template>
 
-<style scoped>
-.boot{min-height:100vh;display:grid;place-items:center;color:#729e8e;font-size:13px}
-</style>
         </Suspense>
         <footer class="app-footer">
           BIOTORF Business OS · рабочая система
@@ -106,3 +110,7 @@ const currentView = computed(() => views[ui.view] || views.dashboard);
     <AppModal />
   </div>
 </template>
+
+<style scoped>
+.boot{min-height:100vh;display:grid;place-items:center;color:#729e8e;font-size:13px}
+</style>

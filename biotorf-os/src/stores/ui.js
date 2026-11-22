@@ -1,14 +1,15 @@
 import { defineStore } from 'pinia';
+import { defineAsyncComponent, markRaw } from 'vue';
 
 // ── hash-роутинг: активный раздел живёт в URL (#/comms), поэтому при
 // обновлении страницы пользователь остаётся там же, а не сбрасывается в «Обзор»
 const VALID_VIEWS = [
-  'dashboard', 'crm', 'comms', 'pipeline', 'pilots', 'knowledge', 'social',
+  'dashboard', 'registry', 'crm', 'comms', 'pipeline', 'pilots', 'knowledge', 'social',
   'products', 'orders', 'production', 'warehouse', 'shipments', 'finance',
   'tasks', 'analytics', 'journey', 'calendar', 'media', 'notifications', 'employees',
 ];
 function viewFromHash() {
-  const v = (location.hash || '').replace(/^#\/?/, '');
+  const v = (location.hash || '').replace(/^#\/?/, '').split('?')[0];
   return VALID_VIEWS.includes(v) ? v : null;
 }
 
@@ -59,7 +60,8 @@ export const useUiStore = defineStore('ui', {
       if (location.hash !== h) history.replaceState(null, '', h);
     },
     openModal(title, component, props = {}) {
-      this.modal = { title, component, props };
+      const view = typeof component === 'function' ? defineAsyncComponent(component) : component;
+      this.modal = { title, component: markRaw(view), props };
     },
     closeModal() {
       this.modal = null;

@@ -309,9 +309,9 @@ export const useDbStore = defineStore('db', {
       return next;
     },
     async removeLogistics(id) {
+      if (!String(id).startsWith('LOC-')) await logisticsApi.remove(id);
       this.data.logistics = (this.data.logistics || []).filter((d) => d.id !== id);
-      this.save('Удалён документ логистики', id);
-      try { await logisticsApi.remove(id); } catch { /* noop */ }
+      this.save('Удалён документ логистики', id, false);
     },
 
     // ── Сквозной процесс: лид → квалификация → сделка → пилот → КП →

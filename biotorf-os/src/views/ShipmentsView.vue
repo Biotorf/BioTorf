@@ -74,7 +74,11 @@ function openEditor(doc = null) {
 
 async function removeDoc(d) {
   if (!confirm(`Удалить документ ${d.number} (${d.party || '—'})?`)) return;
-  await db.removeLogistics(d.id);
+  try {
+    await db.removeLogistics(d.id);
+  } catch (error) {
+    alert(error.message);
+  }
 }
 
 // ── экспорт / печать всего реестра ──────────────────────────────────
