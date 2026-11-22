@@ -7,10 +7,11 @@ import StatusPill from '@/components/ui/StatusPill.vue';
 const props = defineProps({
   coll: { type: String, required: true },
   rows: { type: Array, required: true },
+  columns: { type: Array, default: null },
   empty: { type: String, default: 'Записей нет.' },
 });
 const db = useDbStore();
-const fields = computed(() => crmFields(props.coll, props.rows));
+const fields = computed(() => props.columns || crmFields(props.coll, props.rows));
 
 function display(row, key) {
   const value = crmValue(props.coll, row, key);
@@ -35,19 +36,21 @@ function display(row, key) {
         <tr v-for="row in rows" :key="row.id">
           <td v-if="$slots.actions"><div class="row-actions"><slot name="actions" :row="row" /></div></td>
           <td v-for="key in fields" :key="key">
-            <StatusPill v-if="key === 'status' && row.status" :status="row.status" />
-            <ul v-else-if="key === 'items' && Array.isArray(row.items) && row.items.length" class="items">
-              <li v-for="(item, index) in row.items" :key="index">
-                <template v-if="item && typeof item === 'object'">
-                  <span v-for="([field, value]) in Object.entries(item).filter(([field]) => field !== 'qty' || item.packs == null)" :key="field">
-                    <b>{{ crmFieldLabel(coll, field) }}</b> {{ crmDisplayValue(value) }}
-                  </span>
-                </template>
-                <span v-else>{{ crmDisplayValue(item) }}</span>
-              </li>
-            </ul>
-            <span v-else class="field-value" :class="{ 'danger-text': key === 'due' && isLate(row.due) &&
-              ((coll === 'invoices' && !row.paid) || (coll === 'tasks' && row.status !== 'Выполнена')) }">{{ display(row, key) }}</span>
+            <slot :name="key" :row="row" :value="display(row, key)">
+              <StatusPill v-if="key === 'status' && row.status" :status="row.status" />
+              <ul v-else-if="key === 'items' && Array.isArray(row.items) && row.items.length" class="items">
+                <li v-for="(item, index) in row.items" :key="index">
+                  <template v-if="item && typeof item === 'object'">
+                    <span v-for="([field, value]) in Object.entries(item).filter(([field]) => field !== 'qty' || item.packs == null)" :key="field">
+                      <b>{{ crmFieldLabel(coll, field) }}</b> {{ crmDisplayValue(value) }}
+                    </span>
+                  </template>
+                  <span v-else>{{ crmDisplayValue(item) }}</span>
+                </li>
+              </ul>
+              <span v-else class="field-value" :class="{ 'danger-text': key === 'due' && isLate(row.due) &&
+                ((coll === 'invoices' && !row.paid) || (coll === 'tasks' && !['Выполнена', 'Отменена'].includes(row.status))) }">{{ display(row, key) }}</span>
+            </slot>
           </td>
         </tr>
         <tr v-if="!rows.length"><td :colspan="fields.length + ($slots.actions ? 1 : 0)" class="empty">{{ empty }}</td></tr>

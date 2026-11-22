@@ -19,9 +19,11 @@ const ui = useUiStore();
 const { money } = useFormatters();
 const invoices = computed(() => db.invoices.slice().sort((a, b) => ((a.due || '') < (b.due || '') ? 1 : -1)));
 const totals = computed(() => {
-  const issued = invoices.value.reduce((s, i) => s + (Number(i.amount) || 0), 0);
-  const paid = invoices.value.filter((i) => i.paid || i.status === 'Оплачен').reduce((s, i) => s + (Number(i.amount) || 0), 0);
-  return { issued, paid, debt: issued - paid };
+  const active = invoices.value.filter((invoice) => !['Отменён', 'Отменен'].includes(invoice.status));
+  const issued = active.reduce((s, i) => s + (Number(i.amount) || 0), 0);
+  const balances = active.map(db.invoiceBalance);
+  const debt = balances.reduce((sum, balance) => sum + balance, 0);
+  return { issued, paid: issued - debt, debt, open: balances.filter((balance) => balance > 0).length };
 });
 </script>
 
@@ -42,10 +44,10 @@ const totals = computed(() => {
       <div class="stat"><div class="label">Выставлено</div><div class="val">{{ money(totals.issued) }}</div><div class="foot">{{ invoices.length }} счетов</div></div>
       <div class="stat"><div class="label">Получено</div><div class="val green">{{ money(totals.paid) }}</div><div class="foot"><span class="tag">подтверждено вручную</span></div></div>
       <div class="stat"><div class="label">Дебиторка</div><div class="val" :class="totals.debt ? 'danger-text' : ''">{{ money(totals.debt) }}</div></div>
-      <div class="stat"><div class="label">Неоплаченных счетов</div><div class="val">{{ invoices.filter(i => !i.paid && i.status !== 'Оплачен').length }}</div></div>
+      <div class="stat"><div class="label">Неоплаченных счетов</div><div class="val">{{ totals.open }}</div></div>
     </div>
 
-    <div class="note">⚠️ ОГРАНИЧЕНИЕ v0.9: подтверждение оплаты ручное, без связи с банком; статусы не создают бухгалтерских проводок.</div>
+    <div class="note">Дебиторка учитывает зарегистрированные платежи. Подтверждение оплаты сверяйте с поступлением денег. Синхронизация с банком и бухгалтерией не подключена.</div>
 
     <section class="panel">
       <CrmDataTable coll="invoices" :rows="invoices" empty="Счетов нет.">

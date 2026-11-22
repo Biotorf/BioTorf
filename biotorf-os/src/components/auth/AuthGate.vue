@@ -3,11 +3,8 @@
 // Показывается только если бэкенд требует авторизацию (authState.required).
 // Если сотрудников ещё нет (hasUsers=false) — первым регистрируется
 // генеральный директор: его аккаунт создаётся автоматически с ролью director.
-import { ref, computed, nextTick } from 'vue';
+import { ref, computed } from 'vue';
 import { login, register, authState } from '@/api/authClient';
-import { useUiStore } from '@/stores/ui';
-
-const ui = useUiStore();
 const emit = defineEmits(['session']);   // готовая сессия → App скрывает gate
 
 const mode = ref('login');            // login | register
@@ -18,29 +15,10 @@ const pass2 = ref('');
 const busy = ref(false);
 const error = ref('');
 const info = ref('');
-const pendingSession = ref(null);     // сессия pending: можно заполнить профиль
 
 const firstRun = computed(() => authState.required && !authState.hasUsers);
 
 function switchMode(m) { mode.value = m; error.value = ''; info.value = ''; }
-
-// Надёжный вход в сервис: применяем профиль в ui-стор, скрываем экран входа
-// и подтягиваем данные с сервера — БЕЗ перезагрузки страницы.
-async function enterService(res) {
-  // токен уже сохранён в authState (applySession внутри login/register) —
-  // применяем профиль, скрываем экран входа и подтягиваем данные.
-  ui.applySession(authState.user || res);
-  emit('session', res);
-  await nextTick();
-  try {
-    const { useDbStore } = await import('@/stores/db');
-    useDbStore().pullCrmState();
-  } catch { /* noop */ }
-  // страховка: если по какой-то причине экран не перерисовался (старый кэш
-  // сборки на Render), через короткий таймаут обновляем страницу — пользователь
-  // оказывается в сервисе автоматически, без ручного F5
-  setTimeout(() => location.reload(), 800);
-}
 
 async function submit() {
   error.value = ''; info.value = '';
@@ -53,26 +31,18 @@ async function submit() {
   try {
     if (mode.value === 'login') {
       const res = await login(user.value.trim(), pass.value);
-      // сразу перекидываем в сервис — без перезагрузки страницы
-      await enterService(res);
-      if (res.pending) {
-        info.value = `Вы вошли как ожидающий подтверждения. Заполните профиль — генеральный директор увидит ваши данные и выдаст роль.`;
-        pendingSession.value = res;
-      }
+      emit('session', res);
     } else {
       const res = await register(user.value.trim(), pass.value, name.value.trim());
       if (res.firstAccount) {
-        await enterService(res);   // первый аккаунт = директор, токен уже выдан
+        emit('session', res);
         return;
       }
       // зарегистрировались → сразу входим под этим же логином/паролем:
       // получаем pending-токен и можем заполнить профиль до подтверждения
       const lg = await login(res.login || user.value.trim(), pass.value);
-      if (lg.token || lg.pending) {
-        // сразу перекидываем в сервис (pending sees restricted UI + profile modal)
-        await enterService(lg);
-        pendingSession.value = lg;
-        info.value = 'Аккаунт создан и ожидает подтверждения роли генеральным директором. Заполните профиль — директор увидит ваши данные.';
+      if (lg.token) {
+        emit('session', lg);
       } else {
         info.value = 'Аккаунт создан и ожидает подтверждения роли генеральным директором. Теперь войдите.';
         mode.value = 'login';
@@ -85,9 +55,6 @@ async function submit() {
   }
 }
 
-function enterPending() {
-  if (pendingSession.value) enterService(pendingSession.value);
-}
 </script>
 
 <template>
@@ -126,23 +93,17 @@ function enterPending() {
       <p v-if="error" class="gate-note err">{{ error }}</p>
       <p v-if="info" class="gate-note ok">{{ info }}</p>
 
-      <!-- после регистрации/входа pending: кнопка войти в мини-профиль -->
-      <button v-if="pendingSession" class="btn primary" type="button" @click="enterPending">
-        👤 Заполнить профиль →
+      <button class="btn primary" type="submit" :disabled="busy">
+        {{ busy ? 'Проверка…' : (mode === 'login' ? 'Войти' : 'Зарегистрироваться') }}
       </button>
-      <template v-else>
-        <button class="btn primary" type="submit" :disabled="busy">
-          {{ busy ? 'Проверка…' : (mode === 'login' ? 'Войти' : 'Зарегистрироваться') }}
-        </button>
 
-        <button v-if="!firstRun" class="btn ghost gate-switch" type="button"
-                @click="switchMode(mode === 'login' ? 'register' : 'login')">
-          {{ mode === 'login' ? 'Нет аккаунта? Регистрация' : 'Уже есть аккаунт? Вход' }}
-        </button>
-        <button v-else-if="mode === 'login'" class="btn ghost gate-switch" type="button" @click="switchMode('register')">
-          Зарегистрировать генерального директора →
-        </button>
-      </template>
+      <button v-if="!firstRun" class="btn ghost gate-switch" type="button"
+              @click="switchMode(mode === 'login' ? 'register' : 'login')">
+        {{ mode === 'login' ? 'Нет аккаунта? Регистрация' : 'Уже есть аккаунт? Вход' }}
+      </button>
+      <button v-else-if="mode === 'login'" class="btn ghost gate-switch" type="button" @click="switchMode('register')">
+        Зарегистрировать генерального директора →
+      </button>
     </form>
   </div>
 </template>

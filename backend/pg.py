@@ -20,6 +20,7 @@ import logging
 import os
 import re
 import time
+from contextlib import contextmanager
 
 import psycopg
 from psycopg.rows import dict_row
@@ -1018,6 +1019,22 @@ class _AutoConn:
         self._pin(c)
         return cur
 
+    @contextmanager
+    def transaction(self):
+        """Keep one connection and cursor for the entire transaction.
+
+        Don't retry individual statements on a different connection: an
+        interrupted transaction must be attempted again as a unit.
+        """
+        if self._c is None:
+            with self:
+                with self.transaction() as cursor:
+                    yield cursor
+            return
+        with self._c._raw.transaction():
+            with self._c._raw.cursor(row_factory=compat_dict_row) as cursor:
+                yield Cursor(cursor)
+
     def _run_transient(self, psql, args):
         """Выполнить SQL на текущем закреплённом соединении прокси.
 
@@ -1182,7 +1199,7 @@ class _UnavailableConn:
     def _fail(self, *a):
         raise psycopg.OperationalError(self._reason)
 
-    execute = executemany = executescript = cursor = commit = rollback = close = _fail
+    execute = executemany = executescript = cursor = commit = rollback = close = transaction = _fail
 
     def __enter__(self):
         self._fail()

@@ -9,7 +9,7 @@ import { useDbStore } from '@/stores/db';
 import { crmFieldLabel, LOGISTICS_KINDS } from '@/data/crmFields';
 import { useUiStore } from '@/stores/ui';
 import { useFormatters } from '@/composables/useFormatters';
-import { toCsv, toXmlSpreadsheet, downloadBlob, printHtml } from '@/utils/spreadsheet';
+import { toCsv, toXmlSpreadsheet, downloadBlob, printHtml, escapeHtml } from '@/utils/spreadsheet';
 
 const props = defineProps({
   doc: { type: Object, default: null },   // существующий документ или null (создание)
@@ -22,7 +22,11 @@ const ui = useUiStore();
 const { money, num } = useFormatters();
 
 const label = (key) => crmFieldLabel('logistics', key);
-const isNew = !props.doc || String(props.doc.id).startsWith('NEW');
+const savedDoc = ref(props.doc?.id && !String(props.doc.id).startsWith('NEW') ? props.doc : null);
+const isNew = computed(() => !savedDoc.value);
+const clientId = db.uid('LOC');
+const saveError = ref('');
+const saving = ref(false);
 const today = new Date().toISOString().slice(0, 10);
 
 const source = props.doc || props.initialValues;
@@ -49,9 +53,7 @@ function emptyItem() {
 }
 
 function genNumber(kind) {
-  const list = db.logistics.filter((d) => d.kind === kind);
-  const n = list.length + 1;
-  return (kind === 'supply' ? 'П-' : 'В-') + String(n).padStart(3, '0');
+  return (kind === 'supply' ? 'П-' : 'В-') + clientId.slice(-8).toUpperCase();
 }
 
 const STATUSES = ['Черновик', 'Создан', 'На проверке', 'Принят', 'Отгружено', 'Доставлено', 'Оплачен', 'Закрыт', 'Отменён'];
@@ -91,24 +93,63 @@ const docPayload = () => ({
   driver: form.driver.trim(),
   base: form.base.trim(),
   note: form.note.trim(),
-  act: props.doc?.act || null,
+  act: savedDoc.value?.act || null,
   items: form.items.map((it) => ({
     skuId: it.skuId, name: it.name.trim(),
     qty: Number(it.qty) || 0, unit: it.unit,
     price: Number(it.price) || 0, note: (it.note || '').trim(),
+    material: it.material || '', lot: (it.lot || '').trim(), qcStatus: it.qcStatus || '',
   })),
 });
 
-async function save(closeAfter = true) {
-  const payload = docPayload();
-  if (!payload.number) { alert('Укажите номер документа'); return; }
-  if (!payload.items.some((it) => it.name || it.skuId)) { alert('Добавьте хотя бы одну позицию'); return; }
-  if (isNew) {
-    await db.addLogistics(payload);
-  } else {
-    await db.updateLogistics(props.doc.id, payload);
+function validatePayload(payload) {
+  payload.items = payload.items.filter((item) => item.name || item.skuId || item.material);
+  if (!payload.number) throw new Error('Укажите номер документа.');
+  if (!payload.items.length) throw new Error('Добавьте хотя бы одну позицию.');
+  for (const item of payload.items) {
+    if (!Number.isFinite(item.qty) || item.qty <= 0 || !Number.isFinite(item.price) || item.price < 0) {
+      throw new Error('Укажите положительное количество и неотрицательную цену каждой позиции.');
+    }
+    if (item.material !== 'paste') continue;
+    if (payload.kind !== 'supply' || !item.lot || !['кг', 'т'].includes(item.unit)) {
+      throw new Error('Для пасты укажите партию поставщика и массу в кг или т.');
+    }
+    if (payload.status === 'Принят' && item.qcStatus !== 'Пройден') {
+      throw new Error('Перед приёмкой подтвердите контроль качества каждой партии пасты.');
+    }
   }
-  if (closeAfter) ui.closeModal();
+}
+
+async function persist(payload) {
+  validatePayload(payload);
+  const document = isNew.value
+    ? await db.addLogistics({ ...payload, clientId })
+    : await db.updateLogistics(savedDoc.value.id, payload);
+  savedDoc.value = document;
+  return document;
+}
+
+async function save(closeAfter = true) {
+  if (saving.value) return;
+  saving.value = true;
+  saveError.value = '';
+  try {
+    const document = await persist(docPayload());
+    if (String(document.id).startsWith('LOC-')) {
+      saveError.value = 'Документ пока сохранён только на этом устройстве. Откройте реестр после восстановления связи.';
+    } else if (closeAfter) ui.closeModal();
+  } catch (error) {
+    saveError.value = error.message;
+  } finally {
+    saving.value = false;
+  }
+}
+
+function addPasteRow() {
+  const material = { ...emptyItem(), name: 'Паста-концентрат', material: 'paste', lot: '', unit: 'кг', qcStatus: 'Ожидается' };
+  const first = form.items[0];
+  if (form.items.length === 1 && !first.skuId && !first.name) form.items.splice(0, 1, material);
+  else form.items.push(material);
 }
 
 // ── Акт приёма-передачи под документ ────────────────────────────────
@@ -119,7 +160,8 @@ function actRows() {
   const rows = [['№', 'Наименование', 'Кол-во', 'Ед.', 'Цена, сом', 'Сумма, сом']];
   form.items.forEach((it, i) => {
     if (!it.name && !it.skuId) return;
-    rows.push([i + 1, it.name || it.skuId, Number(it.qty) || 0, it.unit, Number(it.price) || 0, Math.round(lineSum(it))]);
+    const description = it.material === 'paste' && it.lot ? `${it.name || 'Паста-концентрат'} · партия ${it.lot}` : it.name || it.skuId;
+    rows.push([i + 1, description, Number(it.qty) || 0, it.unit, Number(it.price) || 0, Math.round(lineSum(it))]);
   });
   rows.push(['', '', '', '', 'ИТОГО:', Math.round(totalPrice.value)]);
   return rows;
@@ -128,46 +170,52 @@ function actRows() {
 function buildActHtml(actMeta) {
   const label = isDispatch.value ? 'Грузополучатель' : 'Получатель (Покупатель)';
   const supplier = isDispatch.value ? 'Грузоотправитель' : 'Поставщик';
-  const partyName = form.party || '—';
   const rows = actRows().map((r, idx) => idx === 0
-    ? `<tr>${r.map((c, j) => `<th class="${j >= 2 ? 'num' : ''}">${c}</th>`).join('')}</tr>`
-    : `<tr>${r.map((c, j) => `<td class="${j >= 2 ? 'num' : ''}">${typeof c === 'number' ? num(c) : c}</td>`).join('')}</tr>`
+    ? `<tr>${r.map((c, j) => `<th class="${j >= 2 ? 'num' : ''}">${escapeHtml(c)}</th>`).join('')}</tr>`
+    : `<tr>${r.map((c, j) => `<td class="${j >= 2 ? 'num' : ''}">${typeof c === 'number' ? num(c) : escapeHtml(c)}</td>`).join('')}</tr>`
   ).join('');
   return `
   <div class="org">ОсОО «Агро Трейд Плюс» · BIOTORF KG · ИНН _______ · тел. _______</div>
-  <h1>${actMeta.type} № ${actMeta.number} от ${new Date(actMeta.date + 'T12:00:00').toLocaleDateString('ru-RU')}</h1>
-  <div class="small">к документу ${isDispatch.value ? 'выгрузки (отгрузки)' : 'поставки'} № ${form.number} от ${new Date(form.date + 'T12:00:00').toLocaleDateString('ru-RU')}</div>
+  <h1>${escapeHtml(actMeta.type)} № ${escapeHtml(actMeta.number)} от ${new Date(actMeta.date + 'T12:00:00').toLocaleDateString('ru-RU')}</h1>
+  <div class="small">к документу ${isDispatch.value ? 'выгрузки (отгрузки)' : 'поставки'} № ${escapeHtml(form.number)} от ${new Date(form.date + 'T12:00:00').toLocaleDateString('ru-RU')}</div>
   <div class="grid">
-    <div><b>${supplier}</b>${isDispatch.value ? 'ОсОО «Агро Трейд Плюс», склад: ' + (form.warehouse || '—') : (form.party || '—')}</div>
-    <div><b>${label}</b>${isDispatch.value ? (form.party || '—') : (form.warehouse || 'Склад')} ${form.farmId ? '· ' + (db.farmById(form.farmId)?.name || form.farmId) : ''}</div>
-    ${form.vehicle ? `<div><b>Транспорт</b>${form.vehicle}</div>` : ''}
-    ${form.driver ? `<div><b>Водитель/экспедитор</b>${form.driver}</div>` : ''}
-    ${form.base ? `<div><b>Основание</b>${form.base}</div>` : ''}
+    <div><b>${supplier}</b>${isDispatch.value ? 'ОсОО «Агро Трейд Плюс», склад: ' + escapeHtml(form.warehouse || '—') : escapeHtml(form.party || '—')}</div>
+    <div><b>${label}</b>${isDispatch.value ? escapeHtml(form.party || '—') : escapeHtml(form.warehouse || 'Склад')} ${form.farmId ? '· ' + escapeHtml(db.farmById(form.farmId)?.name || form.farmId) : ''}</div>
+    ${form.vehicle ? `<div><b>Транспорт</b>${escapeHtml(form.vehicle)}</div>` : ''}
+    ${form.driver ? `<div><b>Водитель/экспедитор</b>${escapeHtml(form.driver)}</div>` : ''}
+    ${form.base ? `<div><b>Основание</b>${escapeHtml(form.base)}</div>` : ''}
   </div>
   <p>Мы, нижеподписавшиеся, составили настоящий акт о том, что по указанному документу произведена
   ${isDispatch.value ? 'выгрузка (отгрузка)' : 'приёмка'} товарно-материальных ценностей в следующем количестве:</p>
   <table><thead>${rows.split('</tr>')[0]}</tr></thead><tbody>${rows.split('</tr>').slice(1).join('</tr>')}</tbody></table>
-  ${form.note ? `<p class="small"><b>Примечание:</b> ${form.note}</p>` : ''}
+  ${form.note ? `<p class="small"><b>Примечание:</b> ${escapeHtml(form.note)}</p>` : ''}
   <p class="small">Товар передан в соответствии с документом. Замечаний по количеству, качеству и комплектности: ☐ нет ☐ имеются (см. примечания).</p>
   <div class="sign">
-    <div><b>Передал:</b><div class="line"></div>${isDispatch.value ? 'Кладовщик ____________ / ' + (form.driver || '____________') : 'Представитель поставщика ____________'}</div>
+    <div><b>Передал:</b><div class="line"></div>${isDispatch.value ? 'Кладовщик ____________ / ' + escapeHtml(form.driver || '____________') : 'Представитель поставщика ____________'}</div>
     <div><b>Принял:</b><div class="line"></div>${isDispatch.value ? 'Представитель получателя ____________' : 'Материально ответственное лицо ____________'}</div>
   </div>`;
 }
 
 async function createAct() {
-  const meta = {
-    type: actType.value,
-    number: (props.doc?.act?.number) || ('А-' + form.number.replace(/^[\u0410-\u042F\u0430-\u044F\u0401\u0451A-Za-z]+\/?/, '')),
-    date: props.doc?.act?.date || form.date,
-  };
-  // сохраняем акт в документе (чтобы был виден статус «Акт создан» в реестре)
-  const payload = { ...docPayload(), act: meta };
-  let saved;
-  if (isNew) saved = await db.addLogistics(payload);
-  else saved = await db.updateLogistics(props.doc.id, payload);
-  printHtml(meta.type + ' ' + meta.number, buildActHtml(meta));
-  if (saved) ui.closeModal();
+  if (saving.value) return;
+  saving.value = true;
+  saveError.value = '';
+  try {
+    const meta = {
+      type: actType.value,
+      number: savedDoc.value?.act?.number || ('А-' + form.number),
+      date: savedDoc.value?.act?.date || form.date,
+    };
+    const document = await persist({ ...docPayload(), act: meta });
+    printHtml(meta.type + ' ' + meta.number, buildActHtml(meta));
+    if (String(document.id).startsWith('LOC-')) {
+      saveError.value = 'Акт сохранён только на этом устройстве, пока нет связи с сервером.';
+    } else ui.closeModal();
+  } catch (error) {
+    saveError.value = error.message;
+  } finally {
+    saving.value = false;
+  }
 }
 
 function exportXls() {
@@ -242,18 +290,26 @@ function exportCsv() {
         <tbody>
           <tr v-for="(it, i) in form.items" :key="i">
             <td>
-              <select class="input slim-in" :value="it.skuId" @change="onSku(i, $event)">
+              <select v-if="it.material !== 'paste'" class="input slim-in" :value="it.skuId" @change="onSku(i, $event)">
                 <option value="">— свободная позиция —</option>
                 <option v-for="s in db.skus" :key="s.id" :value="s.id"
                         :data-name="s.name" :data-price="s.price || 0">{{ s.name }} ({{ s.pack }})</option>
               </select>
               <input v-model="it.name" class="input slim-in" style="margin-top:4px" placeholder="Наименование">
+              <template v-if="it.material === 'paste'">
+                <label>{{ label('lot') }} <input v-model.trim="it.lot" class="input slim-in" maxlength="200" /></label>
+                <label>{{ label('qcStatus') }}
+                  <select v-model="it.qcStatus" class="input slim-in">
+                    <option>Ожидается</option><option>Пройден</option><option>Отклонён</option>
+                  </select>
+                </label>
+              </template>
             </td>
             <td><input v-model.number="it.qty" type="number" min="0" step="0.5" class="input slim-in num-in"></td>
             <td>
               <select v-model="it.unit" class="input slim-in">
                 <option v-if="it.unit && !UNITS.includes(it.unit)" :value="it.unit">{{ it.unit }}</option>
-                <option v-for="u in UNITS" :key="u">{{ u }}</option>
+                <option v-for="u in it.material === 'paste' ? ['кг', 'т'] : UNITS" :key="u">{{ u }}</option>
               </select>
             </td>
             <td><input v-model.number="it.price" type="number" min="0" step="1" class="input slim-in num-in"></td>
@@ -275,6 +331,7 @@ function exportCsv() {
 
     <div class="actionbar" style="margin-bottom:14px">
       <button class="btn slim" @click="addRow">＋ Строка</button>
+      <button v-if="!isDispatch" class="btn slim" @click="addPasteRow">＋ Партия пасты</button>
       <button class="btn slim ghost" @click="exportXls">⬇ Скачать .xls</button>
       <button class="btn slim ghost" @click="exportCsv">⬇ Скачать .csv</button>
     </div>
@@ -282,8 +339,8 @@ function exportCsv() {
     <div class="muted-block" style="margin-bottom:16px">
       <div class="mini" style="margin-bottom:8px">
         <b>Акт под документ:</b>
-        <template v-if="props.doc?.act">
-          ранее создан — {{ props.doc.act.type }} № {{ props.doc.act.number }} от {{ props.doc.act.date }}.
+        <template v-if="savedDoc?.act">
+          ранее создан — {{ savedDoc.act.type }} № {{ savedDoc.act.number }} от {{ savedDoc.act.date }}.
           Повторное создание перезапишет реквизиты акта.
         </template>
         <template v-else>создайте акт приёма-передачи — он сохранится в карточке документа и откроется на печать (PDF).</template>
@@ -292,14 +349,15 @@ function exportCsv() {
         <select v-model="actType" class="select" style="max-width:280px">
           <option v-for="t in ACT_TYPES" :key="t">{{ t }}</option>
         </select>
-        <button class="btn primary slim" @click="createAct">📄 Создать акт и открыть на печать</button>
+        <button class="btn primary slim" :disabled="saving" @click="createAct">📄 Создать акт и открыть на печать</button>
       </div>
     </div>
 
     <div class="modal-foot" style="padding:0;border:0;display:flex;gap:10px;justify-content:flex-end">
       <button class="btn" @click="ui.closeModal()">Отмена</button>
-      <button class="btn" @click="save(false)">Сохранить и остаться</button>
-      <button class="btn primary" @click="save(true)">💾 Сохранить документ</button>
+      <span v-if="saveError" class="danger-text" role="alert">{{ saveError }}</span>
+      <button class="btn" :disabled="saving" @click="save(false)">Сохранить и остаться</button>
+      <button class="btn primary" :disabled="saving" @click="save(true)">💾 Сохранить документ</button>
     </div>
   </div>
 </template>

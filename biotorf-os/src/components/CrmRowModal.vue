@@ -3,9 +3,9 @@
 // Поля выводятся по типовому набору для коллекции (или по ключам существующих
 // записей). Сохранение идёт через db.importCollection(coll, [rec], 'merge') —
 // тот же путь, что и CSV-импорт: сервер + локальный кэш.
-import { ref, computed, watch, onMounted } from 'vue';
+import { ref, computed, watch, onMounted, useId } from 'vue';
 import { useDbStore } from '@/stores/db';
-import { COLL_RU, crmFieldLabel, REF_FIELD, REF_KINDS, crmFields, crmTitle, crmValue } from '@/data/crmFields';
+import { COLL_RU, crmFieldLabel, REF_FIELD, REF_KINDS, crmFields, crmTitle, crmValue, DEAL_STAGES, dealStage, statusOptions } from '@/data/crmFields';
 
 const props = defineProps({
   coll: { type: String, required: true },     // farms, leads, deals…
@@ -15,10 +15,25 @@ const props = defineProps({
 const emit = defineEmits(['close', 'saved', 'deleted']);
 
 const db = useDbStore();
+const modalId = useId();
+const fieldId = (key) => `${modalId}-${key}`;
 
-const NUM_FIELDS = new Set(['area', 'volumeL', 'amount', 'qty', 'price', 'stock', 'pack', 'reserved', 'total', 'version']);
+const NUM_FIELDS = new Set(['area', 'volumeL', 'amount', 'qty', 'price', 'stock', 'pack', 'reserved', 'total', 'version', 'plannedVolumeL', 'pasteUsedKg', 'actualQty']);
 const BOOL_FIELDS = new Set(['paid', 'primary', 'received', 'public']);
 const LONG_FIELDS = new Set(['notes', 'text', 'route', 'result', 'tags', 'caption']);
+
+const requiredFields = {
+  farms: ['name'], leads: ['name'], deals: ['title'], tasks: ['title'],
+  contacts: ['farmId', 'name'], skus: ['name'], knowledge: ['title'],
+  social: ['title'], payments: ['invoiceId', 'amount'], clientNotes: ['farmId', 'text'],
+};
+const boolOptions = [
+  { value: 'true', label: 'Да' },
+  { value: 'false', label: 'Нет' },
+];
+function boolValue(value) {
+  return /^(1|true|да|yes)$/i.test(String(value).trim());
+}
 
 // ── Выпадающие списки с кнопкой «＋» ────────────────────────────────
 // Ключ справочника db.lists → откуда брать значения. optionsFor() объединяет
@@ -32,57 +47,65 @@ const LIST_FIELD = {
   product: 'products', priority: 'priorities', method: 'methods', category: 'categories',
 };
 // Жёсткие перечисления (этапы воронки, приоритеты и т.п.)
-const ENUM_FIELD = {
-  stage: () => [...(db.data.stages || [])],
-  pilotStage: () => [...(db.data.pilotStages || [])],
-  priority: () => ['Низкий', 'Обычный', 'Высокий', 'Критический'],
-  consent: () => ['Нет', 'Да'],
-  received: () => ['нет', 'да'],
-  public: () => ['нет', 'да'],
-  caseApproved: () => ['Нет', 'Да'],
-  paid: () => ['нет', 'да'],
-  primary: () => ['нет', 'да'],
-  refKind: () => ['deal', 'lead', 'farm', 'order', 'invoice', 'shipment', 'pilot', 'journey', 'quote', 'task'],
-  method: () => db.optionsFor('methods', 'payments', 'method'),
-  category: () => db.optionsFor('categories', 'skus', 'category'),
-  // статусы по коллекциям: фиксированный набор + то, что уже есть в данных
-  status: () => {
-    if (props.coll === 'pilots') return [...new Set([...(db.data.pilotStages || []), ...(db.data.pilots || []).map((p) => p.status).filter(Boolean)])];
-    const base = {
-      orders: ['Новый', 'Подтверждён', 'В производство', 'Готов к отгрузке', 'Оплачен', 'Отгружен', 'Отменён'],
-      invoices: ['Выставлен', 'Оплачен', 'Просрочен'],
-      shipments: ['Запланирована', 'В пути', 'Доставлена', 'Получено клиентом'],
-      warehouse: ['В наличии', 'Зарезервировано', 'Списан'],
-      production: ['План', 'В работе', 'Завершено'],
-      tasks: ['Открыта', 'В работе', 'Выполнена'],
-      quotes: ['Черновик', 'Отправлено', 'Принят', 'Отклонено'],
-      leads: ['Новый', 'В работе', 'Квалифицирован', 'Отказ'],
-      deals: [], pilots: [], social: ['Идея', 'В работе', 'Запланировано', 'Опубликовано'],
-      media: [], knowledge: [], contacts: [], farms: [], skus: [],
-    }[props.coll] || [];
-    const seen = new Set(base);
-    for (const r of db.data[props.coll] || []) {
-      if (typeof r.status === 'string' && r.status.trim()) seen.add(r.status.trim());
-    }
-    return [...seen];
-  },
-};
-function listKeyFor(k) { return LIST_FIELD[k]; }
-function isSelectField(k) {
-  return k in ENUM_FIELD || k in REF_FIELD || (k === 'refId' && !!REF_KINDS[form.value.refKind]) || !!LIST_FIELD[k];
+function acceptedPasteLots(doc) {
+  if (doc?.kind !== 'supply' || doc.status !== 'Принят') return [];
+  return [...new Set((Array.isArray(doc.items) ? doc.items : [])
+    .filter((item) => item?.material === 'paste' && item.qcStatus === 'Пройден' && item.lot)
+    .map((item) => String(item.lot)))];
 }
-function selectOptions(k) {
-  if (k in ENUM_FIELD) {
-    const base = ENUM_FIELD[k]();
-    return LIST_FIELD[k] ? [...new Set([...base, ...db.optionsFor(LIST_FIELD[k], props.coll, k)])] : base;
+function pasteLots() {
+  const supply = (db.data.logistics || []).find((row) => String(row.id) === form.value.supplyId);
+  return acceptedPasteLots(supply);
+}
+const ENUM_FIELD = {
+  inputLot: () => pasteLots(),
+  qcStatus: () => ['Ожидается', 'Пройден', 'Отклонён'],
+  stage: () => props.coll === 'deals'
+    ? [...new Set([...DEAL_STAGES, ...(db.data.deals || []).map((row) => dealStage(row.stage))].filter(Boolean))]
+    : [...new Set([...(db.data.stages || []), ...(db.data.journeys || []).map((row) => row.stage)].filter(Boolean))],
+  pilotStage: () => [...(db.data.pilotStages || [])],
+  unit: () => ['шт.', 'упак.', 'л', 'кг', 'т'],
+  priority: () => ['Низкий', 'Средний', 'Высокий', 'Критический'],
+  consent: () => ['Нет', 'Да'],
+  caseApproved: () => ['Нет', 'Да'],
+  refKind: () => Object.entries(REF_KINDS).map(([value, coll]) => ({ value, label: COLL_RU[coll] })),
+  category: () => db.optionsFor('categories', props.coll, 'category'),
+  status: () => statusOptions(props.coll, db.data[props.coll] || [], props.coll === 'pilots' ? db.data.pilotStages : []),
+};
+function listKeyFor(key) {
+  // У каждой операционной таблицы свои статусы. Общий справочник статусов относится к хозяйствам.
+  return key === 'status' && props.coll !== 'farms' ? null : LIST_FIELD[key];
+}
+function referenceTable(key) {
+  return REF_FIELD[key] || (key === 'refId' ? REF_KINDS[form.value.refKind] : null);
+}
+function referenceRows(key) {
+  const rows = db.data[referenceTable(key)] || [];
+  return key === 'supplyId' ? rows.filter((row) => acceptedPasteLots(row).length > 0) : rows;
+}
+function isSelectField(key) {
+  return BOOL_FIELDS.has(key) || key in ENUM_FIELD || !!referenceTable(key) || !!listKeyFor(key);
+}
+function selectOptions(key) {
+  if (BOOL_FIELDS.has(key)) return boolOptions;
+  if (referenceTable(key)) {
+    return referenceRows(key).map((r) => ({ value: String(r.id), label: `${crmTitle(r)} · ${r.id}` }));
   }
-  if (k in REF_FIELD || k === 'refId') {
-    const coll = REF_FIELD[k] || REF_KINDS[form.value.refKind];
-    return (db.data[coll] || []).map((r) => ({ value: r.id, label: `${crmTitle(r)} · ${r.id}` }));
+  const listKey = listKeyFor(key);
+  if (key in ENUM_FIELD) {
+    const base = ENUM_FIELD[key]();
+    return listKey ? [...new Set([...base, ...db.optionsFor(listKey, props.coll, key)])] : base;
   }
-  return db.optionsFor(LIST_FIELD[k], props.coll, k).map((v) => ({ value: v, label: v }));
+  return db.optionsFor(listKey, props.coll, key);
 }
 
+function onChoiceChange(key) {
+  if (key === 'refKind') form.value.refId = '';
+  if (key === 'supplyId') {
+    const lots = pasteLots();
+    form.value.inputLot = lots.length === 1 ? lots[0] : '';
+  }
+}
 function fieldLabel(key) { return crmFieldLabel(props.coll, key); }
 
 const isEdit = computed(() => !!props.record);
@@ -122,7 +145,10 @@ function initForm() {
   const f = {};
   for (const k of fields.value) {
     const v = crmValue(props.coll, props.record || props.initialValues, k);
-    f[k] = v == null ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
+    f[k] = v == null || v === '' ? ''
+      : BOOL_FIELDS.has(k) ? String(boolValue(v))
+      : typeof v === 'object' ? JSON.stringify(v)
+      : String(v);
   }
   const items = (props.record || props.initialValues).items;
   lineItems.value = Array.isArray(items) ? items.filter(Boolean).map((item) => ({
@@ -139,18 +165,51 @@ const busy = ref(false);
 const error = ref('');
 
 async function save() {
+  if (busy.value || addingBusy.value) return;
   error.value = ''; busy.value = true;
   try {
     const rec = {};
+    const suppliedId = form.value.id?.trim();
+    if (!isEdit.value && suppliedId && (db.data[props.coll] || []).some((row) => String(row.id) === suppliedId)) {
+      throw new Error('Запись с таким ID уже существует. Откройте её для редактирования.');
+    }
+    for (const key of requiredFields[props.coll] || []) {
+      if ((!isEdit.value || form.value[key] !== initial[key]) && !form.value[key]?.trim()) {
+        throw new Error(`Заполните поле «${fieldLabel(key)}»`);
+      }
+    }
+    if (props.coll === 'tasks' && (!isEdit.value || form.value.refKind !== initial.refKind || form.value.refId !== initial.refId)) {
+      if (!!form.value.refKind !== !!form.value.refId) throw new Error('Укажите тип связи и выберите связанную запись.');
+    }
+    if (props.coll === 'production') {
+      const { supplyId, inputLot, status, qcStatus, plannedVolumeL, actualQty, pasteUsedKg } = form.value;
+      const changed = (...keys) => !isEdit.value || keys.some((key) => form.value[key] !== initial[key]);
+      const validLot = !!supplyId && !!inputLot && pasteLots().includes(inputLot);
+      if (changed('supplyId', 'inputLot') && (supplyId || inputLot) && !validLot) {
+        throw new Error('Выберите принятую поставку пасты и партию, прошедшую контроль качества.');
+      }
+      const finishing = status === 'Завершено' && Number(String(plannedVolumeL).replace(',', '.')) > 0
+        && changed('status', 'qcStatus', 'plannedVolumeL', 'actualQty', 'pasteUsedKg', 'supplyId', 'inputLot');
+      if (finishing && (
+        !validLot || !(Number(String(actualQty).replace(',', '.')) > 0) ||
+        !(Number(String(pasteUsedKg).replace(',', '.')) > 0) || !['Пройден', 'Отклонён'].includes(qcStatus)
+      )) {
+        throw new Error('Для завершения партии укажите принятую партию пасты, фактический выпуск, расход пасты и результат контроля качества.');
+      }
+    }
     for (const k of fields.value) {
-      if (k === 'items') continue;
+      if (k === 'items' || (k === 'stage' && props.coll === 'deals' && props.record?.journeyId)) continue;
       let v = form.value[k];
       if (k !== 'id' && (isEdit.value ? v === initial[k] : v === '')) continue;
-      if (v !== '' && NUM_FIELDS.has(k)) {
-        v = Number(String(v).replace(',', '.'));
-        if (!Number.isFinite(v)) throw new Error(`Введите число в поле «${fieldLabel(k)}»`);
+      if (referenceTable(k) && v && !referenceRows(k).some((row) => String(row.id) === v)) {
+        throw new Error(`Выберите существующую запись в поле «${fieldLabel(k)}»`);
       }
-      if (v !== '' && BOOL_FIELDS.has(k)) v = /^(1|true|да|yes)$/i.test(String(v));
+      if (v !== '' && NUM_FIELDS.has(k)) {
+        v = Number(String(v).trim().replace(',', '.'));
+        if (!Number.isFinite(v) || v < 0) throw new Error(`Введите неотрицательное число в поле «${fieldLabel(k)}»`);
+        if (props.coll === 'payments' && k === 'amount' && v === 0) throw new Error('Сумма платежа должна быть больше нуля.');
+      }
+      if (v !== '' && BOOL_FIELDS.has(k)) v = boolValue(v);
       if (isJsonField(k)) {
         try {
           v = v === '' ? (['items', 'history'].includes(k) ? [] : null) : JSON.parse(v);
@@ -167,7 +226,8 @@ async function save() {
       if (props.coll === 'quotes') rec.total = total;
       if (props.coll === 'orders' && rec.amount == null) rec.amount = total;
     }
-    await db.importCollection(props.coll, [rec], 'merge');
+    if (props.record?._updatedAt) rec._expectedRev = props.record._updatedAt;
+    const result = await db.importCollection(props.coll, [rec], 'merge');
     const options = {};
     for (const k of fields.value) {
       const key = listKeyFor(k);
@@ -176,7 +236,7 @@ async function save() {
       }
     }
     db.mergeListOptions(options);
-    emit('saved', rec);
+    emit('saved', result?.records?.[0] || rec);
     emit('close');
   } catch (e) {
     error.value = e.message || String(e);
@@ -200,7 +260,7 @@ onMounted(async () => {
 });
 
 async function quickAdd(k) {
-  const key = LIST_FIELD[k];
+  const key = listKeyFor(k);
   const value = (adding.value[k] || '').trim();
   if (!key || !value || addingBusy.value || busy.value) return;
   addingBusy.value = true;
@@ -235,9 +295,9 @@ async function removeRecord() {
 
 <template>
   <div class="overlay" @click.self="emit('close')">
-    <div class="modal">
+    <div class="modal" role="dialog" aria-modal="true" :aria-labelledby="modalId">
       <div class="head">
-        <b>{{ isEdit ? 'Редактировать запись' : 'Новая запись' }} · {{ COLL_RU[coll] || coll }}</b>
+        <b :id="modalId">{{ isEdit ? 'Редактировать запись' : 'Новая запись' }} · {{ COLL_RU[coll] || coll }}</b>
         <button class="x" @click="emit('close')">✕</button>
       </div>
       <div class="body">
@@ -259,30 +319,30 @@ async function removeRecord() {
           </div>
           <button type="button" class="btn slim" @click="addLine">＋ Позиция</button>
         </fieldset>
-        <label v-for="k in fields.filter((key) => key !== 'items')" :key="k" class="field" :class="{ wide: (LONG_FIELDS.has(k) || isJsonField(k)) }">
-          <span class="fname">{{ fieldLabel(k) }}</span>
+        <div v-for="k in fields.filter((key) => key !== 'items')" :key="k" class="field" :class="{ wide: (LONG_FIELDS.has(k) || isJsonField(k)) }">
+          <label class="fname" :for="fieldId(k)">{{ fieldLabel(k) }}</label>
           <!-- выпадающий список + кнопка «＋» добавления нового значения -->
           <template v-if="isSelectField(k)">
             <div class="selrow">
-              <select class="input" v-model="form[k]" @change="k === 'refKind' && (form.refId = '')">
+              <select :id="fieldId(k)" class="input" v-model="form[k]" :disabled="k === 'stage' && coll === 'deals' && record?.journeyId" @change="onChoiceChange(k)">
                 <option value="">— не выбрано —</option>
                 <option v-for="o in selectOptions(k)" :key="o.value ?? o" :value="o.value ?? o">{{ o.label ?? o }}</option>
                 <!-- значение может быть введено раньше и отсутствовать в списке — оставляем его -->
                 <option v-if="form[k] && !selectOptions(k).some((o) => (o.value ?? o) === form[k])" :value="form[k]">{{ form[k] }} (текущее)</option>
               </select>
-              <button v-if="LIST_FIELD[k]" type="button" class="btn slim plus" title="Добавить новое значение в список"
+              <button v-if="listKeyFor(k)" type="button" class="btn slim plus" :aria-label="'Добавить значение · ' + fieldLabel(k)" title="Добавить новое значение в список"
                       @click.prevent="addingOpen = addingOpen === k ? '' : k">＋</button>
             </div>
-            <div v-if="LIST_FIELD[k] && addingOpen === k" class="addrow">
+            <div v-if="listKeyFor(k) && addingOpen === k" class="addrow">
               <input class="input" v-model="adding[k]" placeholder="Новое значение…" maxlength="500" @keyup.enter="quickAdd(k)" />
               <button type="button" class="btn primary slim" :disabled="addingBusy || busy" @click="quickAdd(k)">Добавить</button>
             </div>
           </template>
-          <textarea v-else-if="LONG_FIELDS.has(k) || isJsonField(k)" v-model="form[k]" rows="3"></textarea>
-          <input v-else v-model="form[k]" :readonly="k === 'id' && isEdit" :placeholder="k === 'id' && !isEdit ? 'Можно оставить пустым' : undefined" :inputmode="NUM_FIELDS.has(k) ? 'decimal' : undefined" />
-        </label>
+          <textarea v-else-if="LONG_FIELDS.has(k) || isJsonField(k)" :id="fieldId(k)" v-model="form[k]" rows="3"></textarea>
+          <input v-else :id="fieldId(k)" v-model="form[k]" :readonly="k === 'id' && isEdit" :placeholder="k === 'id' && !isEdit ? 'Можно оставить пустым' : undefined" :inputmode="NUM_FIELDS.has(k) ? 'decimal' : undefined" />
+        </div>
         <div v-if="optionsError" class="err" role="alert">{{ optionsError }}</div>
-        <div v-if="error" class="err">{{ error }}</div>
+        <div v-if="error" class="err" role="alert">{{ error }}</div>
       </div>
       <div class="foot">
         <button v-if="isEdit" class="btn slim danger-text" :disabled="busy" @click="removeRecord">🗑 Удалить запись</button>

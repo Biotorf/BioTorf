@@ -2,18 +2,13 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue';
 import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
-import { apiState, COMMS_API_URL, caps, commsApi } from '@/api/commsClient';
-import StatusPill from '@/components/ui/StatusPill.vue';
+import { apiState, commsApi } from '@/api/commsClient';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 
 const db = useDbStore();
 const ui = useUiStore();
 
-// ── режим страницы: только мессенджер (лента «все сообщения» убрана по требованию) ──
-const MODE_KEY = 'biotorf_comms_mode';
-const mode = ref('chats');
-localStorage.setItem(MODE_KEY, 'chats');
-function setMode(m) { mode.value = m; localStorage.setItem(MODE_KEY, m); }
+const online = ref(apiState.online);
 
 // фильтр сети (канала) прямо в списке чатов
 const chatKindFilter = ref(localStorage.getItem('biotorf_chat_kind') || 'all');
@@ -27,14 +22,17 @@ const chatSending = ref(false);
 const chatError = ref('');
 const chatNotice = ref('');
 const newChatOpen = ref(false);
-const newChat = ref({ kind: 'telegram', handle: '', phone: '', contact: '' });
+const newChat = ref({ kind: 'telegram', handle: '', phone: '', contact: '', text: '' });
+const newChatError = ref('');
+const linkFarmId = ref('');
+const linkBusy = ref(false);
 
 // ── динамические каналы (реестр бэкенда: Instagram, VK, Авито и т.д.) ──
 import { channelsApi } from '../api/channelsClient';
 import ManualLink from '@/components/ui/ManualLink.vue';
 const dynChannels = ref([]);            // [{id,label,icon,color,connected}]
 async function loadChannels() {
-  if (!apiState.online) return;
+  if (!online.value) return;
   try {
     const res = await channelsApi.list();
     dynChannels.value = (res.items || []).filter((c) => c.enabled && !['call', 'telegram', 'whatsapp'].includes(c.id));
@@ -46,8 +44,9 @@ const channelMeta = computed(() => {
   return m;
 });
 const connectedIds = computed(() => new Set(dynChannels.value.filter((c) => c.connected).map((c) => c.id)));
-let draftTimer = null;
 let firstLoad = true;
+let loadVersion = 0;
+const drafts = new Map();
 
 function peerTitle(c) {
   if (c.farmId) return db.farmById(c.farmId)?.name || c.farmId;
@@ -103,31 +102,104 @@ const chatMessages = computed(() => {
 const msgKindFilter = ref('all');
 watch(activeKey, () => { msgKindFilter.value = 'all'; });
 
-async function loadChats(quiet = false) {
-  if (!apiState.online) return;
-  try {
-    const res = await commsApi.chats();
-    chatList.value = res.items || [];
-    if (firstLoad && !activeKey.value && chatList.value.length) {
-      const withUnread = chatList.value.find((c) => c.unread > 0);
-      openChat(withUnread || chatList.value[0], false);
-    }
-    firstLoad = false;
-  } catch (e) {
-    if (!quiet) chatError.value = e.message || 'Не удалось загрузить чаты';
+function localChats() {
+  const grouped = new Map();
+  for (const item of db.comms || []) {
+    const key = item.peerKey || `entry:${item.id}`;
+    const chat = grouped.get(key) || { key, messages: [], unread: 0 };
+    chat.messages.push(item);
+    if (item.dir === 'in' && !item.read) chat.unread++;
+    grouped.set(key, chat);
   }
+  return [...grouped.values()].map((chat) => {
+    chat.messages.sort((a, b) => a.ts.localeCompare(b.ts));
+    const last = chat.messages.at(-1);
+    return { ...last, ...chat, lastMessage: last, lastTs: last.ts };
+  });
 }
 
-function openChat(c, doRead = true) {
-  activeKey.value = c.key;
-  chatInput.value = c.draft || '';
-  chatError.value = '';
-  chatNotice.value = '';
-  if (doRead && c.unread) {
-    c.unread = 0;
-    commsApi.markChatRead(c.key).catch(() => {});
+async function loadChats(quiet = false, focusKey = null) {
+  const version = ++loadVersion;
+  let rows;
+  try {
+    rows = online.value ? (await commsApi.chats()).items || [] : localChats();
+    if (online.value) rows.push(...localChats().filter((c) => c.id?.startsWith('C-local-')));
+    if (online.value && focusKey && !rows.some((row) => row.key === focusKey)) {
+      try { rows.unshift(await commsApi.chat(focusKey)); }
+      catch { /* чат мог исчезнуть после удаления последней записи */ }
+    }
+  } catch (e) {
+    if (!quiet && version === loadVersion) chatError.value = e.message || 'Не удалось загрузить чаты';
+    return;
+  }
+  if (version !== loadVersion) return;
+  const oldLast = activeChat.value?.lastMessage?.id;
+  chatList.value = rows;
+  if (focusKey && activeKey.value !== focusKey) {
+    const target = rows.find((c) => c.key === focusKey);
+    if (target) openChat(target, false);
+  } else if (firstLoad && !activeKey.value && rows.length) {
+    const focused = ui.commsFocusFarm && rows.find((c) => c.farmId === ui.commsFocusFarm);
+    openChat(focused || rows.find((c) => c.unread > 0) || rows[0], false);
+  } else if (oldLast !== activeChat.value?.lastMessage?.id && msgBox.value &&
+    msgBox.value.scrollHeight - msgBox.value.scrollTop - msgBox.value.clientHeight < 100) {
+    scrollBottom();
+  }
+  firstLoad = false;
+}
+
+function draftKey(key) {
+  return `biotorf.comms.draft:${ui.login || 'local'}:${key}`;
+}
+
+function setDraft(key, value) {
+  drafts.set(key, value);
+  try {
+    if (value) localStorage.setItem(draftKey(key), value);
+    else localStorage.removeItem(draftKey(key));
+  } catch { /* черновик остаётся в памяти вкладки */ }
+}
+
+function getDraft(key) {
+  if (drafts.has(key)) return drafts.get(key);
+  try { return localStorage.getItem(draftKey(key)) || ''; }
+  catch { return ''; }
+}
+
+async function openChat(chat, doRead = true) {
+  if (activeKey.value !== chat.key) {
+    activeKey.value = chat.key;
+    sendKind.value = '';
+    linkFarmId.value = '';
+    chatInput.value = getDraft(chat.key);
+    chatError.value = '';
+    chatNotice.value = '';
+  }
+  if (doRead && chat.unread) {
+    try {
+      if (online.value) await commsApi.markChatRead(chat.key);
+      for (const entry of db.comms || []) {
+        if ((entry.peerKey || `entry:${entry.id}`) === chat.key && entry.dir === 'in') entry.read = true;
+      }
+      for (const entry of chat.messages || []) if (entry.dir === 'in') entry.read = true;
+      chat.unread = 0;
+      db.save('Прочитан диалог', chat.key, false);
+    } catch (error) { chatError.value = error.message; }
   }
   scrollBottom();
+}
+
+async function readAllChats() {
+  if (!totalUnread.value) return;
+  try {
+    if (online.value) await commsApi.readAll();
+    for (const item of db.comms || []) item.read = true;
+    for (const chat of chatList.value) {
+      chat.unread = 0;
+      for (const item of chat.messages || []) item.read = true;
+    }
+    db.save('Отмечены прочитанными все сообщения', 'Коммуникации', false);
+  } catch (error) { chatError.value = error.message; }
 }
 
 const msgBox = ref(null);
@@ -137,76 +209,113 @@ function scrollBottom() {
   });
 }
 
+function replyable(message) {
+  if (!message || message.kind === 'call' || message.source === 'manual') return false;
+  if (message.dir === 'out' && !['chat', 'reply'].includes(message.source)) return false;
+  if (message.kind === 'telegram') return !!(message.payload?.chatId || message.payload?.userIndex);
+  if (message.kind === 'whatsapp') return !!message.phone;
+  return !!(message.handle || message.phone || message.payload);
+}
+
+const sendKinds = computed(() =>
+  [...new Set((activeChat.value?.messages || []).filter(replyable).map((m) => m.kind))],
+);
+const sendKind = ref('');
+watch(sendKinds, (available) => {
+  if (available.includes(sendKind.value)) return;
+  const lastInbound = [...(activeChat.value?.messages || [])].reverse().find((m) => m.dir === 'in' && replyable(m));
+  sendKind.value = lastInbound?.kind || available.at(-1) || '';
+}, { immediate: true });
+
+function sendFeedback(result) {
+  if (result.error) chatError.value = result.error;
+  else {
+    chatNotice.value = result.sent ? 'Сообщение передано в канал.' : 'Сообщение поставлено в очередь.';
+  }
+}
+
 async function sendChat() {
-  const c = activeChat.value;
+  const key = activeKey.value;
+  const kind = sendKind.value;
   const text = chatInput.value.trim();
-  if (!c || !text || chatSending.value) return;
+  if (!online.value || !key || !kind || !text || chatSending.value) return;
   chatSending.value = true;
   chatError.value = '';
+  chatNotice.value = '';
   try {
-    // сеть ответа: выбранная в шапке чата, либо канал последнего входящего сообщения
-    let kind = msgKindFilter.value !== 'all' ? msgKindFilter.value : null;
-    if (!kind) {
-      const lastIn = [...(c.messages || [])].reverse().find((m) => m.dir === 'in' && m.kind !== 'call');
-      kind = lastIn?.kind || c.kind || null;
-    }
-    const res = await commsApi.sendToChat(c.key, text, kind);
-    chatNotice.value = res.sent
-      ? '✅ Доставлено'
-      : '⏳ Отправлено — уйдёт клиенту, как только канал будет готов';
-    chatInput.value = '';
-    commsApi.saveDraft(c.key, '').catch(() => {});
+    const result = await commsApi.sendToChat(key, text, kind);
+    setDraft(key, result.error ? text : '');
     await loadChats(true);
-    const fresh = activeChat.value;
-    if (fresh) fresh.draft = '';
-    scrollBottom();
-    setTimeout(() => { chatNotice.value = ''; }, 2500);
+    if (activeKey.value === key) {
+      if (!result.error) chatInput.value = '';
+      sendFeedback(result);
+      scrollBottom();
+    }
   } catch (e) {
-    chatError.value = e.message || 'Сервер отклонил отправку';
+    if (activeKey.value === key) chatError.value = e.message || 'Сервер отклонил отправку';
   } finally {
     chatSending.value = false;
   }
 }
 
 function onInput() {
-  const c = activeChat.value;
-  if (!c) return;
-  clearTimeout(draftTimer);
-  draftTimer = setTimeout(() => {
-    commsApi.saveDraft(c.key, chatInput.value).catch(() => {});
-  }, 700);
+  if (activeKey.value) setDraft(activeKey.value, chatInput.value);
 }
 
-const HANDLE_KINDS = ['telegram', 'instagram', 'facebook', 'vk', 'ok'];   // каналы с ником/URL вместо номера
+const HANDLE_KINDS = ['telegram', 'instagram', 'facebook', 'vk', 'ok'];
 
 async function startNewChat() {
+  if (!online.value || chatSending.value) return;
   const f = newChat.value;
   const byPhone = !HANDLE_KINDS.includes(f.kind);
   const target = (byPhone ? f.phone : f.handle).trim();
-  if (!target) { chatError.value = byPhone ? 'Укажите номер телефона' : 'Укажите ник / ссылку на профиль'; return; }
-  const entry = {
-    kind: f.kind, dir: 'out',
-    contact: f.contact.trim() || null,
-    phone: byPhone ? target : null,
-    handle: !byPhone ? target.replace(/^@/, '') : null,
-    text: chatInput.value.trim() || 'Новый диалог',
-    read: true,
-  };
+  const message = f.text.trim();
+  newChatError.value = '';
+  if (!target || !message) {
+    newChatError.value = 'Укажите получателя и текст сообщения.';
+    return;
+  }
+  chatSending.value = true;
   try {
-    await db.addComm(entry);           // создаёт сообщение и peer_key на сервере
-    newChatOpen.value = false;
-    chatInput.value = '';
-    await loadChats(true);
-    const created = chatList.value.find((c) =>
-      (entry.handle && c.handle === entry.handle) || (entry.phone && c.phone === entry.phone));
-    if (created) openChat(created, false);
-  } catch (e) {
-    chatError.value = e.message || 'Не удалось начать диалог';
+    const result = await commsApi.startChat({
+      kind: f.kind,
+      contact: f.contact.trim() || null,
+      phone: byPhone ? target : null,
+      handle: !byPhone ? target : null,
+      text: message,
+    });
+    if (result.item?.peerKey) await loadChats(true, result.item.peerKey);
+    if (result.error) {
+      newChatError.value = result.error;
+    } else {
+      newChatOpen.value = false;
+      f.text = '';
+      sendFeedback(result);
+    }
+  } catch (error) {
+    newChatError.value = error.message || 'Не удалось начать диалог';
+  } finally {
+    chatSending.value = false;
   }
 }
 
 function chatGoClient(c) {
   if (c.farmId) ui.openClient(c.farmId);
+}
+
+async function linkChat() {
+  const chat = activeChat.value;
+  const farmId = linkFarmId.value;
+  if (!online.value || !farmId || !chat?.lastMessage?.id || linkBusy.value) return;
+  linkBusy.value = true;
+  chatError.value = '';
+  try {
+    await commsApi.link(chat.lastMessage.id, farmId);
+    await db.syncComms(true);
+    await loadChats(true, chat.key);
+    linkFarmId.value = '';
+  } catch (error) { chatError.value = error.message; }
+  finally { linkBusy.value = false; }
 }
 
 const KIND_META = {
@@ -236,35 +345,41 @@ const form = ref({
   durationMin: 3,
 });
 
-function saveComm() {
+const formBusy = ref(false);
+const formError = ref('');
+
+async function saveComm() {
+  if (formBusy.value) return;
   const f = form.value;
-  if (f.kind === 'call') {
-    db.addComm({
-      kind: 'call',
-      dir: f.dir,
-      farmId: f.farmId || null,
-      contact: f.contact || null,
-      phone: f.phone || null,
-      status: f.status,
-      duration: Math.max(0, Number(f.durationMin) || 0) * 60,
-      note: f.note || '',
-      read: true,
-    });
-  } else {
-    db.addComm({
+  formError.value = '';
+  if (f.kind !== 'call' && !f.text.trim()) {
+    formError.value = 'Введите текст для журнала.';
+    return;
+  }
+  if (!f.farmId && !f.phone.trim() && !f.handle.trim() && !f.contact.trim()) {
+    formError.value = 'Укажите клиента, контакт или номер.';
+    return;
+  }
+  formBusy.value = true;
+  try {
+    await db.addComm({
       kind: f.kind,
       dir: f.dir,
       farmId: f.farmId || null,
-      contact: f.contact || null,
-      phone: HANDLE_KINDS.includes(f.kind) ? null : (f.phone || null),
-      handle: HANDLE_KINDS.includes(f.kind) ? (f.handle || null) : null,
-      text: f.text || '',
+      contact: f.contact.trim() || null,
+      phone: HANDLE_KINDS.includes(f.kind) ? null : (f.phone.trim() || null),
+      handle: HANDLE_KINDS.includes(f.kind) ? (f.handle.trim() || null) : null,
+      ...(f.kind === 'call'
+        ? { status: f.status, duration: Math.max(0, Number(f.durationMin) || 0) * 60, note: f.note.trim() }
+        : { text: f.text.trim() }),
       read: true,
     });
-  }
-  showForm.value = false;
-  form.value.text = '';
-  form.value.note = '';
+    showForm.value = false;
+    f.text = '';
+    f.note = '';
+    await loadChats();
+  } catch (error) { formError.value = error.message; }
+  finally { formBusy.value = false; }
 }
 
 // ── автообновление ленты: входящие сообщения и статусы доставки ответов
@@ -272,19 +387,30 @@ function saveComm() {
 const autoRefresh = ref(true);
 let pollTimer = null;
 
+let polling = false;
+let mounted = true;
 async function tick() {
-  if (!autoRefresh.value || document.hidden) return;
-  await db.syncComms(true);   // quiet — не шумим ошибкой при временном недоступе API
-  if (mode.value === 'chats') await loadChats(true);
+  if (!mounted || !autoRefresh.value || document.hidden || polling) return;
+  polling = true;
+  try {
+    const wasOnline = online.value;
+    await db.syncComms(true);
+    if (!mounted) return;
+    online.value = apiState.online;
+    if (!wasOnline && online.value) await loadChannels();
+    await loadChats(true, activeKey.value);
+  } finally { polling = false; }
 }
 
 onMounted(async () => {
-  // если поднят бэкенд коммуникаций (backend/, порт 8787) — лента общая, из SQLite
   await db.syncComms();
+  if (!mounted) return;
+  online.value = apiState.online;
   await loadChannels();
-  await loadChats(true);
+  await loadChats();
+  if (!mounted) return;
   pollTimer = setInterval(tick, 4000);
-  window.addEventListener('focus', tick);   // сразу обновляемся при возврате во вкладку
+  window.addEventListener('focus', tick);
   if (ui.commsFocusFarm) {
     ui.search = db.farmById(ui.commsFocusFarm)?.name || '';
     ui.commsFocusFarm = null;
@@ -292,6 +418,8 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  mounted = false;
+  loadVersion++;
   clearInterval(pollTimer);
   window.removeEventListener('focus', tick);
 });
@@ -310,7 +438,7 @@ onBeforeUnmount(() => {
         <label class="mini" style="display:flex;align-items:center;gap:6px;cursor:pointer" title="Лента и статусы доставки подтягиваются с сервера каждые 4 секунды">
           <input type="checkbox" v-model="autoRefresh" /> автообновление
         </label>
-        <button class="btn slim ghost" @click="db.markAllCommsRead()" :disabled="!totalUnread">
+        <button class="btn slim ghost" @click="readAllChats" :disabled="!totalUnread">
           Прочитано всё ({{ totalUnread }})
         </button>
         <button class="btn primary" @click="showForm = !showForm">＋ Зафиксировать</button>
@@ -318,24 +446,14 @@ onBeforeUnmount(() => {
     </div>
 
     <div class="note">
-      <template v-if="apiState.online">
-        ✅ Лента синхронизируется с сервером ({{ COMMS_API_URL }}): общая база звонков и сообщений
-        для всех сотрудников. Входящие из Telegram/WhatsApp/телефонии поступают автоматически
-        через вебхуки бэкенда (<code>/webhooks/*</code>).
-      </template>
-      <template v-else>
-        Лента работает локально (без бэкенда): сообщения фиксируются вручную и видны только в
-        этом браузере. Запустите стек — <code>docker compose up -d --build</code> (или локально
-        <code>cd backend && uvicorn main:app --port 8787</code>) — и лента станет общей, с
-        автоприёмом из IP-телефонии, Telegram Bot API и WhatsApp Business API.
-      </template>
-      <div v-if="db.commsSyncError" style="color:#b42318;margin-top:6px">
-        Ошибка синхронизации: {{ db.commsSyncError }}
-      </div>
+      <template v-if="online">Журнал синхронизируется с общей базой. Ответы отправляются из диалога.</template>
+      <template v-else>Сервер недоступен. Показаны данные этого браузера, отправка сообщений недоступна.</template>
+      <div v-if="db.commsSyncError" class="comms-error">Ошибка синхронизации: {{ db.commsSyncError }}</div>
     </div>
+    <p v-if="chatError && !activeChat" class="comms-error" role="alert">{{ chatError }}</p>
 
     <div v-if="showForm" class="panel" style="margin-bottom:18px">
-      <div class="panel-head"><span class="panel-title">Новая коммуникация</span></div>
+      <div class="panel-head"><span class="panel-title">Запись в журнале</span></div>
       <div class="formgrid">
         <div class="field">
           <label>Канал</label>
@@ -396,29 +514,18 @@ onBeforeUnmount(() => {
           <textarea v-model="form.text" class="textarea" placeholder="Текст сообщения…"></textarea>
         </div>
       </div>
+      <p v-if="formError" class="comms-error" role="alert">{{ formError }}</p>
       <div class="modal-foot" style="padding:14px 0 0;border-top:0">
         <button class="btn ghost" @click="showForm = false">Отмена</button>
-        <button class="btn primary" @click="saveComm">Сохранить в ленту</button>
+        <button class="btn primary" :disabled="formBusy" @click="saveComm">Записать в журнал</button>
       </div>
     </div>
 
-    <div class="chips toolbar" style="margin-bottom:14px">
-      <button class="chip selected" style="background:#27b95a;color:#fff" @click="setMode('chats')">
-        💬 Чаты<template v-if="totalUnread"> · {{ totalUnread }}</template>
-      </button>
-    </div>
-
-    <!-- ═══ МЕССЕНДЖЕР: ЧАТЫ ═══ -->
-    <div v-if="mode === 'chats'" class="messenger">
-      <div v-if="!apiState.online" class="note">
-        💬 Режим чатов доступен при поднятом бэкенде. Запустите стек (<code>docker compose up -d --build</code>) —
-        или переключитесь на ленту, чтобы работать локально.
-      </div>
-      <template v-else>
+    <div class="messenger">
         <aside class="chat-side">
           <div class="chat-side-head">
             <span class="panel-title">Чаты</span>
-            <button class="btn slim primary" @click="newChatOpen = !newChatOpen">＋ Диалог</button>
+            <button v-if="online" class="btn slim primary" @click="newChatOpen = !newChatOpen">＋ Диалог</button>
           </div>
           <div class="chat-kind-filter">
             <button class="chip mini-chip" :class="{ selected: chatKindFilter === 'all' }"
@@ -433,7 +540,7 @@ onBeforeUnmount(() => {
                     :style="chatKindFilter === ch.id ? 'background:#27b95a;color:#fff' : ''"
                     @click="setChatKind(ch.id)">{{ ch.icon }} {{ ch.label }}</button>
           </div>
-          <div v-if="newChatOpen" class="newchat">
+          <div v-if="online && newChatOpen" class="newchat">
             <select v-model="newChat.kind" class="select">
               <option value="telegram">✈ Telegram</option>
               <option value="whatsapp">◔ WhatsApp</option>
@@ -445,8 +552,9 @@ onBeforeUnmount(() => {
             <input v-if="HANDLE_KINDS.includes(newChat.kind)" v-model="newChat.handle" class="input" placeholder="@ник клиента / ссылка на профиль" />
             <input v-else v-model="newChat.phone" class="input" placeholder="+996 … номер" />
             <input v-model="newChat.contact" class="input" placeholder="Имя (необязательно)" />
-            <textarea v-model="chatInput" class="textarea" rows="2" placeholder="Первое сообщение…"></textarea>
-            <button class="btn primary slim" @click="startNewChat">Начать диалог</button>
+            <textarea v-model="newChat.text" class="textarea" rows="2" maxlength="4000" placeholder="Первое сообщение…"></textarea>
+            <p v-if="newChatError" class="comms-error" role="alert">{{ newChatError }}</p>
+            <button class="btn primary slim" :disabled="chatSending" @click="startNewChat">Начать диалог</button>
           </div>
           <div class="chat-list">
             <div
@@ -461,7 +569,7 @@ onBeforeUnmount(() => {
                   <span class="chat-time mini">{{ fmtTime(c.lastTs) }}</span>
                 </div>
                 <div class="chat-item-bottom">
-                  <span class="chat-preview">{{ c.lastMessage?.dir === 'out' ? '→ ' : '' }}{{ (c.lastMessage?.text || '').slice(0, 60) }}</span>
+                  <span class="chat-preview">{{ c.lastMessage?.dir === 'out' ? '→ ' : '' }}{{ (c.lastMessage?.text || c.lastMessage?.note || c.lastMessage?.status || '').slice(0, 60) }}</span>
                   <span v-if="c.unread" class="badge">{{ c.unread }}</span>
                 </div>
               </div>
@@ -480,27 +588,37 @@ onBeforeUnmount(() => {
                 <div class="mini">{{ channelMeta[activeChat.kind]?.label || activeChat.kind }} · {{ peerSub(activeChat) || 'диалог' }}</div>
               </div>
               <!-- выбор сети, в которую идёт ответ (если диалог ведётся в нескольких) -->
-              <select v-if="chatKinds(activeChat).length > 1" v-model="msgKindFilter" class="select kind-select" title="Сеть для ответа">
+              <select v-if="chatKinds(activeChat).length > 1" v-model="msgKindFilter" class="select kind-select" title="Показать сообщения канала">
                 <option value="all">Все сети</option>
                 <option v-for="k in chatKinds(activeChat)" :key="k" :value="k">{{ channelMeta[k]?.icon || '💬' }} {{ channelMeta[k]?.label || k }}</option>
               </select>
-              <span v-if="activeChat.lastOutStatus === 'Доставлено'" class="pill green">ответ доставлен ✓</span>
+              <span v-if="['Отправлено', 'Доставлено'].includes(activeChat.lastOutStatus)" class="pill green">передано в канал ✓</span>
               <span v-else-if="activeChat.lastOutStatus === 'В очереди'" class="pill amber">⏳ в очереди</span>
               <span v-else-if="activeChat.lastOutStatus === 'Ошибка доставки'" class="pill red">✕ ошибка</span>
             </header>
+            <div v-if="online && !activeChat.farmId && !activeChat.lastMessage?.id?.startsWith('C-local-')" class="chat-link">
+              <select v-model="linkFarmId" class="select" aria-label="Клиент для привязки">
+                <option value="">Выберите клиента</option>
+                <option v-for="farm in db.farms" :key="farm.id" :value="farm.id">{{ farm.name }}</option>
+              </select>
+              <button class="btn slim" :disabled="!linkFarmId || linkBusy" @click="linkChat">Привязать</button>
+            </div>
             <div ref="msgBox" class="chat-messages">
               <template v-for="(m, i) in chatMessages" :key="m.seq ?? m.id">
                 <div v-if="dayGap(chatMessages, i)" class="day-divider"><span>{{ fmtDay(m.ts) }}</span></div>
                 <div class="msg-row" :class="m.dir === 'out' ? 'mine' : 'theirs'">
                   <div class="bubble" :class="['k-' + m.kind, { failed: m.status === 'Ошибка доставки' }]">
                     <div class="bubble-text">{{ m.text || (m.kind === 'call' ? `Звонок · ${m.status || ''}` : '') }}</div>
+                    <div v-if="m.kind === 'call' && m.note" class="bubble-text">{{ m.note }}</div>
+                    <div v-if="m.kind === 'call' && m.duration" class="mini">{{ Math.round(m.duration / 60) }} мин</div>
+                    <div v-if="m.source === 'manual' && m.kind !== 'call'" class="mini">Запись в журнале</div>
+                    <div v-if="m.payload?.sendError && m.status === 'Ошибка доставки'" class="mini comms-error">{{ m.payload.sendError }}</div>
                     <div class="bubble-meta">
                       <span>{{ fmtTime(m.ts) }}</span>
                       <span v-if="m.dir === 'out'">
-                        <template v-if="m.status === 'Доставлено'"> ✓✓</template>
+                        <template v-if="['Отправлено', 'Доставлено'].includes(m.status)"> ✓</template>
                         <template v-else-if="m.status === 'В очереди'"> 🕓</template>
                         <template v-else-if="m.status === 'Ошибка доставки'"> ✕</template>
-                        <template v-else> ✓</template>
                       </span>
                     </div>
                   </div>
@@ -511,22 +629,23 @@ onBeforeUnmount(() => {
             <footer class="chat-input">
               <div v-if="chatError" class="mini comms-error" style="padding:0 14px">{{ chatError }}</div>
               <div v-if="chatNotice" class="mini comms-ok" style="padding:0 14px">{{ chatNotice }}</div>
-              <div class="chat-input-row">
+              <div v-if="online && sendKinds.length" class="chat-input-row">
                 <!-- явная выбор сети, из которой идёт сообщение -->
-                <select v-model="msgKindFilter" class="select kind-select send-kind" title="Сеть отправки">
-                  <option v-for="k in chatKinds(activeChat)" :key="k" :value="k">{{ channelMeta[k]?.icon || '💬' }} {{ channelMeta[k]?.label || k }}</option>
-                  <template v-if="chatKinds(activeChat).length > 1"><option value="all">Авто (последняя входящая)</option></template>
+                <select v-model="sendKind" class="select kind-select send-kind" title="Сеть отправки">
+                  <option v-for="k in sendKinds" :key="k" :value="k">{{ channelMeta[k]?.icon || '💬' }} {{ channelMeta[k]?.label || k }}</option>
                 </select>
                 <textarea
                   v-model="chatInput" class="textarea chat-textarea" rows="1"
-                  :placeholder="caps.telegramSend || caps.whatsappSend ? 'Сообщение… (Enter — отправить)' : 'Сохранится в ленте; отправка не настроена на сервере'"
+                  maxlength="4000"
+                  placeholder="Сообщение… (Enter — отправить)"
                   @input="onInput"
                   @keydown.enter.exact.prevent="sendChat"
                 ></textarea>
-                <button class="btn primary send-btn" :disabled="!chatInput.trim() || chatSending" @click="sendChat">
+                <button class="btn primary send-btn" :disabled="!sendKind || !chatInput.trim() || chatSending" @click="sendChat">
                   {{ chatSending ? '…' : '➤' }}
                 </button>
               </div>
+              <p v-else class="mini">В этом диалоге пока нет доступного канала для ответа.</p>
             </footer>
           </template>
           <div v-else class="chat-empty">
@@ -535,7 +654,6 @@ onBeforeUnmount(() => {
             <div class="mini">Входящие из Telegram и WhatsApp автоматически группируются в чаты по собеседнику</div>
           </div>
         </section>
-      </template>
     </div>
 
 
@@ -584,6 +702,8 @@ onBeforeUnmount(() => {
 .chat-window { flex:1; display:flex; flex-direction:column; min-width:0; background:#eef3ee; }
 .chat-head { display:flex; align-items:center; justify-content:space-between; padding:10px 16px; background:#fff; border-bottom:1px solid #e7ece8; }
 .chat-head-name { font-weight:800; font-size:14.5px; }
+.chat-link { display:flex; gap:8px; padding:8px 16px; background:#fff; }
+.chat-link .select { max-width:320px; }
 .chat-messages { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:6px; }
 .day-divider { text-align:center; margin:10px 0 6px; }
 .day-divider span { background:#dfe8df; color:#5b6b60; font-size:11px; font-weight:700; padding:3px 10px; border-radius:10px; }

@@ -19,7 +19,7 @@ const fields = computed(() => {
   if (!rec.value) return [];
   const types = { due: 'date', next: 'date', amount: 'number', area: 'number' };
   return ['name', 'title', 'number', 'stage', 'status', 'owner', 'due', 'next', 'amount', 'area', 'phone', 'priority']
-    .filter((key) => key in rec.value)
+    .filter((key) => key in rec.value && !(key === 'stage' && props.kind === 'deal' && rec.value.journeyId))
     .map((key) => [key, crmFieldLabel(REF_KINDS[props.kind], key), types[key]]);
 });
 

@@ -11,7 +11,7 @@
 
 API (подключается в main.py префиксом /api/crm):
   GET    /api/crm/state                 — весь снимок данных
-  PUT    /api/crm/state                 — полная синхронизация (lastWriteWins по updatedAt)
+  PUT    /api/crm/state                 — атомарное сохранение изменённых записей
   GET    /api/crm/{coll}                — список записей коллекции
   POST   /api/crm/{coll}                — создать запись
   PUT    /api/crm/{coll}/{rid}          — заменить запись
@@ -24,6 +24,7 @@ API (подключается в main.py префиксом /api/crm):
 import hashlib
 import json
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 COLLECTIONS = (
@@ -60,14 +61,13 @@ def add_options(conn, options: dict) -> dict:
             data = json.dumps({"listKey": key, "value": value}, ensure_ascii=False)
             rows.append((identity, OPTION_COLLECTION, data, _now()))
 
-    for row in rows:
-        conn.execute(
+    with write_transaction(conn) as tx:
+        tx.executemany(
             "INSERT INTO crm_records (id, coll, data, updated) VALUES (?,?,?,?) "
             "ON CONFLICT(coll,id) DO NOTHING",
-            row,
+            rows,
         )
-    conn.commit()
-    return get_options(conn)
+        return get_options(tx)
 
 
 SCHEMA_CRM = """
@@ -118,41 +118,89 @@ def get_record(conn, coll: str, rid: str) -> dict | None:
     return _row_to_rec(row) if row else None
 
 
-def upsert(conn, coll: str, rec: dict, rid: str | None = None) -> dict:
-    """Сохранить запись. Опциональный контроль версии (см. put_state):
-    expected_rev — сервер отклоняет замену (ConflictError → HTTP 409), если
-    текущая серверная метка updated не совпадает с ожидаемой клиентом."""
-    rid = rid or rec.get("id") or _gen_id(coll)
-    rec = {**rec, "id": rid}
-    stamp = _now()
-    expected_rev = rec.pop("_expectedRev", None)
-    if expected_rev is not None:
-        cur = conn.execute(
-            "SELECT updated FROM crm_records WHERE coll=? AND id=?", (coll, rid)).fetchone()
-        if cur and (cur[0] or "") != expected_rev:
-            raise ConflictError(coll, rid)
-    conn.execute(
-        "INSERT INTO crm_records (id, coll, data, updated) VALUES (?,?,?,?) "
-        "ON CONFLICT(coll,id) DO UPDATE SET data=excluded.data, updated=excluded.updated",
-        (rid, coll, json.dumps(rec, ensure_ascii=False), stamp),
-    )
-    conn.commit()
-    rec["_updatedAt"] = stamp
-    return rec
+@contextmanager
+def write_transaction(conn):
+    """Serialize read–modify–write operations while allowing concurrent readers."""
+    if isinstance(conn, sqlite3.Connection):
+        conn.execute("BEGIN IMMEDIATE")
+        with conn:
+            yield conn
+    else:
+        with conn.transaction() as tx:
+            tx.execute("LOCK TABLE crm_records IN SHARE ROW EXCLUSIVE MODE")
+            yield tx
+
+
+_NO_REVISION = object()
+_DELETED_PREFIX = "crmDeleted:"
 
 
 class ConflictError(Exception):
-    """Оптимистичная блокировка: запись изменилась другим пользователем."""
-
     def __init__(self, coll: str, rid: str):
         super().__init__(f"{coll}/{rid}")
         self.coll, self.rid = coll, rid
 
 
-def delete(conn, coll: str, rid: str) -> bool:
-    cur = conn.execute("DELETE FROM crm_records WHERE coll=? AND id=?", (coll, rid))
-    conn.commit()
-    return cur.rowcount > 0
+def _row_id(value, coll: str) -> str:
+    if value in (None, ""):
+        return _gen_id(coll)
+    if not isinstance(value, (str, int)) or isinstance(value, bool) or not str(value).strip():
+        raise ValueError("ID записи должен быть непустой строкой")
+    return str(value).strip()
+
+
+def _record_data(rec: dict, rid: str) -> dict:
+    return {**{k: v for k, v in rec.items() if k not in ("_updatedAt", "_expectedRev", "_delete")}, "id": rid}
+
+
+def _write(tx, coll: str, rec: dict, rid: str) -> dict:
+    stamp = _now()
+    tx.execute(
+        "INSERT INTO crm_records (id, coll, data, updated) VALUES (?,?,?,?) "
+        "ON CONFLICT(coll,id) DO UPDATE SET data=excluded.data, updated=excluded.updated",
+        (rid, coll, json.dumps(rec, ensure_ascii=False, allow_nan=False), stamp),
+    )
+    return {**rec, "_updatedAt": stamp}
+
+
+def upsert(conn, coll: str, rec: dict, rid: str | None = None, *, merge=False, require_existing=False) -> dict | None:
+    rid = _row_id(rid or rec.get("id"), coll)
+    expected = rec.get("_expectedRev", _NO_REVISION)
+    with write_transaction(conn) as tx:
+        current = get_record(tx, coll, rid)
+        if require_existing and current is None:
+            if expected is not _NO_REVISION:
+                raise ConflictError(coll, rid)
+            return None
+        if expected is not _NO_REVISION and expected != (current or {}).get("_updatedAt"):
+            raise ConflictError(coll, rid)
+        document = _record_data({**current, **rec} if merge and current else rec, rid)
+        if current and document == _record_data(current, rid):
+            return current
+        return _write(tx, coll, document, rid)
+
+
+def _remember_deletions(tx, coll: str, rid: str | None = None):
+    where = "coll=?" + (" AND id=?" if rid is not None else "")
+    args = (coll, rid) if rid is not None else (coll,)
+    tx.execute(
+        "INSERT INTO crm_records (id, coll, data, updated) "
+        "SELECT id, ?, '{}', ? FROM crm_records WHERE " + where + " "
+        "ON CONFLICT(coll,id) DO NOTHING",
+        (_DELETED_PREFIX + coll, _now(), *args),
+    )
+
+
+def delete(conn, coll: str, rid: str, expected_revision=None) -> bool:
+    with write_transaction(conn) as tx:
+        current = get_record(tx, coll, rid)
+        if current is None:
+            return False
+        if expected_revision is not None and expected_revision != current["_updatedAt"]:
+            raise ConflictError(coll, rid)
+        _remember_deletions(tx, coll, rid)
+        tx.execute("DELETE FROM crm_records WHERE coll=? AND id=?", (coll, rid))
+        return True
 
 
 def _gen_id(coll: str) -> str:
@@ -162,118 +210,126 @@ def _gen_id(coll: str) -> str:
         "tasks": "T", "contacts": "CT", "clientNotes": "N", "payments": "PAY",
         "applications": "AP", "clientDocs": "DOC",
     }.get(coll, "R")
-    import random
-    return f"{prefix}-{int(datetime.now().timestamp()*1000)%10**9}{random.randint(100,999)}"
+    from uuid import uuid4
+    return f"{prefix}-{uuid4().hex}"
 
 
 # ── Полная синхронизация состояния ──────────────────────────────────
 
 def get_state(conn) -> dict:
-    state = {"version": 3, "serverTime": _now()}
-    for coll in COLLECTIONS:
-        state[coll] = list_records(conn, coll)
+    state = {"version": 3, "serverTime": _now(), "_delta": True, **{coll: [] for coll in COLLECTIONS}}
+    placeholders = ",".join("?" for _ in COLLECTIONS)
+    rows = conn.execute(
+        f"SELECT id, data, updated, coll FROM crm_records WHERE coll IN ({placeholders}) "
+        "ORDER BY updated DESC",
+        COLLECTIONS,
+    ).fetchall()
+    for row in rows:
+        state[row[3]].append(_row_to_rec(row))
     return state
 
 
 def put_state(conn, payload: dict) -> dict:
-    """Синхронизация всего снимка с разрешениями конфликтов lastWriteWins.
+    """Save changed rows only and detect conflicts using server revisions.
 
-    Клиент присылает { coll: [records...] } + _syncAt (метка последней
-    записи клиента). Сервер для каждой записи сравнивает метки: если клиентская
-    свежее или записи на сервере нет — принимаем; иначе возвращаем серверную.
-
-    Удаления стали БЕЗОПАСНЫМИ: запись удаляется только если клиент прислал
-    полный снимок коллекции (`_fullSync.collections` содержит имя) ИЛИ в явном
-    списке `_deletedRecords`. Раньше любая неполная выгрузка клиента (например,
-    коллекция не была загружена локально) молча стирала серверные данные —
-    это был главный риск потери данных при lastWriteWins.
+    Old clients may still send complete snapshots. Only apply their rows when a
+    known revision matches, or when the ID is genuinely new.
     """
-    server_stamp = conn.execute("SELECT MAX(updated) FROM crm_records").fetchone()[0] or ""
-    client_stamp = payload.get("_syncAt") or ""
-    full = payload.get("_fullSync") or {}
-    full_colls = set(full.get("collections") or [])
-    explicit_deleted = set(payload.get("_deletedRecords") or [])
-    result = {"conflicts": 0}
+    delta = payload.get("_delta") is True
+    incoming = []
     for coll in COLLECTIONS:
-        items = payload.get(coll)
+        items = payload.get(coll, [])
         if not isinstance(items, list):
-            result[coll] = list_records(conn, coll)
-            continue
-        client_ids = set()
+            raise ValueError(f"Таблица «{coll}»: ожидается список записей")
+        seen = set()
         for rec in items:
-            rid = rec.get("id")
-            if not rid:
+            if not isinstance(rec, dict) or not rec.get("id"):
+                raise ValueError(f"Таблица «{coll}»: у каждой записи должен быть ID")
+            rid = _row_id(rec["id"], coll)
+            if rid in seen:
+                raise ValueError(f"Таблица «{coll}»: ID «{rid}» повторяется")
+            seen.add(rid)
+            if delta and "_expectedRev" not in rec:
+                raise ValueError(f"Запись «{rid}»: отсутствует версия для синхронизации")
+            incoming.append((coll, rid, rec))
+
+    conflicts = 0
+    with write_transaction(conn) as tx:
+        for coll, rid, rec in incoming:
+            current = get_record(tx, coll, rid)
+            if delta and rec.get("_delete") is True:
+                if current is None:
+                    continue
+                if rec["_expectedRev"] != current["_updatedAt"]:
+                    raise ConflictError(coll, rid)
+                _remember_deletions(tx, coll, rid)
+                tx.execute("DELETE FROM crm_records WHERE coll=? AND id=?", (coll, rid))
                 continue
-            client_ids.add(rid)
-            existing = conn.execute(
-                "SELECT updated FROM crm_records WHERE coll=? AND id=?", (coll, rid)
-            ).fetchone()
-            rec_stamp = rec.get("_updatedAt") or rec.get("updatedAt") or ""
-            # если клиент прислал данные раньше/равно серверным — не перетираем,
-            # а считаем конфликт: фронт получит серверную версию и обновит UI
-            if existing and (existing[0] or "") > rec_stamp and client_stamp <= (existing[0] or ""):
-                result["conflicts"] += 1
+            document = _record_data(rec, rid)
+            if current and document == _record_data(current, rid):
+                continue  # repeated request after losing a successful response
+            rev = (current or {}).get("_updatedAt")
+            expected = rec.get("_expectedRev" if delta else "_updatedAt")
+            deleted = current is None and get_record(tx, _DELETED_PREFIX + coll, rid)
+            if expected != rev or deleted:
+                if delta:
+                    raise ConflictError(coll, rid)
+                conflicts += 1
                 continue
-            clean = {k: v for k, v in rec.items() if k != "_updatedAt"}
-            upsert(conn, coll, clean, rid)
-        # удаления: только когда клиент явно синхронизируется позже сервера,
-        # и только по полному снимку коллекции или явному списку удалений
-        may_delete = client_stamp and client_stamp > server_stamp and (
-            coll in full_colls or explicit_deleted)
-        if may_delete:
-            rows = conn.execute("SELECT id, updated FROM crm_records WHERE coll=?", (coll,)).fetchall()
-            for r in rows:
-                gone = (r[0] not in client_ids and coll in full_colls) or \
-                       (f"{coll}:{r[0]}" in explicit_deleted)
-                if gone and (r[1] or "") < client_stamp:
-                    conn.execute("DELETE FROM crm_records WHERE coll=? AND id=?", (coll, r[0]))
-        conn.commit()
-        result[coll] = list_records(conn, coll)
-    return {"version": 3, "serverTime": _now(), **result}
+            _write(tx, coll, document, rid)
+        return {**get_state(tx), "conflicts": conflicts, "_delta": delta}
 
 
 # ── Массовые операции над таблицами (импорт CSV / сброс данных) ─────
 
 def import_collection(conn, coll: str, records: list, mode: str = "merge") -> dict:
-    """Массовая загрузка записей коллекции из внешнего источника (CSV-импорт
-    во фронтенде). Режимы:
-      merge  — апсерт по id (или генерация нового id), существующие не затираются
-               пустыми значениями;
-      replace — сначала полное удаление коллекции, затем загрузка.
-    Возвращает {'created', 'updated', 'total'}.
-    """
-    if coll not in COLLECTIONS:
-        raise ValueError(f"Неизвестная коллекция: {coll}")
-    removed = 0
-    if mode == "replace":
-        cur = conn.execute("DELETE FROM crm_records WHERE coll=?", (coll,))
-        removed = cur.rowcount
-    created = updated = 0
-    for raw in records or []:
-        if not isinstance(raw, dict):
-            continue
-        rec = {k: v for k, v in raw.items() if k not in ("_updatedAt", "_expectedRev")}
-        rid = rec.get("id")
-        if rid and get_record(conn, coll, rid):
-            existing = get_record(conn, coll, rid)
-            merged = {**existing, **rec, "id": rid}
-            upsert(conn, coll, merged, rid)
-            updated += 1
-        else:
-            upsert(conn, coll, rec, rid or None)
-            created += 1
-    conn.commit()
-    return {"created": created, "updated": updated, "removed": removed,
-            "total": len(list_records(conn, coll))}
+    """Apply the whole file or roll back the entire import."""
+    if coll not in COLLECTIONS or mode not in ("merge", "replace"):
+        raise ValueError("Неизвестная таблица или режим импорта")
+    if not records:
+        raise ValueError("Пустой файл: импортировать нечего")
+
+    validated = []
+    seen = set()
+    for index, rec in enumerate(records, 1):
+        if not isinstance(rec, dict):
+            raise ValueError(f"Строка {index}: ожидается объект")
+        rid = _row_id(rec.get("id"), coll)
+        if rid in seen:
+            raise ValueError(f"Строка {index}: ID «{rid}» повторяется")
+        seen.add(rid)
+        validated.append((rid, rec))
+
+    with write_transaction(conn) as tx:
+        removed = 0
+        if mode == "replace":
+            _remember_deletions(tx, coll)
+            removed = tx.execute("DELETE FROM crm_records WHERE coll=?", (coll,)).rowcount
+        created = updated = 0
+        affected = []
+        for rid, rec in validated:
+            current = get_record(tx, coll, rid)
+            expected = rec.get("_expectedRev", _NO_REVISION)
+            if expected is not _NO_REVISION and expected != (current or {}).get("_updatedAt"):
+                raise ConflictError(coll, rid)
+            document = _record_data({**(current or {}), **rec}, rid)
+            if current:
+                updated += 1
+            else:
+                created += 1
+            affected.append(current if current and document == _record_data(current, rid)
+                            else _write(tx, coll, document, rid))
+        total = tx.execute("SELECT count(*) FROM crm_records WHERE coll=?", (coll,)).fetchone()[0]
+        return {"created": created, "updated": updated, "removed": removed,
+                "total": total, "records": affected}
 
 
 def wipe_collection(conn, coll: str) -> int:
-    """Полностью очистить одну таблицу CRM. Возвращает число удалённых записей."""
     if coll not in COLLECTIONS:
         raise ValueError(f"Неизвестная коллекция: {coll}")
-    cur = conn.execute("DELETE FROM crm_records WHERE coll=?", (coll,))
-    conn.commit()
-    return cur.rowcount
+    with write_transaction(conn) as tx:
+        _remember_deletions(tx, coll)
+        return tx.execute("DELETE FROM crm_records WHERE coll=?", (coll,)).rowcount
 
 
 # ── Сборка сквозного процесса (руководство §3) ──────────────────────

@@ -1,4 +1,5 @@
 <script setup>
+import { DEAL_STAGES, dealStage } from '@/data/crmFields';
 import CrmDataTable from '@/components/CrmDataTable.vue';
 // «Сделки и воронка» (руководство v0.9 §2, §3 шаг 4): канбан по стадиям +
 // таблица сделок; клик — карточка сделки (§5), переход в сквозной процесс.
@@ -19,8 +20,6 @@ const db = useDbStore();
 const ui = useUiStore();
 const { money, num } = useFormatters();
 
-const STAGES = ['Новая', 'Квалификация', 'Пилот или КП', 'КП отправлено', 'Счёт выставлен', 'Оплачено', 'Доставка', 'Получено клиентом', 'Завершена'];
-
 const deals = computed(() =>
   db.deals.filter((d) => {
     const q = ui.search.toLowerCase();
@@ -30,21 +29,24 @@ const deals = computed(() =>
 );
 
 const columns = computed(() => {
-  const cols = STAGES.map((s) => ({ stage: s, items: deals.value.filter((d) => d.stage === s) }));
-  const known = new Set(STAGES);
-  for (const d of deals.value) if (!known.has(d.stage)) cols.push({ stage: d.stage, items: deals.value.filter((x) => x.stage === d.stage) });
-  return cols;
+  const byStage = new Map(DEAL_STAGES.map((stage) => [stage, []]));
+  for (const row of deals.value) {
+    const stage = dealStage(row.stage) || 'Без этапа';
+    if (!byStage.has(stage)) byStage.set(stage, []);
+    byStage.get(stage).push(row);
+  }
+  return [...byStage].map(([stage, items]) => ({ stage, items }));
 });
 
 const totalPipeline = computed(() =>
-  deals.value.filter((d) => !['Оплачено', 'Отгружено', 'Получено клиентом', 'Завершена'].includes(d.stage)).reduce((a, b) => a + (b.amount || 0), 0)
+  deals.value.filter((d) => !['Оплачено', 'Доставка', 'Получено клиентом', 'Завершена'].includes(dealStage(d.stage))).reduce((a, b) => a + (Number(b.amount) || 0), 0)
 );
 
 function move(d, dir) {
-  const i = STAGES.indexOf(d.stage);
-  if (i < 0) return;
-  const ni = Math.min(STAGES.length - 1, Math.max(0, i + dir));
-  db.editEntity('deal', d.id, { stage: STAGES[ni] });
+  if (d.journeyId) return;
+  const i = DEAL_STAGES.indexOf(dealStage(d.stage));
+  const stage = i < 0 ? DEAL_STAGES[0] : DEAL_STAGES[i + dir];
+  if (stage) db.editEntity('deal', d.id, { stage });
 }
 </script>
 
@@ -70,8 +72,8 @@ function move(d, dir) {
           <b>{{ d.title }}</b>
           <div class="mini">{{ num(d.volumeL) }} л · {{ money(d.amount) }} · {{ d.owner }}</div>
           <div style="display:flex;gap:6px;margin-top:4px">
-            <button class="btn slim" @click.stop="move(d, -1)">←</button>
-            <button class="btn slim" @click.stop="move(d, 1)">→</button>
+            <button v-if="!d.journeyId" class="btn slim" aria-label="Предыдущий этап" @click.stop="move(d, -1)">←</button>
+            <button v-if="!d.journeyId" class="btn slim" aria-label="Следующий этап" @click.stop="move(d, 1)">→</button>
             <button v-if="d.journeyId" class="btn slim" @click.stop="ui.openJourney(d.journeyId)">Процесс</button>
           </div>
         </div>

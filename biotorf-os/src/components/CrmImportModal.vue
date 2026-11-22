@@ -4,8 +4,9 @@
 // «Заменить всё» (replace), а также полная очистка таблицы.
 import { ref, computed } from 'vue';
 import { useDbStore } from '@/stores/db';
+import { useUiStore } from '@/stores/ui';
 
-import { COLL_RU } from '@/data/crmFields';
+import { COLL_RU, crmFieldLabel } from '@/data/crmFields';
 
 const props = defineProps({
   coll: { type: String, required: true },   // коллекция db.js: farms, leads, deals…
@@ -14,6 +15,8 @@ const props = defineProps({
 const emit = defineEmits(['close']);
 
 const db = useDbStore();
+const ui = useUiStore();
+const canReplace = computed(() => ['director', 'operations'].includes(ui.role));
 const fileInput = ref(null);
 const records = ref([]);
 const fileName = ref('');
@@ -55,6 +58,8 @@ async function onFile(e) {
 
 async function apply() {
   if (!records.value.length) return;
+  if (mode.value === 'replace' && (!canReplace.value ||
+    !confirm(`Заменить все строки таблицы «${COLL_RU[props.coll] || props.coll}» данными из файла?`))) return;
   busy.value = true; error.value = ''; done.value = '';
   try {
     const res = await db.importCollection(props.coll, records.value, mode.value);
@@ -97,7 +102,7 @@ async function wipe() {
 
       <div v-if="preview.length" class="table-wrap">
         <table class="preview">
-          <thead><tr><th v-for="c in columns" :key="c">{{ c }}</th></tr></thead>
+          <thead><tr><th v-for="c in columns" :key="c">{{ crmFieldLabel(coll, c) }}</th></tr></thead>
           <tbody><tr v-for="(r, i) in preview" :key="i"><td v-for="c in columns" :key="c">{{ r[c] }}</td></tr></tbody>
         </table>
         <p v-if="records.length > preview.length" class="hint">…и ещё {{ records.length - preview.length }} строк</p>
@@ -105,14 +110,14 @@ async function wipe() {
 
       <div class="row modes">
         <label><input type="radio" value="merge" v-model="mode" /> Добавить / обновить по id</label>
-        <label><input type="radio" value="replace" v-model="mode" /> Заменить всю таблицу</label>
+        <label v-if="canReplace"><input type="radio" value="replace" v-model="mode" /> Заменить всю таблицу</label>
       </div>
 
       <p v-if="error" class="err">{{ error }}</p>
       <p v-if="done" class="ok">{{ done }}</p>
 
       <footer>
-        <button class="ghost danger" :disabled="busy" @click="wipe">Очистить таблицу</button>
+        <button v-if="canReplace" class="ghost danger" :disabled="busy" @click="wipe">Очистить таблицу</button>
         <span class="spacer" />
         <button class="ghost" :disabled="busy" @click="emit('close')">Закрыть</button>
         <button class="primary" :disabled="busy || !records.length" @click="apply">

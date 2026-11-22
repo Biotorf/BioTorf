@@ -12,7 +12,7 @@ export function downloadBlob(content, filename, mime) {
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
 }
 
-const esc = (s) => String(s ?? '')
+export const escapeHtml = (s) => String(s ?? '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   .replace(/"/g, '&quot;');
 
@@ -39,14 +39,14 @@ export function toXmlSpreadsheet(rows, sheetName = 'Лист1') {
     if (typeof v === 'number' && isFinite(v)) {
       return `<Cell><Data ss:Type="Number">${v}</Data></Cell>`;
     }
-    return `<Cell><Data ss:Type="String">${esc(v == null ? '' : String(v))}</Data></Cell>`;
+    return `<Cell><Data ss:Type="String">${escapeHtml(v == null ? '' : String(v))}</Data></Cell>`;
   };
   const table = rows.map((r) => `<Row>${r.map(cell).join('')}</Row>`).join('');
   return `<?xml version="1.0"?>
 <?mso-application progid="Excel.Sheet"?>
 <Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
  xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
- <Worksheet ss:Name="${esc(sheetName)}"><Table>${table}</Table></Worksheet>
+ <Worksheet ss:Name="${escapeHtml(sheetName)}"><Table>${table}</Table></Worksheet>
 </Workbook>`;
 }
 
@@ -54,7 +54,7 @@ export function toXmlSpreadsheet(rows, sheetName = 'Лист1') {
 export function printHtml(title, bodyHtml) {
   const win = window.open('', '_blank', 'width=900,height=700');
   if (!win) { alert('Браузер заблокировал окно печати — разрешите всплывающие окна'); return false; }
-  win.document.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>${esc(title)}</title>
+  win.document.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title>
 <style>
   @page { size: A4; margin: 16mm; }
   body { font: 13px/1.45 Arial, sans-serif; color:#1c2b26; }

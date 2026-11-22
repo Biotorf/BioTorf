@@ -61,7 +61,7 @@ const totals = computed(() => rows.value.reduce((sum, row) => {
       </CrmDataTable>
     </section>
 
-    <div class="note" style="margin-top:12px">Автоматические складские проводки отключены (§3, ОГРАНИЧЕНИЕ v0.9): резервы — справочные.</div>
+    <div class="note" style="margin-top:12px">Остаток и резерв в этом реестре ведутся вручную. Документ приёмки или производственный план сами по себе количество на складе не меняют.</div>
   </div>
   <CrmRowModal v-if="rowOpen" :coll="rowColl" :record="editRec" @close="rowOpen = false; editRec = null" />
 </template>

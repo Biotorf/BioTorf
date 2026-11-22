@@ -27,15 +27,11 @@ services:
       - key: DB_BACKEND
         value: postgres
       - key: AUTH_PASSWORD
-        value: CHANGE_ME_password_for_crm_login
+        sync: false
       - key: AUTH_SECRET
         generateValue: true
       - key: DEV_MODE
         value: "0"
-      # Однократно стереть все тестовые/демо-данные из таблиц при старте бэкенда.
-      # После успешного деплоя с этой опцией можно убрать (или поставить "0").
-      - key: WIPE_AT_STARTUP
-        value: "1"
       - key: CORS_ORIGINS
         value: "*"
       - key: TELEGRAM_BOT_TOKEN

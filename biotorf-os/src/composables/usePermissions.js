@@ -30,11 +30,25 @@ const EDIT_RULES = {
   tasks: Object.keys(ROLES),
 };
 
+const CRM_SPECIALTY_COLLECTIONS = {
+  agronomist: ['pilots', 'applications', 'knowledge', 'media'],
+  production: ['production'],
+  warehouse: ['warehouse'],
+  logistics: ['shipments'],
+  finance: ['invoices', 'payments'],
+  marketing: ['media', 'social', 'knowledge'],
+};
+
+
 export function usePermissions() {
   const ui = useUiStore();
   const canEdit = (section) => (EDIT_RULES[section] || []).includes(ui.role);
+  const canEditCollection = (collection) => collection === 'logistics'
+    ? canEdit('shipments')
+    : canEdit('crm') || (collection === 'tasks' && canEdit('tasks')) ||
+      (CRM_SPECIALTY_COLLECTIONS[ui.role] || []).includes(collection);
   const canApprove = () => ['director', 'agronomist'].includes(ui.role);
   const canSeeFarm = (farm) =>
     ui.role === 'sales' ? farm.owner === 'Менеджер А' : true;
-  return { ROLES, canEdit, canApprove, canSeeFarm };
+  return { ROLES, canEdit, canEditCollection, canApprove, canSeeFarm };
 }

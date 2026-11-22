@@ -11,7 +11,11 @@ async function req(path, options = {}) {
     headers: { 'Content-Type': 'application/json', ...authHeaders(), ...(options.headers || {}) },
     signal: AbortSignal.timeout(8000),
   });
-  if (!resp.ok) throw new Error(`CRM API ${resp.status}: ${await resp.text()}`);
+  if (!resp.ok) {
+    const data = await resp.json().catch(() => ({}));
+    const detail = typeof data.detail === 'string' ? data.detail : data.detail?.message;
+    throw new Error(`CRM API ${resp.status}: ${detail || resp.statusText}`);
+  }
   if (resp.status === 204) return null;
   return resp.json();
 }
@@ -26,7 +30,10 @@ export const crmApi = {
   list: (coll) => req(`/api/crm/${coll}`).then((r) => r.items),
   create: (coll, rec) => req(`/api/crm/${coll}`, { method: 'POST', body: JSON.stringify(rec) }),
   update: (coll, id, patch) => req(`/api/crm/${coll}/${id}`, { method: 'PUT', body: JSON.stringify(patch) }),
-  remove: (coll, id) => req(`/api/crm/${coll}/${id}`, { method: 'DELETE' }),
+  remove: (coll, id, revision) => {
+    const query = revision ? '?' + new URLSearchParams({ revision }) : '';
+    return req(`/api/crm/${coll}/${encodeURIComponent(id)}${query}`, { method: 'DELETE' });
+  },
   journeyProcess: (journeyId) => req(`/api/crm/journeys/${journeyId}/process`),
   // массовая загрузка таблицы (CSV-импорт): mode = merge | replace
   importCollection: (coll, records, mode = 'merge') =>

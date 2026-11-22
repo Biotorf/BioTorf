@@ -12,9 +12,9 @@
     сотрудника сервер не знает и не может отдать;
   • таблица lives in the same comms.db (volume /data) — переживает пересборку.
 
-Роль «pending» отсутствует в auth.ROLES → middleware отклоняет любые
+Роль «pending» отсутствует в списке рабочих ролей auth.ROLES. Middleware отклоняет
 запросы /api/* такого пользователя с 403 («ждёт подтверждения»), при этом
-он видит список сотрудников и свою карточку через GET /api/users (read-all).
+он может заполнить свой профиль через /api/me/profile.
 """
 
 import hashlib
@@ -204,7 +204,7 @@ def authenticate(login: str, password: str) -> dict | None:
         return None
     if u["role"] not in auth.ROLES:      # pending и пр. — пускать в API нельзя
         return {"pending": True, "login": u["login"], "name": u["name"],
-                "role": u["role"]}
+                "role": u["role"], "token_version": u.get("token_version", 0)}
     return {"token": auth.make_token(u["login"], u["role"],
                                      token_version=u.get("token_version", 0)),
             "user": u["login"], "name": u["name"], "role": u["role"],

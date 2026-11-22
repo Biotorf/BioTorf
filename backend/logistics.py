@@ -13,7 +13,7 @@ REST-хранение для раздела «Логистика» фронте�
 """
 
 import json
-import sqlite3
+import math
 from datetime import datetime, timezone
 
 SCHEMA_LOGISTICS = """
@@ -71,17 +71,33 @@ def get_doc(conn, doc_id: str) -> dict | None:
 
 def normalize_doc(body: dict, doc_id: str) -> dict:
     """Приводим payload фронтенда к каноничному виду."""
-    items_in = body.get("items") or []
     items = []
-    for i, it in enumerate(items_in):
+    for it in body.get("items") or []:
+        name = str(it.get("name") or "").strip()
+        sku = str(it.get("skuId") or "").strip()
+        material = it.get("material") or ""
+        if not name and not sku and not material:
+            continue
+        qty = float(it.get("qty") or 0)
+        price = float(it.get("price") or 0)
+        unit = str(it.get("unit") or "л").strip()
+        lot = str(it.get("lot") or "").strip()
+        qc_status = it.get("qcStatus") or ""
+        if not math.isfinite(qty) or qty <= 0 or not math.isfinite(price) or price < 0:
+            raise ValueError("У каждой позиции должны быть положительное количество и неотрицательная цена")
+        if material == "paste":
+            if body.get("kind") != "supply" or not lot or unit not in ("кг", "т"):
+                raise ValueError("У пасты укажите номер партии поставщика и количество в кг или т")
+            if body.get("status") == "Принят" and qc_status != "Пройден":
+                raise ValueError("Для приёмки пасты подтвердите контроль качества каждой партии")
+            name = name or "Паста-концентрат"
         items.append({
-            "skuId": str(it.get("skuId") or ""),
-            "name": str(it.get("name") or ""),
-            "qty": float(it.get("qty") or 0),
-            "unit": str(it.get("unit") or "л"),
-            "price": float(it.get("price") or 0),
-            "note": str(it.get("note") or ""),
+            "skuId": sku, "name": name, "qty": qty, "unit": unit, "price": price,
+            "note": str(it.get("note") or ""), "material": material,
+            "lot": lot, "qcStatus": qc_status,
         })
+    if not str(body.get("number") or "").strip() or not items:
+        raise ValueError("Укажите номер документа и хотя бы одну позицию")
     doc = {
         "id": doc_id,
         "number": str(body.get("number") or ""),
@@ -101,21 +117,22 @@ def normalize_doc(body: dict, doc_id: str) -> dict:
     return doc
 
 
-def upsert_doc(conn, body: dict, doc_id: str) -> dict:
+def upsert_doc(conn, body: dict, doc_id: str, *, create_only: bool = False) -> dict:
     kind = body.get("kind") or "supply"
     if kind not in KINDS:
         raise ValueError(f"kind должен быть одним из {KINDS}")
     doc = normalize_doc(body, doc_id)
     now = _now()
+    conflict = "DO NOTHING" if create_only else (
+        "DO UPDATE SET kind=excluded.kind, data=excluded.data, updated=excluded.updated"
+    )
     conn.execute(
-        """INSERT INTO logistics_docs (id, kind, data, updated)
-           VALUES (?, ?, ?, ?)
-           ON CONFLICT(id) DO UPDATE SET kind=excluded.kind, data=excluded.data, updated=excluded.updated""",
+        "INSERT INTO logistics_docs (id, kind, data, updated) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(id) " + conflict,
         (doc_id, kind, json.dumps(doc, ensure_ascii=False), now),
     )
     conn.commit()
-    doc["updatedAt"] = now
-    return doc
+    return get_doc(conn, doc_id)
 
 
 def delete_doc(conn, doc_id: str) -> bool:

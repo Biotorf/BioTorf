@@ -11,6 +11,7 @@ import { authState, checkAuthRequired, isAuthed, logout } from '@/api/authClient
 const ui = useUiStore();
 const db = useDbStore();
 const authChecked = ref(false);
+const pending = computed(() => ui.role === 'pending');
 
 // при старте: восстанавливаем профиль из localStorage, затем узнаём у /health,
 // требует ли сервер авторизацию; только после этого тянем CRM
@@ -21,27 +22,27 @@ onMounted(async () => {
   } catch { /* битый localStorage */ }
   await checkAuthRequired();
   authChecked.value = true;
-  if (isAuthed()) db.pullCrmState();
+  if (isAuthed() && !pending.value) db.pullCrmState();
 });
 
 function onSession() {
   // успешный вход/регистрация (в т.ч. pending): применяем сессию из authClient
   ui.applySession(authState.user);
   authChecked.value = true;
-  if (isAuthed()) db.pullCrmState();
+  if (isAuthed() && !pending.value) db.pullCrmState();
   // pending-сотрудник сразу видит модалку профиля, чтобы заполнить данные
   if (authState.user && authState.user.role === 'pending') {
-    ui.openModal('Мой профиль', () => import('@/components/auth/ProfileModal.vue'), {});
+    ui.openMyProfile();
   }
 }
 
-// 401 — токен истёк/отозван, 403 — роль снята директором: выходим на экран входа
+// 401 — сессия истекла или её отозвали. 403 сообщает об ограничении доступа.
 function sessionExpired() {
-  logout(); ui.clearSession(); authChecked.value = true;
+  logout(); ui.clearSession(); ui.closeModal(); authChecked.value = true;
 }
 onMounted(() => window.addEventListener('unhandledrejection', (ev) => {
   const m = String(ev.reason && ev.reason.message || ev.reason || '');
-  if (/API 401|API 403/.test(m)) sessionExpired();
+  if (ev.reason?.status === 401 || /API 401/.test(m)) sessionExpired();
 }));
 
 // навигация кнопкой «назад/вперёд» браузера тоже меняет раздел
@@ -89,6 +90,15 @@ const currentView = computed(() => views[ui.view] || views.dashboard);
   <!-- пока сервер требует токен, а сессии нет — только экран входа/регистрации -->
   <AuthGate v-if="authChecked && authState.required && !isAuthed()" @session="onSession" />
   <div v-else-if="!authChecked" class="boot">Загрузка…</div>
+  <main v-else-if="pending" class="pending">
+    <section class="panel pending-box">
+      <h1>Ожидается подтверждение доступа</h1>
+      <p>Генеральный директор должен назначить вам рабочую роль. Пока можно заполнить свой профиль.</p>
+      <button class="btn primary" @click="ui.openMyProfile()">Мой профиль</button>
+      <button class="btn ghost" @click="sessionExpired">Выйти</button>
+    </section>
+    <AppModal />
+  </main>
   <div v-else class="shell">
     <AppSidebar />
     <main class="main">
@@ -113,4 +123,7 @@ const currentView = computed(() => views[ui.view] || views.dashboard);
 
 <style scoped>
 .boot{min-height:100vh;display:grid;place-items:center;color:#729e8e;font-size:13px}
+.pending{min-height:100vh;display:grid;place-items:center;padding:20px}
+.pending-box{max-width:480px;padding:24px}
+.pending-box .btn{margin-inline-end:8px}
 </style>

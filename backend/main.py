@@ -34,6 +34,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -339,10 +340,6 @@ async def _auth_middleware_inner(request: Request, call_next, path: str):
                 "detail": "Требуется авторизация: передайте заголовок "
                           "Authorization: Bearer <token> (POST /auth/login)"})
     request.state.user = payload.get("sub") or "?"
-    # профиль своего аккаунта (/api/me/*) доступен ЛЮБОМУ вошедшему, включая
-    # pending: он может заполнить данные о себе, пока ждёт выдачи роли
-    if path.startswith("/api/me"):
-        return await call_next(request)
     # если в системе есть зарегистрированные сотрудники — сверяем токен с
     # живым реестром: снятая директором роль или удалённый аккаунт отзывают
     # доступ немедленно, не дожидаясь истечения TTL токена
@@ -361,14 +358,17 @@ async def _auth_middleware_inner(request: Request, call_next, path: str):
                 return JSONResponse(status_code=401, content={
                     "detail": "Аккаунт отозван администратором — войдите заново"})
             # версия токена: смена роли/удаление аккаунта аннулируют старые токены
-            if int(payload.get("tv", 0)) != int(live.get("token_version", 0)):
+            if payload["role"] != live["role"] or int(payload.get("tv", 0)) != int(live.get("token_version", 0)):
                 return JSONResponse(status_code=401, content={
                     "detail": "Ваша роль изменена администратором — войдите заново"})
+    request.state.role = payload["role"]
+    # Свой профиль доступен ожидающему сотруднику после сверки с реестром.
+    if path.startswith("/api/me/"):
+        return await call_next(request)
     if payload["role"] == "pending":
         return JSONResponse(status_code=403, content={
             "detail": "Учётная запись ожидает подтверждения роли "
                       "генеральным директором"})
-    request.state.role = payload["role"]
     # реестр сотрудников: GET /api/users — только директору (остальные видят
     # мини-профиль и не должны знать состав/логины коллег); выдача ролей и
     # удаление проверяются в самих эндпоинтах
@@ -377,11 +377,18 @@ async def _auth_middleware_inner(request: Request, call_next, path: str):
         return JSONResponse(status_code=403, content={
             "detail": "Список сотрудников доступен только генеральному директору"})
     if request.method not in ("GET", "HEAD", "OPTIONS"):
-        section = auth.section_for(path)
-        if section and not auth.can_write(request.state.role, section):
-            return JSONResponse(status_code=403, content={
-                "detail": f"Роль «{auth.ROLES.get(request.state.role, request.state.role)}» "
-                          f"не имеет права изменять раздел «{section}»"})
+        role = request.state.role
+        crm_path = path.removeprefix("/api/crm/").strip("/").split("/")
+        if path.startswith("/api/crm/") and crm_path[0] in crm.COLLECTIONS:
+            if not auth.can_write_crm_collection(role, crm_path[0]):
+                return JSONResponse(status_code=403, content={"detail": f"Роль не может изменять таблицу «{crm_path[0]}»"})
+        elif path.rstrip("/") == "/api/crm/state" and request.method == "PUT":
+            pass  # Точный набор таблиц проверяется по телу изменений.
+        else:
+            section = auth.section_for(path)
+            if section and not auth.can_write(role, section):
+                return JSONResponse(status_code=403, content={
+                    "detail": f"Роль «{auth.ROLES.get(role, role)}» не имеет права изменять раздел «{section}»"})
     return await call_next(request)
 
 
@@ -443,7 +450,7 @@ def auth_login(body: LoginIn, request: Request):
         # в /api/me/* (заполнить профиль, пока ждёт подтверждения), остальные
         # разделы — 403, пока директор не выдаст роль
         log.info("[auth] вход ожидающего подтверждения: %s", res["login"])
-        return {"pending": True, "token": auth.make_token(res["login"], "pending"),
+        return {"pending": True, "token": auth.make_token(res["login"], "pending", token_version=res["token_version"]),
                 "user": res["login"], "name": res["name"],
                 "role": "pending", "roleName": "Ожидает подтверждения",
                 "expiresIn": auth.AUTH_TOKEN_TTL, "roles": auth.ROLES}
@@ -563,43 +570,6 @@ def _refresh_channel_status():
     threading.Thread(target=_startup_checks, daemon=True).start()
 
 
-WIPE_AT_STARTUP = os.environ.get("WIPE_AT_STARTUP", "").strip().lower() in ("1", "true", "yes", "on")
-
-
-def _wipe_all_data() -> None:
-    """Стереть все тестовые/демо-данные из таблиц CRM и ленты коммуникаций.
-
-    Учётные записи сотрудников (users) НЕ удаляются. Безопасно повторяется.
-    """
-    removed = {}
-    try:
-        with store.connect() as conn:
-            for coll in crm.COLLECTIONS:
-                try:
-                    removed[coll] = crm.wipe_collection(conn, coll)
-                except Exception as e:  # одна упавшая таблица не должна блокировать остальные
-                    log.warning("[wipe] таблица %s: %s", coll, e)
-            cur = conn.execute("DELETE FROM comms")
-            removed["comms"] = getattr(cur, "rowcount", None)
-    except Exception as e:
-        log.warning("[wipe] очистка не выполнена (БД недоступна?): %.120s", e)
-        return
-    total = sum(v for v in removed.values() if isinstance(v, int))
-    log.info("[wipe] удалены все данные из таблиц: %d записей (%s)",
-             total, ", ".join(f"{k}:{v}" for k, v in removed.items() if v))
-
-
-def _wipe_worker():
-    """Фоновая очистка для PG-режима: ждёт готовности схемы, затем стирает данные."""
-    deadline = time.time() + 300
-    while not _schema_ready[0] and time.time() < deadline:
-        time.sleep(2)
-    if _schema_ready[0]:
-        _wipe_all_data()
-    else:
-        log.warning("[wipe] схема БД не готова за 5 минут — автостирание пропущено")
-
-
 @app.on_event("startup")
 def startup():
     # Только локальные операции — без сети и без блокирующего ожидания БД.
@@ -608,13 +578,9 @@ def startup():
         # если база ещё не поднялась, startup не должен висеть — иначе
         # health-check платформы не дождётся /health и убьёт контейнер.
         threading.Thread(target=_schema_worker, daemon=True).start()
-        if WIPE_AT_STARTUP:
-            threading.Thread(target=_wipe_worker, daemon=True).start()
     else:
         _ensure_schema()
         _schema_ready[0] = True
-        if WIPE_AT_STARTUP:
-            _wipe_all_data()
     if not auth.AUTH_PASSWORD and not auth.DEV_MODE:
         log.warning("[auth] ⚠ AUTH_PASSWORD не задан — API ЗАБЛОКИРОВАН (503 на все /api/*). "
                     "Задайте пароль в .env или включите DEV_MODE=1 для локальной разработки.")
@@ -760,9 +726,9 @@ def chats_list(limit: int = Query(200, le=500)):
 
 @app.get("/api/chat/{peer_key}")
 def chat_detail(peer_key: str):
-    for g in store.chats():
-        if g["key"] == peer_key:
-            return g
+    chats = store.chats(limit=1, peer_key=peer_key)
+    if chats:
+        return chats[0]
     raise HTTPException(404, "Чат не найден")
 
 
@@ -783,37 +749,14 @@ def chat_draft(peer_key: str, body: DraftIn):
 
 
 def chat_send_core(peer_key: str, text: str, media_file: str | None = None, kind: str | None = None):
-    """Ядро отправки в чат: ищем адресата чата и доставляем через нужный канал;
-    если доставка невозможна прямо сейчас — уходит в outbox воркера.
-
-    kind — сеть, выбранная оператором в окне чата (telegram/whatsapp/…). Если
-    в диалоге есть входящее сообщение этой сети — отвечаем именно в неё; иначе
-    берём последнего входящего адресата в любой сети (прежнее поведение)."""
-    chats = [g for g in store.chats() if g["key"] == peer_key]
-    if not chats:
-        raise HTTPException(404, "Чат не найден — отправьте первое сообщение через /api/comms")
-    target = None
-    msgs = chats[0]["messages"]
-    if kind:
-        for m in reversed(msgs):
-            if m["dir"] == "in" and m["kind"] == kind:
-                target = m
-                break
+    target = store.chat_target(peer_key, "telegram" if media_file else kind)
     if target is None:
-        for m in reversed(msgs):
-            if m["dir"] == "in" and m["kind"] != "call":
-                target = m
-                break
-    if target is None:  # исходящих нет? берём любую входящую не-звонковую
-        raise HTTPException(422, "В чате нет входящего сообщения-адресата для ответа")
-    if media_file and target["kind"] != "telegram":
-        raise HTTPException(422, "Голосовые сообщения поддерживаются только в Telegram-чатах")
-    res = send_reply(target["id"], SendIn(text=text), media_file=media_file)
-    return res
+        raise HTTPException(422, "В выбранном канале нет адресата для отправки")
+    return save_outgoing(target, text, reply_to=target["id"], media_file=media_file)
 
 
 class SendChatIn(BaseModel):
-    text: str
+    text: str = Field(min_length=1, max_length=4000)
     kind: str | None = None
 
 
@@ -1120,15 +1063,26 @@ def mark_read(comm_id: str):
 
 @app.post("/api/comms/{comm_id}/link")
 def link_comm(comm_id: str, farmId: str = Query(...)):
+    with store.connect() as conn:
+        if not crm.get_record(conn, "farms", farmId):
+            raise HTTPException(404, "Хозяйство не найдено")
     item = store.update(comm_id, {"farmId": farmId})
     if not item:
         raise HTTPException(404, "Коммуникация не найдена")
+    try:
+        with store.connect() as conn:
+            crm.register_comm(conn, item)
+    except Exception as e:
+        log.warning("[crm] register_comm skip: %s", e)
     return item
 
 
 # ── REST: логистика — поставки и выгрузки (отгрузки) товара ─────────────────
 class LogisticsItem(BaseModel):
     skuId: str | None = None
+    material: str | None = Field(None, pattern="^(paste)?$")
+    lot: str | None = Field(None, max_length=200)
+    qcStatus: str | None = Field(None, pattern="^(Ожидается|Пройден|Отклонён)?$")
     name: str | None = None
     qty: float = 0
     unit: str | None = None
@@ -1143,6 +1097,7 @@ class LogisticsAct(BaseModel):
 
 
 class LogisticsIn(BaseModel):
+    clientId: str | None = Field(None, pattern="^LOC-[A-Za-z0-9-]{1,64}$")
     kind: str = Field(pattern="^(supply|dispatch)$")
     number: str | None = None
     date: str | None = None
@@ -1156,7 +1111,7 @@ class LogisticsIn(BaseModel):
     base: str | None = None
     note: str | None = None
     act: LogisticsAct | None = None
-    items: list[LogisticsItem] = []
+    items: list[LogisticsItem] = Field(default_factory=list)
 
 
 def new_log_id(kind: str) -> str:
@@ -1172,16 +1127,27 @@ def list_logistics(kind: str | None = Query(None, pattern="^(supply|dispatch)$")
 @app.post("/api/logistics", status_code=201)
 def create_logistics(body: LogisticsIn):
     doc_id = new_log_id(body.kind)
-    doc = logistics.upsert_doc(store.connect(), body.model_dump(), doc_id)
-    return doc
+    if body.clientId:
+        prefix = "SUP" if body.kind == "supply" else "DSP"
+        doc_id = prefix + "-" + body.clientId.removeprefix("LOC-")
+    try:
+        return logistics.upsert_doc(store.connect(), body.model_dump(), doc_id, create_only=True)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @app.put("/api/logistics/{doc_id}")
 def update_logistics(doc_id: str, body: LogisticsIn):
-    existing = logistics.get_doc(store.connect(), doc_id)
-    if not existing:
-        raise HTTPException(404, "Документ не найден")
-    return logistics.upsert_doc(store.connect(), body.model_dump(), doc_id)
+    with store.connect() as conn:
+        existing = logistics.get_doc(conn, doc_id)
+        if not existing:
+            raise HTTPException(404, "Документ не найден")
+        if body.kind != existing["kind"]:
+            raise HTTPException(422, "Тип существующего документа менять нельзя")
+        try:
+            return logistics.upsert_doc(conn, body.model_dump(), doc_id)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
 
 
 @app.delete("/api/logistics/{doc_id}", status_code=204)
@@ -1202,28 +1168,30 @@ def _check_coll(coll: str) -> str:
 @app.get("/api/crm/state")
 def crm_state():
     """Полный снимок CRM-данных для первичной загрузки фронтенда."""
-    return crm.get_state(store.connect())
+    with closing(store.connect()) as conn:
+        return crm.get_state(conn)
 
 
 @app.get("/api/crm/options")
 def crm_options():
-    with store.connect() as conn:
+    with closing(store.connect()) as conn:
         return crm.get_options(conn)
 
 
 @app.post("/api/crm/options")
 def crm_add_options(body: dict):
     try:
-        with store.connect() as conn:
+        with closing(store.connect()) as conn:
             return crm.add_options(conn, body)
     except ValueError as e:
         raise HTTPException(422, str(e))
 
 
 @app.post("/api/crm/seed")
-def crm_seed(body: dict):
+def crm_seed(body: dict, request: Request):
     """Первичное наполнение сервера демо-данными (однократно, пустые коллекции)."""
-    with store.connect() as conn:
+    _require_crm_admin(request)
+    with closing(store.connect()) as conn:
         loaded = 0
         for coll in crm.COLLECTIONS:
             items = (body or {}).get(coll)
@@ -1239,15 +1207,38 @@ def crm_seed(body: dict):
 
 
 @app.put("/api/crm/state")
-async def crm_put_state(body: dict):
-    """Синхронизация всего состояния клиента с сервером (lastWriteWins)."""
-    return crm.put_state(store.connect(), body or {})
+def crm_put_state(body: dict, request: Request):
+    role = request.state.role
+    for coll in crm.COLLECTIONS:
+        if body.get(coll) and not auth.can_write_crm_collection(role, coll):
+            raise HTTPException(403, f"Роль не может изменять таблицу «{coll}»")
+    try:
+        with closing(store.connect()) as conn:
+            return crm.put_state(conn, body)
+    except crm.ConflictError as e:
+        raise _crm_conflict(e)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+
+def _crm_conflict(error: crm.ConflictError) -> HTTPException:
+    return HTTPException(409, {
+        "message": f"Запись «{error.rid}» уже изменена другим сотрудником",
+        "collection": error.coll,
+        "id": error.rid,
+    })
+
+
+def _require_crm_admin(request: Request) -> None:
+    if not auth.can_write(request.state.role, "admin"):
+        raise HTTPException(403, "Заменить или очистить таблицу может руководитель")
 
 
 @app.get("/api/crm/journeys/{journey_id}/process")
 def crm_journey_process(journey_id: str):
     """Собранный сквозной процесс: маршрут + все связанные объекты."""
-    proc = crm.build_process(store.connect(), journey_id)
+    with closing(store.connect()) as conn:
+        proc = crm.build_process(conn, journey_id)
     if not proc:
         raise HTTPException(404, "Маршрут не найден")
     return proc
@@ -1256,11 +1247,12 @@ def crm_journey_process(journey_id: str):
 @app.get("/api/crm/{coll}")
 def crm_list(coll: str):
     _check_coll(coll)
-    return {"items": crm.list_records(store.connect(), coll)}
+    with closing(store.connect()) as conn:
+        return {"items": crm.list_records(conn, coll)}
 
 
 @app.post("/api/crm/{coll}/import", status_code=200)
-def crm_import(coll: str, body: dict):
+def crm_import(coll: str, body: dict, request: Request):
     """Массовая загрузка таблицы (CSV-импорт из UI).
 
     Тело: {"records": [...], "mode": "merge"|"replace"} (mode по умолчанию merge).
@@ -1274,17 +1266,24 @@ def crm_import(coll: str, body: dict):
     mode = (body or {}).get("mode") or "merge"
     if mode not in ("merge", "replace"):
         raise HTTPException(422, "mode должен быть merge или replace")
+    if mode == "replace":
+        _require_crm_admin(request)
     try:
-        return crm.import_collection(store.connect(), coll, records, mode)
+        with closing(store.connect()) as conn:
+            return crm.import_collection(conn, coll, records, mode)
+    except crm.ConflictError as e:
+        raise _crm_conflict(e)
     except ValueError as e:
-        raise HTTPException(404, str(e))
+        raise HTTPException(422, str(e))
 
 
 @app.delete("/api/crm/{coll}")
-def crm_wipe(coll: str):
+def crm_wipe(coll: str, request: Request):
     """Полностью очистить одну таблицу CRM (для ручного наполнения с нуля)."""
     _check_coll(coll)
-    removed = crm.wipe_collection(store.connect(), coll)
+    _require_crm_admin(request)
+    with closing(store.connect()) as conn:
+        removed = crm.wipe_collection(conn, coll)
     return {"coll": coll, "removed": removed}
 
 
@@ -1292,31 +1291,38 @@ def crm_wipe(coll: str):
 def crm_create(coll: str, body: dict):
     _check_coll(coll)
     try:
-        return crm.upsert(store.connect(), coll, body or {})
+        with closing(store.connect()) as conn:
+            return crm.upsert(conn, coll, {**body, "_expectedRev": None})
     except crm.ConflictError as e:
-        raise HTTPException(409, f"Запись «{e.rid}» уже изменена другим пользователем — обновите данные")
+        raise _crm_conflict(e)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
 
 
 @app.put("/api/crm/{coll}/{rid}")
 def crm_update(coll: str, rid: str, body: dict):
     _check_coll(coll)
-    existing = crm.get_record(store.connect(), coll, rid)
-    if not existing:
-        raise HTTPException(404, "Запись не найдена")
-    # PATCH-семантика: присланные поля поверх существующих (иначе PUT терял
-    # все поля, не указанные в теле запроса)
-    merged = {**existing, **(body or {}), "id": rid}
     try:
-        return crm.upsert(store.connect(), coll, merged, rid)
+        with closing(store.connect()) as conn:
+            result = crm.upsert(conn, coll, body, rid, merge=True, require_existing=True)
     except crm.ConflictError as e:
-        raise HTTPException(409, f"Запись «{e.rid}» уже изменена другим пользователем — обновите данные")
+        raise _crm_conflict(e)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    if result is None:
+        raise HTTPException(404, "Запись не найдена")
+    return result
 
 
 @app.delete("/api/crm/{coll}/{rid}", status_code=204)
-def crm_delete(coll: str, rid: str):
+def crm_delete(coll: str, rid: str, revision: str | None = None):
     _check_coll(coll)
-    if not crm.delete(store.connect(), coll, rid):
-        raise HTTPException(404, "Запись не найдена")
+    try:
+        with closing(store.connect()) as conn:
+            if not crm.delete(conn, coll, rid, revision):
+                raise HTTPException(404, "Запись не найдена")
+    except crm.ConflictError as e:
+        raise _crm_conflict(e)
 
 
 # ── исходящая отправка: ответ клиенту прямо из ленты ─────────────────────────
@@ -1462,7 +1468,7 @@ def send_whatsapp(item: dict, text: str) -> dict:
     return {"sent": True, "via": "whatsapp", "messageId": msg_id}
 
 
-def send_generic_outbox(kind: str, text: str, item: dict) -> tuple[bool, str | None]:
+def send_generic_outbox(kind: str, text: str, item: dict) -> tuple[bool | None, str | None]:
     """Отправка в каналы без «живого» коннектора на сервере (instagram, facebook,
     vk, ok, avito, youdo, email …).
 
@@ -1472,10 +1478,10 @@ def send_generic_outbox(kind: str, text: str, item: dict) -> tuple[bool, str | N
     CHANNEL_OUTBOUND_WEBHOOK_<KIND>, бэкенд сам делает POST {text, contact,
     phone, handle, payload} на этот URL — коннектор не нужен.
 
-    Возвращает (queued_or_sent, error)."""
+    Возвращает признак отправки, None при постановке в очередь и текст ошибки."""
     url = (os.environ.get(f"CHANNEL_OUTBOUND_WEBHOOK_{kind.upper()}") or "").strip()
     if not url:
-        return True, None  # просто ставим в очередь — заберёт внешний воркер
+        return None, None  # заберёт внешний воркер
     payload = {
         "kind": kind,
         "text": text,
@@ -1508,57 +1514,61 @@ def send_reply(comm_id: str, body: SendIn, media_file: str | None = None):
         raise HTTPException(422, "На звонок нельзя ответить сообщением — зафиксируйте звонок или позвоните")
     if item["dir"] != "in":
         raise HTTPException(422, "Отвечать можно только на входящее сообщение")
+    return save_outgoing(item, body.text, reply_to=comm_id, media_file=media_file)
 
+
+def save_outgoing(item: dict, text: str, reply_to: str | None = None, media_file: str | None = None):
+    text = text.strip()
+    if not text or len(text) > 4000:
+        raise HTTPException(422, "Введите сообщение от 1 до 4000 символов")
+    kind = item["kind"]
+    payload = dict(item.get("payload") or {})
+    payload.pop("sendError", None)
+    payload.pop("tgMessageId", None)
+    payload.pop("waMessageId", None)
+    payload.pop("media", None)
+    payload.pop("replyTo", None)
     sent = None
     send_error = None
-    if item["kind"] == "telegram":
-        # Бот умеет писать только тем, кто сам начал с ним диалог, поэтому
-        # исходящие идут через outbox: воркер long-poll забирает их и шлёт
-        # sendMessage. Если токен прямо здесь настроен — пробуем мгновенно.
-        chat_id = (item.get("payload") or {}).get("chatId")
-        if tg_token() and chat_id:
-            try:
-                sent = send_telegram(item, body.text, media_file=media_file)
-            except HTTPException as e:
-                send_error = str(e.detail)[:200]  # не удалось напрямую — доставит воркер из outbox
-    elif item["kind"] == "whatsapp":
-        # В WhatsApp бот может писать только по номеру телефона входящего
-        # сообщения; отправляем сразу через Cloud API.
-        if all(wa_send_creds()):
-            try:
-                sent = send_whatsapp(item, body.text)
-            except HTTPException as e:
-                send_error = str(e.detail)[:200]
-    else:
-        # instagram/facebook/vk/ok/avito/youdo/email и прочие — generic-каналы:
-        # ставим в outbox (заберёт внешний коннектор), либо мгновенно шлём на
-        # настроенный CHANNEL_OUTBOUND_WEBHOOK_<KIND>.
-        ok, err = send_generic_outbox(item["kind"], body.text, item)
-        send_error = err
+    try:
+        if kind == "telegram":
+            if not (payload.get("chatId") or payload.get("userIndex")):
+                raise HTTPException(422, "Клиент должен начать диалог с ботом Telegram")
+            if tg_token() or media_file:
+                sent = send_telegram(item, text, media_file=media_file)
+        elif kind == "whatsapp":
+            sent = send_whatsapp(item, text)
+        else:
+            accepted, send_error = send_generic_outbox(kind, text, item)
+            if accepted:
+                sent = {"via": kind}
+    except HTTPException as e:
+        send_error = str(e.detail)[:200]
 
-    reply = {
+    if reply_to:
+        payload["replyTo"] = reply_to
+    if sent and sent.get("messageId"):
+        key = "waMessageId" if kind == "whatsapp" else "tgMessageId"
+        payload[key] = sent["messageId"]
+    if send_error:
+        payload["sendError"] = send_error
+
+    saved = store.insert({
         "id": new_id(),
-        "kind": item["kind"],
+        "kind": kind,
         "dir": "out",
         "farmId": item.get("farmId"),
         "contact": item.get("contact"),
         "phone": item.get("phone"),
         "handle": item.get("handle"),
+        "peerKey": item.get("peerKey"),
         "ts": now_iso(),
-        "text": body.text,
+        "text": text,
         "read": True,
-        "source": "reply",
-        "status": "Доставлено" if sent else "В очереди",
-        "payload": {
-            "replyTo": comm_id,
-            "tgMessageId": (sent or {}).get("messageId"),
-            "waMessageId": (sent or {}).get("messageId") if (sent or {}).get("via") == "whatsapp" else None,
-            "chatId": (item.get("payload") or {}).get("chatId"),
-            "userIndex": (item.get("payload") or {}).get("userIndex"),
-            **({"sendError": send_error} if send_error else {}),
-        },
-    }
-    saved = store.insert(reply)
+        "source": "reply" if reply_to else "chat",
+        "status": "Ошибка доставки" if send_error else ("Отправлено" if sent else "В очереди"),
+        "payload": payload,
+    })
     return {"item": saved, "sent": bool(sent), "error": send_error}
 
 
@@ -1597,57 +1607,40 @@ def send_to(body: dict):
     """Начать диалог из мессенджера с клиентом, у которого ещё нет переписки:
     { kind: telegram|whatsapp, chatId?|username?|userIndex?|phone?, contact?, farmId?, text }"""
     kind = body.get("kind")
-    text = (body.get("text") or "").strip()
-    if not kind or not channels.valid_kind(kind) or not text:
+    text = body.get("text")
+    if not isinstance(kind, str) or kind == "call" or not channels.valid_kind(kind) or not isinstance(text, str):
         raise HTTPException(422, "Укажите kind (telegram/whatsapp/instagram/facebook/vk/ok/avito/youdo/email…) и текст сообщения")
+    phone = str(body.get("phone") or "").strip() or None
+    handle = str(body.get("username") or body.get("handle") or "").strip() or None
+    target = None
     pl = {}
     if kind == "telegram":
         if body.get("chatId"):
             pl["chatId"] = body["chatId"]
-        elif body.get("username"):
-            pl["username"] = str(body["username"]).lstrip("@")
         elif body.get("userIndex"):
             pl["userIndex"] = body["userIndex"]
+        elif handle:
+            target = store.telegram_target(handle)
+            if not target:
+                raise HTTPException(422, "Попросите клиента написать боту Telegram. По этому нику подтверждённый чат пока не найден")
         else:
             raise HTTPException(422, "Неизвестен адресат Telegram (нужен chatId или @username)")
     elif kind == "whatsapp":
-        if not body.get("phone"):
+        if not phone:
             raise HTTPException(422, "Для WhatsApp нужен номер телефона получателя")
-    item = {
-        "id": new_id(),
+    elif not (phone or handle):
+        raise HTTPException(422, "Укажите номер или идентификатор контакта")
+    if target:
+        return save_outgoing(target, text)
+    return save_outgoing({
         "kind": kind,
-        "dir": "out",
-        "farmId": body.get("farmId") or auto_link(body.get("phone"))
-                  or crm.auto_link_tg(store.connect(), body.get("handle"), body.get("phone")),
+        "farmId": body.get("farmId") or auto_link(phone)
+                  or crm.auto_link_tg(store.connect(), handle if kind == "telegram" else None, phone),
         "contact": body.get("contact"),
-        "phone": body.get("phone"),
-        "handle": ("@" + str(body["username"]).lstrip("@")) if body.get("username") else body.get("handle"),
-        "ts": now_iso(),
-        "text": text,
-        "read": True,
-        "source": "chat",
-        "status": "В очереди",
+        "phone": phone,
+        "handle": handle,
         "payload": pl,
-    }
-    sent = None
-    send_error = None
-    try:
-        if kind == "telegram" and tg_token():
-            sent = send_telegram(item, text)
-        elif kind == "whatsapp" and all(wa_send_creds()):
-            sent = send_whatsapp(item, text)
-        elif kind not in ("telegram", "whatsapp"):
-            ok, err = send_generic_outbox(kind, text, item)
-            send_error = err
-    except HTTPException as e:
-        send_error = str(e.detail)[:200]
-    if sent:
-        item["status"] = "Доставлено"
-        item["payload"]["tgMessageId"] = sent.get("messageId")
-    if send_error:
-        item["payload"]["sendError"] = send_error
-    saved = store.insert(item)
-    return {"item": saved, "sent": bool(sent), "error": send_error}
+    }, text)
 
 
 @app.get("/api/capabilities")

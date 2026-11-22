@@ -1,4 +1,5 @@
 <script setup>
+import { statusOptions } from '@/data/crmFields';
 import CrmDataTable from '@/components/CrmDataTable.vue';
 // «Агрономия» (руководство v0.9 §8): список пилотов, регистрации обработок и
 // результатов; клик — карточка пилота (§5) + переход в связанный сквозной процесс.
@@ -17,7 +18,7 @@ function openEdit(rec) { editRec.value = rec; rowOpen.value = true; }
 const db = useDbStore();
 const ui = useUiStore();
 
-const STATUSES = computed(() => ['Все', ...new Set([...(db.data.pilotStages || []), ...db.pilots.map((p) => p.status).filter(Boolean)])]);
+const STATUSES = computed(() => ['Все', ...statusOptions('pilots', db.pilots || [], db.data.pilotStages)]);
 const statusFilter = ref('Все');
 
 const pilots = computed(() =>

@@ -46,7 +46,13 @@ async function req(path, options = {}) {
     headers: { 'Content-Type': 'application/json', ...authHeaders(), ...(options.headers || {}) },
     signal: AbortSignal.timeout(5000),
   });
-  if (!resp.ok) throw new Error(`Comms API ${resp.status}: ${await resp.text()}`);
+  if (!resp.ok) {
+    const raw = await resp.text();
+    let detail;
+    try { detail = JSON.parse(raw).detail; } catch { /* ответ прокси может быть не JSON */ }
+    throw new Error(typeof detail === 'string' && resp.status !== 401 && resp.status !== 403
+      ? detail : `Comms API ${resp.status}: ${raw}`);
+  }
   if (resp.status === 204) return null;
   return resp.json();
 }
@@ -96,4 +102,5 @@ export const commsApi = {
   markChatRead: (peerKey) => req(`/api/chat/${encodeURIComponent(peerKey)}/read`, { method: 'POST' }),
   saveDraft: (peerKey, draft) => req(`/api/chat/${encodeURIComponent(peerKey)}/draft`, { method: 'PUT', body: JSON.stringify({ draft }) }),
   sendToChat: (peerKey, text, kind = null) => req(`/api/chat/${encodeURIComponent(peerKey)}/send`, { method: 'POST', body: JSON.stringify({ text, kind }) }),
+  startChat: (entry) => req('/api/comms/send-to', { method: 'POST', body: JSON.stringify(entry) }),
 };

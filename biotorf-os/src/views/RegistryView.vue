@@ -3,12 +3,13 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
 import { usePermissions } from '@/composables/usePermissions';
-import { COLL_RU, crmFieldLabel, crmDisplayValue, REF_KINDS, crmFields, crmReferences, crmTitle, crmValue } from '@/data/crmFields';
+import { COLL_RU, crmFieldLabel, crmDisplayValue, REF_FIELD, REF_KINDS, crmFields, crmReferences, crmTitle, crmValue } from '@/data/crmFields';
+import CrmDataTable from '@/components/CrmDataTable.vue';
 import CrmRowModal from '@/components/CrmRowModal.vue';
 
 const db = useDbStore();
 const ui = useUiStore();
-const { canEdit, canSeeFarm } = usePermissions();
+const { canEditCollection, canSeeFarm } = usePermissions();
 const collections = Object.keys(COLL_RU);
 const params = () => new URLSearchParams(location.hash.split('?')[1]);
 const route = ref(params());
@@ -22,20 +23,26 @@ const rowsByTable = computed(() => Object.fromEntries(collections.map((key) => [
     return !farm || canSeeFarm(farm);
   }),
 ])));
+const recordIndex = computed(() => Object.fromEntries(collections.map((table) => [
+  table, new Map(rowsByTable.value[table].map((row) => [String(row.id), row])),
+])));
+const referenceFields = computed(() => fields.value.filter((key) => key in REF_FIELD || key === 'refId'));
 const records = computed(() => rowsByTable.value[coll.value]);
 const fields = computed(() => crmFields(coll.value, records.value));
 const matches = computed(() => {
   const value = search.value.trim().toLowerCase();
   return records.value.filter((row) => !value || fields.value.some((key) =>
-    crmDisplayValue(crmValue(coll.value, row, key)).toLowerCase().includes(value),
+    crmDisplayValue(crmValue(coll.value, row, key)).toLowerCase().includes(value) ||
+    (referenceFields.value.includes(key) && linksFor(row, key).some(({ target }) =>
+      target && crmDisplayValue(crmTitle(target)).toLowerCase().includes(value))),
   ));
 });
 const page = ref(1);
 const pageSize = 50;
 const pageCount = computed(() => Math.max(1, Math.ceil(matches.value.length / pageSize)));
 const visibleRows = computed(() => matches.value.slice((page.value - 1) * pageSize, page.value * pageSize));
-const record = computed(() => records.value.find((row) => row.id === selected.value));
-const canWrite = computed(() => canEdit(coll.value === 'logistics' ? 'shipments' : 'crm'));
+const record = computed(() => recordIndex.value[coll.value].get(selected.value));
+const canWrite = computed(() => canEditCollection(coll.value));
 const editing = ref(null);
 const status = ref('');
 const shareUrl = ref('');
@@ -56,8 +63,8 @@ const related = computed(() => {
   for (const [table, rows] of Object.entries(rowsByTable.value)) {
     for (const row of rows) {
       if (table === coll.value && row.id === record.value.id) continue;
-      if (outgoing.some((link) => link.coll === table && link.id === row.id) ||
-          crmReferences(table, row).some((link) => link.coll === coll.value && link.id === record.value.id)) {
+      if (outgoing.some((link) => link.coll === table && String(link.id) === String(row.id)) ||
+          crmReferences(table, row).some((link) => link.coll === coll.value && String(link.id) === String(record.value.id))) {
         result.push({ table, row });
       }
     }
@@ -82,7 +89,7 @@ watch(coll, () => { search.value = ''; page.value = 1; });
 watch(search, () => { page.value = 1; });
 watch(pageCount, (total) => { page.value = Math.min(page.value, total); });
 watch(coll, (table) => {
-  if (table === 'logistics') db.syncLogistics().catch(() => { status.value = 'Не удалось обновить документы логистики.'; });
+  if (['logistics', 'production'].includes(table)) db.syncLogistics().catch(() => { status.value = 'Не удалось обновить документы логистики.'; });
 }, { immediate: true });
 
 function linksFor(row, key) {
@@ -90,7 +97,7 @@ function linksFor(row, key) {
     .filter((link) => link.field === key && link.field !== 'items')
     .map((link) => ({
       ...link,
-      target: rowsByTable.value[link.coll].find((item) => item.id === link.id),
+      target: recordIndex.value[link.coll].get(String(link.id)),
     }));
 }
 function openEditor(table, row = null, initialValues = {}, kind = 'dispatch') {
@@ -134,14 +141,14 @@ async function share() {
 async function remove(row) {
   const tableToRemove = coll.value;
   const linked = Object.entries(rowsByTable.value).some(([table, rows]) => rows.some((item) =>
-    crmReferences(table, item).some((link) => link.coll === tableToRemove && link.id === row.id),
+    crmReferences(table, item).some((link) => link.coll === tableToRemove && String(link.id) === String(row.id)),
   ));
   const warning = linked ? ' Есть связанные записи. Их ссылки на эту запись перестанут открываться.' : '';
   if (!confirm(`Удалить «${crmTitle(row)}»?${warning}`)) return;
   try {
     if (tableToRemove === 'logistics') await db.removeLogistics(row.id);
     else await db.deleteRow(tableToRemove, row.id);
-    if (coll.value === tableToRemove && selected.value === row.id) location.hash = href(tableToRemove);
+    if (coll.value === tableToRemove && selected.value === String(row.id)) location.hash = href(tableToRemove);
   } catch (e) {
     status.value = e.message;
   }
@@ -207,34 +214,31 @@ async function remove(row) {
       <p v-else>Связанных записей пока нет.</p>
       <div class="actionbar">
         <template v-for="(field, table) in createRelated[coll]" :key="table">
-          <button v-if="canEdit(table === 'logistics' ? 'shipments' : 'crm')" class="btn slim" @click="addRelated(table, field)">＋ {{ COLL_RU[table] }}</button>
+          <button v-if="canEditCollection(table)" class="btn slim" @click="addRelated(table, field)">＋ {{ COLL_RU[table] }}</button>
         </template>
-        <button v-if="canEdit('crm') && reverseKind && coll !== 'tasks'" class="btn slim" @click="addRelated('tasks', 'refId')">＋ Задача</button>
+        <button v-if="canEditCollection('tasks') && reverseKind && coll !== 'tasks'" class="btn slim" @click="addRelated('tasks', 'refId')">＋ Задача</button>
       </div>
     </section>
     <p v-else-if="selected" role="status">Запись ещё загружается, удалена или недоступна.</p>
 
-    <div v-if="matches.length" class="table-wrap registry-scroll" tabindex="0" aria-label="Все поля таблицы">
-      <table class="table">
-        <thead><tr><th scope="col">Запись</th><th v-for="key in fields" :key="key" scope="col">{{ crmFieldLabel(coll, key) }}</th></tr></thead>
-        <tbody>
-          <tr v-for="row in visibleRows" :key="row.id">
-            <td>
-              <a :href="href(coll, row.id)">{{ crmTitle(row) }}</a>
-              <div v-if="canWrite" class="actionbar row-actions">
-                <button class="btn slim ghost" @click="openEditor(coll, row)">Изменить</button>
-                <button class="btn slim ghost danger-text" @click="remove(row)">Удалить</button>
-              </div>
-            </td>
-            <td v-for="key in fields" :key="key">
-              <a v-if="linksFor(row, key)[0]?.target" :href="href(linksFor(row, key)[0].coll, linksFor(row, key)[0].id)">{{ crmTitle(linksFor(row, key)[0].target) }}</a>
-              <span v-else class="value" :title="crmDisplayValue(crmValue(coll, row, key))">{{ crmDisplayValue(crmValue(coll, row, key)) }}</span>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-    <p v-else class="empty">Записей нет.</p>
+    <CrmDataTable :coll="coll" :rows="visibleRows" :columns="fields">
+      <template #actions="{ row }">
+        <a :href="href(coll, row.id)">{{ crmTitle(row) }}</a>
+        <div v-if="canWrite" class="actionbar row-actions">
+          <button class="btn slim ghost" @click="openEditor(coll, row)">Изменить</button>
+          <button class="btn slim ghost danger-text" @click="remove(row)">Удалить</button>
+        </div>
+      </template>
+      <template v-for="key in referenceFields" :key="key" #[key]="{ row, value }">
+        <template v-if="linksFor(row, key).length">
+          <template v-for="link in linksFor(row, key)" :key="link.id">
+            <a v-if="link.target" :href="href(link.coll, link.id)">{{ crmTitle(link.target) }}</a>
+            <span v-else>{{ link.id }}</span>
+          </template>
+        </template>
+        <span v-else>{{ value }}</span>
+      </template>
+    </CrmDataTable>
     <div v-if="pageCount > 1" class="actionbar pagination">
       <button class="btn slim" :disabled="page === 1" @click="page--">Назад</button>
       <span>{{ page }} / {{ pageCount }}</span>
@@ -248,9 +252,6 @@ async function remove(row) {
 .registry-tools, .record-head, .row-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .registry-tools { margin-bottom: 12px; }
 .registry-tools .input { max-width: 280px; }
-.registry-scroll { max-width: 100%; overflow: auto; }
-.table th { white-space: nowrap; }
-.value { display: block; width: max-content; max-width: 280px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .row-actions { flex-wrap: nowrap; }
 .record { padding: 16px; margin-bottom: 14px; }
 .record-head { justify-content: space-between; }

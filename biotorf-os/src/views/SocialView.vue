@@ -1,4 +1,5 @@
 <script setup>
+import { statusOptions } from '@/data/crmFields';
 import CrmDataTable from '@/components/CrmDataTable.vue';
 // «Маркетинг и соцсети» (демо v0.9 §8): контент-план публикаций, привязка к пилотам,
 // согласование. Прямые публикации в Instagram в v0.9 не выполняются.
@@ -22,7 +23,7 @@ const rows = computed(() =>
     .filter((s) => statusFilter.value === 'Все' || s.status === statusFilter.value)
     .slice().sort((a, b) => String(a.scheduledDate ?? a.date ?? '').localeCompare(String(b.scheduledDate ?? b.date ?? '')))
 );
-const STATUSES = ['Все', 'Черновик', 'На согласовании', 'Готово к публикации', 'Опубликовано'];
+const STATUSES = computed(() => ['Все', ...statusOptions('social', db.social || [])]);
 </script>
 
 <template>

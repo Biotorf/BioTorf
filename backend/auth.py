@@ -66,6 +66,22 @@ ROLE_PERMS = {
     "admin": {"director", "operations"},   # seed/reset/dev-инструменты
 }
 
+CRM_SPECIALTY_COLLECTIONS = {
+    "agronomist": {"pilots", "applications", "knowledge", "media"},
+    "production": {"production"},
+    "warehouse": {"warehouse"},
+    "logistics": {"shipments"},
+    "finance": {"invoices", "payments"},
+    "marketing": {"media", "social", "knowledge"},
+}
+
+
+def can_write_crm_collection(role: str, collection: str) -> bool:
+    return (role in ROLE_PERMS["crm"] or
+            (collection == "tasks" and role in ROLE_PERMS["tasks"]) or
+            collection in CRM_SPECIALTY_COLLECTIONS.get(role, ()))
+
+
 # ── JWT (HS256, минимальная реализация на stdlib) ────────────────────────────
 def _b64u(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
@@ -84,7 +100,7 @@ def make_token(user: str, role: str, ttl: int | None = None,
     secret = (AUTH_SECRET or AUTH_PASSWORD or "dev-insecure-secret").encode()
     header = _b64u(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
     body = _b64u(json.dumps({
-        "sub": user, "role": role if role in ROLES else "sales",
+        "sub": user, "role": role if role in ROLES or role == "pending" else "sales",
         "iat": int(time.time()), "exp": int(time.time()) + (ttl or AUTH_TOKEN_TTL),
         "tv": int(token_version or 0),
     }).encode())
@@ -103,7 +119,7 @@ def verify_token(token: str) -> dict | None:
         payload = json.loads(_b64ud(b))
         if int(payload.get("exp", 0)) < int(time.time()):
             return None
-        if payload.get("role") not in ROLES:
+        if payload.get("role") not in ROLES and payload.get("role") != "pending":
             return None
         payload.setdefault("tv", 0)
         return payload

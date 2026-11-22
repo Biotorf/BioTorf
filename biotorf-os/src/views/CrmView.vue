@@ -1,4 +1,5 @@
 <script setup>
+import { statusOptions } from '@/data/crmFields';
 import CrmDataTable from '@/components/CrmDataTable.vue';
 import { computed, ref } from 'vue';
 import { useDbStore } from '@/stores/db';
@@ -31,7 +32,7 @@ const farms = computed(() =>
 // Входящие обращения (руководство v0.9 §3 шаг 1): поиск + фильтр статуса
 const leadQ = ref('');
 const leadStatus = ref('Все');
-const LEAD_STATUSES = ['Все', 'Новый лид', 'В работе', 'Квалифицирован', 'Сделка создана', 'Отказ'];
+const LEAD_STATUSES = computed(() => ['Все', ...statusOptions('leads', db.leads || [])]);
 const leads = computed(() =>
   db.leads
     .filter((l) => leadStatus.value === 'Все' || l.status === leadStatus.value)

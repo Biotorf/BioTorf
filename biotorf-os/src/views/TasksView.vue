@@ -1,10 +1,10 @@
 <script setup>
-import { crmFieldLabel } from '@/data/crmFields';
+import { statusOptions } from '@/data/crmFields';
 import CrmDataTable from '@/components/CrmDataTable.vue';
 // «Задачи» (руководство v0.9 §7): реестр поручений — исполнитель, срок, статус.
 // Клик по строке открывает карточку задачи; из неё — переход к связанному объекту.
 import { computed, ref } from 'vue';
-import { useDbStore } from '@/stores/db';
+import { isLate, useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 import CrmImportModal from '@/components/CrmImportModal.vue';
@@ -18,22 +18,15 @@ const importColl = ref('');   // непусто — открыта модалк�
 const db = useDbStore();
 const ui = useUiStore();
 
-const STATUSES = ['Все', 'Открыта', 'В работе', 'Выполнена', 'Отменена'];
-const PRIORITIES = ['Низкий', 'Средний', 'Высокий', 'Критический'];
-
+const STATUS_OPTIONS = computed(() => ['Все', ...statusOptions('tasks', db.tasks)]);
 const statusFilter = ref('Все');
 const onlyLate = ref(false);
-
-const isLate = (d) => {
-  if (!d) return false;
-  const t = new Date(d + 'T23:59:59');
-  return t < new Date();
-};
+const closed = (task) => ['Выполнена', 'Отменена'].includes(task.status);
 
 const tasks = computed(() =>
   db.tasks
     .filter((t) => statusFilter.value === 'Все' || t.status === statusFilter.value)
-    .filter((t) => !onlyLate.value || (t.status !== 'Выполнена' && isLate(t.due)))
+    .filter((t) => !onlyLate.value || (!closed(t) && isLate(t.due)))
     .filter((t) => {
       const q = ui.search.toLowerCase();
       if (!q) return true;
@@ -43,15 +36,8 @@ const tasks = computed(() =>
 
 const lateCount = computed(() => db.lateTasks.length);
 
-// форма создания
-const showNew = ref(false);
-const form = ref({ title: '', owner: 'Менеджер А', due: '', priority: 'Средний', refKind: '', refId: '' });
-const REF_KINDS = ['journey', 'deal', 'lead', 'farm', 'pilot', 'order', 'invoice', 'shipment'];
-function create() {
-  if (!form.value.title.trim()) return;
-  db.addTask({ ...form.value, refId: form.value.refId || null, status: 'Открыта' });
-  form.value = { title: '', owner: 'Менеджер А', due: '', priority: 'Средний', refKind: '', refId: '' };
-  showNew.value = false;
+function newTask() {
+  rowModal.value = { coll: 'tasks', initialValues: { owner: ui.name, priority: 'Средний', status: 'Открыта' } };
 }
 </script>
 
@@ -66,24 +52,12 @@ function create() {
       </div>
         <div class="actionbar" style="margin-top:10px">
           <button class="btn slim" @click="importColl = 'tasks'" title="Загрузить задачи из CSV/JSON">⇪ Импорт</button>
-          <button class="btn primary slim" @click="showNew = !showNew">＋ Создать задачу</button>
+          <button class="btn primary slim" @click="newTask">＋ Создать задачу</button>
         </div></div>
-
-    <div v-if="showNew" class="insight" style="flex-wrap:wrap;gap:8px;margin-bottom:14px">
-      <input v-model="form.title" class="input" style="min-width:280px" :placeholder="crmFieldLabel('tasks', 'title')" @keyup.enter="create" />
-      <input v-model="form.owner" class="input" style="max-width:150px" :placeholder="crmFieldLabel('tasks', 'owner')" />
-      <input v-model="form.due" type="date" class="input" style="max-width:160px" />
-      <select v-model="form.priority" class="select" style="max-width:150px"><option v-for="p in PRIORITIES" :key="p">{{ p }}</option></select>
-      <select v-model="form.refKind" class="select" style="max-width:170px">
-        <option value="">Без привязки</option><option v-for="k in REF_KINDS" :key="k" :value="k">{{ k }}</option>
-      </select>
-      <button class="btn slim primary" @click="create">Сохранить</button>
-      <button class="btn slim" @click="showNew = false">Отмена</button>
-    </div>
 
     <div class="insight" style="margin-bottom:14px;flex-wrap:wrap;gap:8px">
       <input :value="ui.search" @input="ui.search = $event.target.value" class="input" style="max-width:280px" placeholder="Поиск по задаче, исполнителю…" />
-      <select v-model="statusFilter" class="select" style="max-width:170px"><option v-for="s in STATUSES" :key="s">{{ s }}</option></select>
+      <select v-model="statusFilter" class="select" style="max-width:170px"><option v-for="s in STATUS_OPTIONS" :key="s">{{ s }}</option></select>
       <label class="mini" style="display:flex;align-items:center;gap:6px"><input type="checkbox" v-model="onlyLate" /> только просроченные</label>
     </div>
 
@@ -91,14 +65,14 @@ function create() {
       <CrmDataTable coll="tasks" :rows="tasks" empty="Задач нет.">
         <template #actions="{ row: t }">
           <button class="btn slim ghost" @click="ui.openRecord('task', t.id)">Открыть</button>
-          <button v-if="t.status !== 'Выполнена'" class="btn slim ghost" @click="db.updateTask(t.id, { status: 'Выполнена' })">Выполнить</button>
+          <button v-if="!closed(t)" class="btn slim ghost" @click="db.updateTask(t.id, { status: 'Выполнена' })">Выполнить</button>
           <button class="btn slim ghost" @click="rowModal = { coll: 'tasks', record: t }">Изменить</button>
         </template>
       </CrmDataTable>
     </section>
 
     <CrmImportModal v-if="importColl" :coll="importColl" @close="importColl = ''" />
-    <CrmRowModal v-if="rowModal" :coll="rowModal.coll" :record="rowModal.record" @close="rowModal = null" />
+    <CrmRowModal v-if="rowModal" :coll="rowModal.coll" :record="rowModal.record" :initial-values="rowModal.initialValues" @close="rowModal = null" />
   </div>
 </template>
 

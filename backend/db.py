@@ -101,7 +101,9 @@ def compute_peer_key(item: dict) -> str | None:
         return "tg:" + h
     pl = item.get("payload") or {}
     pid = pl.get("chatId") or pl.get("userIndex")
-    return f"tgid:{pid}" if pid else None
+    if pid:
+        return f"tgid:{pid}"
+    return f"entry:{item['id']}" if item.get("id") else None
 
 
 def digits_for_key(s) -> str:
@@ -383,26 +385,29 @@ def delete(comm_id: str) -> bool:
         return cur.rowcount > 0
 
 
-def chats(limit: int = 200) -> list[dict]:
+def chats(limit: int = 200, peer_key: str | None = None) -> list[dict]:
     """Собрать чаты — группировка сообщений по собеседнику, как в мессенджере.
 
     Возвращает список диалогов: identity (клиент/контакт/телефон/ник), канал,
     счётчик непрочитанных, последние сообщения и черновик ответа."""
     seq_col = "seq" if IS_POSTGRES else "rowid"
     with connect() as conn:
+        where = "peer_key=?" if peer_key is not None else "peer_key IS NOT NULL"
+        params = (peer_key, limit) if peer_key is not None else (limit,)
         peers = conn.execute(
-            "SELECT peer_key, MAX(ts) last_ts, COUNT(*) c FROM comms "
-            "WHERE peer_key IS NOT NULL GROUP BY peer_key "
-            "ORDER BY last_ts DESC LIMIT ?", (limit,)).fetchall()
+            "SELECT peer_key, MAX(ts) last_ts, COUNT(*) total, "
+            "SUM(CASE WHEN dir='in' AND read=0 THEN 1 ELSE 0 END) unread FROM comms "
+            f"WHERE {where} GROUP BY peer_key ORDER BY last_ts DESC LIMIT ?", params).fetchall()
         out = []
         for pr in peers:
             msgs_rows = conn.execute(
-                f"SELECT {seq_col}, * FROM comms WHERE peer_key=? ORDER BY ts ASC, {seq_col} ASC",
+                f"SELECT {seq_col} AS message_seq, * FROM comms WHERE peer_key=? "
+                f"ORDER BY ts DESC, {seq_col} DESC LIMIT 300",
                 (pr["peer_key"],)).fetchall()
             msgs = []
-            for r in msgs_rows:
+            for r in reversed(msgs_rows):
                 d = to_dict(r)
-                d["seq"] = r[seq_col]
+                d["seq"] = r["message_seq"]
                 msgs.append(d)
             g = {
                 "key": pr["peer_key"],
@@ -413,9 +418,9 @@ def chats(limit: int = 200) -> list[dict]:
                 "handle": None,
                 "chatId": None,
                 "messages": msgs,
-                "unread": 0,
+                "unread": pr["unread"],
                 "lastTs": pr["last_ts"],
-                "total": len(msgs),
+                "total": pr["total"],
             }
             for m in msgs:
                 if m["kind"] != "call":
@@ -431,9 +436,7 @@ def chats(limit: int = 200) -> list[dict]:
                 pl = m.get("payload") or {}
                 if pl.get("chatId"):
                     g["chatId"] = pl["chatId"]
-                if not m["read"] and m["dir"] == "in":
-                    g["unread"] += 1
-                if m["dir"] == "out" and m.get("status"):
+                if m["dir"] == "out" and m["kind"] != "call" and m.get("status"):
                     g["lastOutStatus"] = m["status"]
             g["lastMessage"] = msgs[-1] if msgs else None
             dr = conn.execute(
@@ -441,6 +444,56 @@ def chats(limit: int = 200) -> list[dict]:
             g["draft"] = (dr["draft"] if dr else "") or ""
             out.append(g)
         return out
+
+
+def chat_target(peer_key: str, kind: str | None = None) -> dict | None:
+    """Адресат выбранного канала. Ручные записи в журнале не подтверждают адрес."""
+    where = " AND kind=?" if kind else ""
+    params = (peer_key, kind) if kind else (peer_key,)
+    sequence = "seq" if IS_POSTGRES else "rowid"
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM comms WHERE peer_key=? AND kind<>'call' "
+            f"AND (source<>'manual' OR source IS NULL){where} "
+            f"ORDER BY CASE WHEN dir='in' THEN 0 ELSE 1 END, ts DESC, {sequence} DESC",
+            params,
+        )
+        for row in rows:
+            item = to_dict(row)
+            if item["dir"] == "out" and item["source"] not in ("chat", "reply"):
+                continue
+            if item["kind"] == "telegram":
+                payload = item["payload"] or {}
+                if not (payload.get("chatId") or payload.get("userIndex")):
+                    continue
+            elif item["kind"] == "whatsapp":
+                if not item["phone"]:
+                    continue
+            elif not (item["handle"] or item["phone"] or item["payload"]):
+                continue
+            return item
+    return None
+
+
+def telegram_target(handle: str) -> dict | None:
+    """Разрешить ник только по подтверждённым входящим личным чатам."""
+    normalized = handle.strip().lstrip("@").lower()
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM comms WHERE kind='telegram' AND dir='in' "
+            "AND LOWER(handle) IN (?, ?) ORDER BY ts DESC",
+            (normalized, f"@{normalized}"),
+        )
+        targets = {}
+        for row in rows:
+            item = to_dict(row)
+            payload = item["payload"] or {}
+            chat_id = payload.get("chatId")
+            if chat_id and str(chat_id) == str(payload.get("userIndex")):
+                targets.setdefault(str(chat_id), item)
+                if len(targets) > 1:
+                    return None
+    return next(iter(targets.values()), None)
 
 
 def mark_peer_read(peer_key: str) -> int:

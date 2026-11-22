@@ -14,7 +14,7 @@ const db = useDbStore();
 const ui = useUiStore();
 const { money, day, num } = useFormatters();
 
-const CLIENT_TYPES = ['Агропроизводитель', 'Розничный магазин', 'Оптовая база', 'Дилер', 'Дистрибьютор', 'Другой'];
+const CLIENT_TYPES = ['Агропроизводитель', 'Розничный магазин', 'Оптовая база', 'Дилер', 'Дистрибьютор', 'Частный покупатель', 'Другой'];
 const SOURCES = ['Instagram', 'Telegram', 'WhatsApp', 'Звонок', 'Мероприятие', 'Рекомендация', 'Сайт', 'Другое'];
 const STAGES = ['Квалификация', 'Сделка', 'Пилот или КП', 'КП отправлено', 'Счёт выставлен', 'Оплачено', 'Доставка', 'Сопровождение', 'Завершено'];
 
@@ -29,10 +29,22 @@ const quote = computed(() => journey.value?.quoteId ? db.quoteById(journey.value
 const order = computed(() => journey.value?.orderId ? db.orderById(journey.value.orderId) : null);
 const invoice = computed(() => journey.value?.invoiceId ? db.invoiceById(journey.value.invoiceId) : null);
 const shipment = computed(() => journey.value?.shipmentId ? db.shipments.find((s) => s.id === journey.value.shipmentId) : null);
+const isPaid = computed(() => invoice.value && (invoice.value.paid || invoice.value.status === 'Оплачен'));
+const orderPlans = computed(() => order.value ? (db.data.production || []).filter((plan) => plan.orderId === order.value.id) : []);
+const workflowError = ref('');
+function perform(action) {
+  workflowError.value = '';
+  try {
+    return action();
+  } catch (error) {
+    workflowError.value = error.message;
+    return null;
+  }
+}
 const isAgro = computed(() => journey.value?.qualification?.clientType === 'Агропроизводитель');
 const stageIdx = computed(() => Math.max(0, STAGES.indexOf(journey.value?.stage || 'Квалификация')));
 
-function pick(id) { selectedId.value = id; ui.activeWork = { kind: 'journey', id }; }
+function pick(id) { workflowError.value = ''; selectedId.value = id; ui.activeWork = { kind: 'journey', id }; }
 
 const newLeadOpen = ref(false);
 const newLead = ref({ name: '', contactName: '', phone: '', company: '', region: '', source: 'WhatsApp', owner: 'Менеджер А', next: '' });
@@ -57,14 +69,16 @@ const qual = ref(null);
 function openQual() {
   const q = journey.value?.qualification || {};
   qual.value = {
-    clientType: q.clientType || 'Агропроизводитель', farmAction: q.farmId ? 'link' : 'none',
+    clientType: q.clientType || 'Агропроизводитель', farmAction: journey.value?.farmId ? 'link' : 'none',
     farmId: journey.value?.farmId || '', newFarmName: q.newFarmName || '', region: q.region || '',
     crop: q.crop || '', area: q.area || '', need: q.need || '', contactName: q.contactName || '',
     phone: q.phone || lead.value?.phone || '', telegram: q.telegram || '', email: q.email || '',
     source: q.source || lead.value?.source || '', note: q.note || '',
   };
 }
-async function saveQual() { await db.saveQualification(journey.value.id, { ...qual.value }); qual.value = null; }
+function saveQual() {
+  if (perform(() => db.saveQualification(journey.value.id, { ...qual.value }))) qual.value = null;
+}
 
 const dealForm = ref(null);
 const saveDeal = async () => { await db.createDealFromJourney(journey.value.id, dealForm.value); dealForm.value = null; };
@@ -80,15 +94,24 @@ const addQItem = () => quoteForm.value.items.push({ sku: '', packs: 1, price: 0 
 const removeQItem = (i) => quoteForm.value.items.splice(i, 1);
 const qLineSum = (it) => (Number(it.packs) || 0) * (Number(it.price) || 0);
 const qTotal = computed(() => quoteForm.value ? quoteForm.value.items.reduce((s, it) => s + qLineSum(it), 0) : 0);
-const saveQuote = async () => { await db.createQuoteFromJourney(journey.value.id, quoteForm.value); quoteForm.value = null; };
+const saveQuote = () => { if (perform(() => db.createQuoteFromJourney(journey.value.id, quoteForm.value))) quoteForm.value = null; };
 
-const confirmOrder = async () => { await db.confirmOrderFromQuote(journey.value.id); };
-const payInvoice = async () => { await db.markInvoicePaid(invoice.value.id); };
+const markSent = () => perform(() => db.markQuoteSent(journey.value.id));
+const confirmOrder = () => perform(() => db.confirmOrderFromQuote(journey.value.id));
+const payInvoice = () => {
+  const balance = db.invoiceBalance(invoice.value);
+  const question = balance > 0
+    ? `Подтвердить поступление ${money(balance)} по счёту ${invoice.value.number}?`
+    : `Сверить зарегистрированные платежи и закрыть счёт ${invoice.value.number}?`;
+  if (window.confirm(question)) {
+    perform(() => db.markInvoicePaid(invoice.value.id));
+  }
+};
 const shipForm = ref(null);
 const openShip = () => { shipForm.value = { planDate: '', carrier: '', vehicle: '', driver: '' }; };
-const saveShip = async () => { await db.createShipmentFromJourney(journey.value.id, shipForm.value); shipForm.value = null; };
+const saveShip = () => { if (perform(() => db.createShipmentFromJourney(journey.value.id, shipForm.value))) shipForm.value = null; };
 const recForm = ref(null);
-const openRec = () => { recForm.value = { nextTask: 'Контрольный звонок после применения', nextDate: '' }; };
+const openRec = () => { recForm.value = { nextTask: isAgro.value ? 'Контрольный звонок после применения' : 'Уточнить, всё ли в порядке с заказом', nextDate: '' }; };
 const saveRec = async () => { await db.confirmShipmentReceived(shipment.value.id, recForm.value); recForm.value = null; };
 
 const nextForm = ref(null);
@@ -152,6 +175,7 @@ function fmtTs(iso) { return new Date(iso).toLocaleString('ru-RU', { day: '2-dig
       </div>
 
       <div v-if="journey" style="flex:1;min-width:320px">
+        <p v-if="workflowError" class="danger-text" role="alert">{{ workflowError }}</p>
         <div class="client-hero">
           <div>
             <div class="mini">СКВОЗНОЙ ПРОЦЕСС · {{ journey.id }} · лид {{ journey.leadId }}</div>
@@ -205,7 +229,7 @@ function fmtTs(iso) { return new Date(iso).toLocaleString('ru-RU', { day: '2-dig
           <div v-if="qual.clientType === 'Агропроизводитель'" style="display:flex;gap:8px;flex-wrap:wrap">
             <div class="field" style="flex:1"><label>Культура</label><input v-model="qual.crop" class="input" /></div>
             <div class="field" style="flex:1"><label>Площадь, га</label><input v-model="qual.area" class="input" /></div>
-            <div class="field" style="flex:1"><label>Потребность</label><input v-model="qual.need" class="input" placeholder="напр. 200 л пасты" /></div>
+            <div class="field" style="flex:1"><label>Потребность</label><input v-model="qual.need" class="input" placeholder="Например, 200 л Agro на сезон" /></div>
           </div>
           <div v-else class="mini" style="margin-bottom:8px">Для магазина / оптовой базы / дилера агрономические поля необязательны, пилот не требуется.</div>
           <div style="display:flex;gap:8px">
@@ -264,17 +288,22 @@ function fmtTs(iso) { return new Date(iso).toLocaleString('ru-RU', { day: '2-dig
         <!-- Шаг 6: КП → заказ → счёт → оплата → отгрузка -->
         <div class="insight"><div style="width:100%">
           <b>Шаг 6 · КП → заказ → счёт → оплата → отгрузка</b>
-          <div v-if="quote" class="mini">{{ quote.number }} от {{ day(quote.date) }} · {{ quote.items.length }} поз. · {{ money(quote.total) }} · «{{ quote.status }}»</div>
+          <div v-if="quote" class="mini">{{ quote.number }} от {{ day(quote.date) }} · {{ (quote.items || []).length }} поз. · {{ money(quote.total) }} · «{{ quote.status }}»</div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
             <button v-if="!quote" class="btn slim ghost" :disabled="!deal" @click="openQuote">Создать КП</button>
-            <button v-if="quote && !order" class="btn slim ghost" @click="confirmOrder">Подтвердить заказ (перенос из КП)</button>
-            <button v-if="order && !invoice?.paid" class="btn slim ghost" @click="payInvoice">Подтвердить оплату вручную</button>
-            <button v-if="invoice?.paid && !shipment" class="btn slim ghost" @click="openShip">Создать отгрузку</button>
+            <button v-if="quote && !order && ['Отправлено', 'Принят'].includes(quote.status)" class="btn slim ghost" @click="confirmOrder">Подтвердить заказ (перенос из КП)</button>
+            <button v-if="quote?.status === 'Черновик'" class="btn slim ghost" @click="markSent">Отметить КП отправленным</button>
+            <button v-if="invoice && !isPaid" class="btn slim ghost" @click="payInvoice">Подтвердить оплату вручную</button>
+            <button v-if="isPaid && !shipment" class="btn slim ghost" @click="openShip">Создать отгрузку</button>
             <button v-if="shipment && !shipment.received" class="btn slim ghost" @click="openRec">Подтвердить получение</button>
             <span v-if="shipment?.received" class="pill">Доставлено · маршрут в сопровождении</span>
           </div>
-          <div v-if="order" class="mini" style="margin-top:6px">Заказ {{ order.id }} ({{ order.num }}) · счёт {{ invoice?.number }} — {{ invoice?.paid ? 'оплачен ' + day(invoice.paidAt) : 'не оплачен' }}</div>
-          <div v-if="shipment" class="mini">Отгрузка {{ shipment.number }} · план {{ day(shipment.planDate) }} · перевозчик {{ shipment.carrier || '—' }} · {{ shipment.received ? 'получено клиентом' : 'в пути' }}</div>
+          <div v-if="order" class="mini" style="margin-top:6px">Заказ {{ order.id }} ({{ order.number || order.num }}) · счёт {{ invoice?.number }} — {{ isPaid ? 'оплачен ' + day(invoice.paidAt) : 'не оплачен' }}</div>
+          <div v-if="orderPlans.length" class="mini">
+            Потребность производства:
+            <a :href="'#/registry?table=production&id=' + encodeURIComponent(orderPlans[0].id)">{{ orderPlans.length }} поз.</a>
+          </div>
+          <div v-if="shipment" class="mini">Отгрузка {{ shipment.number }} · план {{ day(shipment.planDate) }} · перевозчик {{ shipment.carrier || '—' }} · {{ shipment.status }}</div>
         </div></div>
         <div v-if="quoteForm" class="muted-block">
           <div class="field" style="max-width:220px"><label>Дата КП</label><input v-model="quoteForm.date" type="date" class="input" /></div>

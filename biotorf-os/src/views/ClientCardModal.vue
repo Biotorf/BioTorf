@@ -1,11 +1,14 @@
 <script setup>
-import { ref, computed } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { useDbStore } from '@/stores/db';
+import { useUiStore } from '@/stores/ui';
 import { useFormatters } from '@/composables/useFormatters';
 import StatusPill from '@/components/ui/StatusPill.vue';
 
 const props = defineProps({ farmId: { type: String, required: true } });
 const db = useDbStore();
+const ui = useUiStore();
+onMounted(() => db.syncComms(true));
 const { num, day, money } = useFormatters();
 
 const tabs = ['overview', 'contacts', 'comms', 'deals', 'pilots', 'orders', 'history'];
@@ -28,21 +31,9 @@ function fmtCommTs(iso) {
   return d.toLocaleDateString('ru-RU') + ' ' + d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
 }
 
-// быстрый ответ прямо из карточки клиента
-const replyText = ref('');
-const replyKind = ref('telegram');
-function sendFromCard() {
-  if (!replyText.value.trim()) return;
-  db.addComm({
-    kind: replyKind.value,
-    dir: 'out',
-    farmId: props.farmId,
-    contact: farm.value?.owner || null,
-    phone: farm.value?.phone || null,
-    text: replyText.value.trim(),
-    read: true,
-  });
-  replyText.value = '';
+function openClientComms() {
+  ui.closeModal();
+  ui.openComms(props.farmId);
 }
 </script>
 
@@ -83,21 +74,7 @@ function sendFromCard() {
       </div>
       <div v-if="!comms.length" class="empty">Связь с этим клиентом ещё не фиксировалась</div>
 
-      <div class="muted-block" style="margin-top:14px">
-        <div class="field">
-          <label>Быстрый ответ клиенту</label>
-          <div style="display:flex;gap:8px;margin-bottom:8px">
-            <select v-model="replyKind" class="select" style="max-width:160px">
-              <option value="telegram">Telegram</option>
-              <option value="whatsapp">WhatsApp</option>
-            </select>
-          </div>
-          <textarea v-model="replyText" class="textarea" rows="3" placeholder="Текст сообщения…"></textarea>
-        </div>
-        <div class="actionbar" style="margin-top:10px">
-          <button class="btn primary slim" :disabled="!replyText.trim()" @click="sendFromCard">Отправить (в ленту)</button>
-        </div>
-      </div>
+      <button class="btn primary slim" @click="openClientComms">Открыть коммуникации</button>
     </div>
 
     <div v-if="active === 'overview'" class="details-grid">

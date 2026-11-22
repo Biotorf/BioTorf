@@ -269,6 +269,14 @@ def deliver_outbox(api: str):
         payload = item.get("payload") or {}
         chat_id = payload.get("chatId") or payload.get("userIndex")
         if not chat_id:
+            try:
+                post_json(
+                    f"{api}/api/comms/{item['id']}/delivered",
+                    {"ok": False, "error": "Не найден идентификатор личного чата Telegram"},
+                    headers=_auth_headers(),
+                )
+            except Exception as e:
+                print(f"[tg-worker] invalid recipient mark failed: {e}", file=sys.stderr)
             continue
         # голосовые сообщения: если к записи привязан медиафайл — качаем его с
         # Comms API и отправляем через sendVoice (Telegram покажет плеер)

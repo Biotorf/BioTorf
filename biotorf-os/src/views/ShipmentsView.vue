@@ -10,7 +10,7 @@ import { useUiStore } from '@/stores/ui';
 import { useFormatters } from '@/composables/useFormatters';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 import LogisticsDocEditor from '@/components/forms/LogisticsDocEditor.vue';
-import { toCsv, toXmlSpreadsheet, downloadBlob, printHtml } from '@/utils/spreadsheet';
+import { toCsv, toXmlSpreadsheet, downloadBlob, printHtml, escapeHtml } from '@/utils/spreadsheet';
 
 import CrmRowModal from '@/components/CrmRowModal.vue';
 import ManualLink from '@/components/ui/ManualLink.vue';
@@ -107,9 +107,9 @@ function printRegistry() {
   const rows = registryRows();
   const body = `<div class="org">ОсОО «Агро Трейд Плюс» · BIOTORF Business OS</div>
     <h1>${label}</h1><div class="small">на ${new Date().toLocaleDateString('ru-RU')} · документов: ${filtered.value.length}</div>
-    <table><thead><tr>${rows[0].map((c) => `<th>${c}</th>`).join('')}</tr></thead>
-    <tbody>${rows.slice(1, -1).map((r) => `<tr>${r.map((c, j) => `<td class="${typeof c === 'number' ? 'num' : ''}">${typeof c === 'number' ? num(c) : c}</td>`).join('')}</tr>`).join('')}</tbody>
-    <tfoot><tr>${rows[rows.length - 1].map((c) => `<td class="${typeof c === 'number' ? 'num' : ''}">${typeof c === 'number' ? num(c) : c}</td>`).join('')}</tr></tfoot></table>`;
+    <table><thead><tr>${rows[0].map((c) => `<th>${escapeHtml(c)}</th>`).join('')}</tr></thead>
+    <tbody>${rows.slice(1, -1).map((r) => `<tr>${r.map((c, j) => `<td class="${typeof c === 'number' ? 'num' : ''}">${typeof c === 'number' ? num(c) : escapeHtml(c)}</td>`).join('')}</tr>`).join('')}</tbody>
+    <tfoot><tr>${rows[rows.length - 1].map((c) => `<td class="${typeof c === 'number' ? 'num' : ''}">${typeof c === 'number' ? num(c) : escapeHtml(c)}</td>`).join('')}</tr></tfoot></table>`;
   printHtml(label, body);
 }
 

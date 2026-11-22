@@ -1,5 +1,5 @@
 const SCHEMAS = {
-  farms:      ['id', 'name', 'type', 'region', 'crop', 'area', 'owner', 'status', 'next', 'phone', 'notes'],
+  farms:      ['id', 'name', 'type', 'region', 'crop', 'area', 'owner', 'status', 'next', 'phone', 'source', 'notes'],
   leads:      ['id', 'name', 'contactName', 'phone', 'company', 'farmId', 'region', 'source', 'owner', 'status', 'next'],
   deals:      ['id', 'title', 'farmId', 'journeyId', 'stage', 'volumeL', 'amount', 'owner', 'next'],
   orders:     ['id', 'number', 'farmId', 'dealId', 'journeyId', 'quoteId', 'date', 'sku', 'product', 'qty', 'unit', 'items', 'amount', 'status', 'owner'],
@@ -7,11 +7,11 @@ const SCHEMAS = {
   payments:   ['id', 'invoiceId', 'orderId', 'date', 'amount', 'method', 'comment'],
   shipments:  ['id', 'number', 'orderId', 'farmId', 'journeyId', 'date', 'planDate', 'carrier', 'vehicle', 'transport', 'driver', 'plate', 'route', 'items', 'amount', 'status', 'received'],
   tasks:      ['id', 'title', 'owner', 'due', 'priority', 'status', 'refKind', 'refId'],
-  contacts:   ['id', 'farmId', 'name', 'role', 'phone', 'email', 'primary'],
+  contacts:   ['id', 'farmId', 'name', 'role', 'phone', 'whatsapp', 'telegram', 'email', 'primary'],
   skus:       ['id', 'name', 'line', 'pack', 'recipe', 'status', 'category', 'unit', 'price', 'stock', 'notes'],
   warehouse:  ['id', 'sku', 'batch', 'qty', 'reserved', 'unit', 'warehouse', 'expiry', 'status', 'orderId'],
-  production: ['id', 'date', 'sku', 'product', 'lot', 'qty', 'unit', 'status', 'shift', 'operator', 'notes', 'orderId'],
-  pilots:     ['id', 'title', 'farmId', 'dealId', 'journeyId', 'crop', 'area', 'startDate', 'endDate', 'nextCheck', 'status', 'owner', 'result'],
+  production: ['id', 'date', 'sku', 'product', 'lot', 'qty', 'unit', 'plannedVolumeL', 'status', 'supplyId', 'inputLot', 'pasteUsedKg', 'actualQty', 'qcStatus', 'shift', 'operator', 'notes', 'orderId'],
+  pilots:     ['id', 'title', 'farmId', 'dealId', 'journeyId', 'crop', 'area', 'startDate', 'endDate', 'nextCheck', 'control', 'goal', 'status', 'owner', 'result'],
   quotes:     ['id', 'number', 'dealId', 'farmId', 'journeyId', 'date', 'items', 'terms', 'total', 'status'],
   journeys:   ['id', 'leadId', 'farmId', 'dealId', 'pilotId', 'quoteId', 'orderId', 'invoiceId', 'shipmentId', 'stage', 'owner', 'next', 'qualification', 'history'],
   knowledge:  ['id', 'title', 'category', 'crop', 'version', 'owner', 'status', 'public', 'source', 'tags', 'text'],
@@ -58,16 +58,20 @@ export const FIELD_RU = {
   party: 'Контрагент', base: 'Основание', act: 'Акт', createdAt: 'Создано',
   caption: 'Текст публикации', caseApproved: 'Кейс утверждён', public: 'Публичный материал', version: 'Версия',
   packs: 'Количество', skuId: 'Артикул (SKU)', sum: 'Сумма', liters: 'Объём, л',
-  scheduledDate: 'Дата публикации', link: 'Ссылка',
+  scheduledDate: 'Дата публикации', link: 'Ссылка', whatsapp: 'WhatsApp', telegram: 'Telegram',
+  plannedVolumeL: 'План выпуска, л', supplyId: 'Поставка пасты', inputLot: 'Партия пасты',
+  actualQty: 'Фактический выпуск', qcStatus: 'Контроль качества', pasteUsedKg: 'Расход пасты, кг',
+  material: 'Тип сырья', control: 'Контрольный участок', goal: 'Цель пилота',
 };
 
-export const REF_FIELD = { farmId: 'farms', dealId: 'deals', orderId: 'orders', invoiceId: 'invoices', leadId: 'leads', pilotId: 'pilots', sku: 'skus', skuId: 'skus', journeyId: 'journeys', quoteId: 'quotes', shipmentId: 'shipments' };
+export const REF_FIELD = { farmId: 'farms', dealId: 'deals', orderId: 'orders', invoiceId: 'invoices', leadId: 'leads', pilotId: 'pilots', sku: 'skus', skuId: 'skus', journeyId: 'journeys', quoteId: 'quotes', shipmentId: 'shipments', supplyId: 'logistics' };
 
 const legacyFields = {
+  farms: { notes: 'note' },
   orders: { number: 'num' },
   warehouse: { warehouse: 'location' },
   production: { lot: 'batch' },
-  pilots: { nextCheck: 'next' },
+  pilots: { nextCheck: 'next', startDate: 'date' },
   knowledge: { text: 'summary' },
   social: { platform: 'channel', scheduledDate: 'date', link: 'publicUrl' },
   media: { kind: 'type', date: 'uploadedAt', note: 'notes' },
@@ -85,7 +89,8 @@ export function crmFields(coll, records) {
 }
 
 export function crmValue(coll, record, key) {
-  return record?.[key] ?? record?.[legacyFields[coll]?.[key]];
+  const value = record?.[key] ?? record?.[legacyFields[coll]?.[key]];
+  return coll === 'deals' && key === 'stage' ? dealStage(value) : value;
 }
 
 export function crmTitle(record) {
@@ -104,10 +109,41 @@ export function crmReferences(coll, record) {
 export function crmFieldLabel(coll, key) {
   if (coll === 'logistics' && key === 'kind') return 'Тип документа';
   if (coll === 'logistics' && key === 'vehicle') return 'Транспорт';
+  if (coll === 'logistics' && key === 'lot') return 'Партия поставщика';
   return FIELD_RU[key] || key;
 }
 
 export const LOGISTICS_KINDS = { supply: 'Поставка (приход)', dispatch: 'Выгрузка / отгрузка' };
+
+export const DEAL_STAGES = [
+  'Новая', 'Квалификация', 'Пилот или КП', 'КП отправлено', 'Переговоры',
+  'Счёт выставлен', 'Оплачено', 'Доставка', 'Получено клиентом', 'Завершена',
+];
+const dealStageAliases = new Map([
+  ['Пилот идет', 'Пилот или КП'], ['Пилот идёт', 'Пилот или КП'], ['Пилот согласован', 'Пилот или КП'],
+  ['Счет/договор', 'Счёт выставлен'], ['Отгружено', 'Доставка'],
+]);
+export function dealStage(value) { return dealStageAliases.get(value) || value; }
+
+const statuses = {
+  farms: ['Потенциальный', 'Активный', 'Неактивный'],
+  leads: ['Новый лид', 'Связаться', 'Контакт установлен', 'В работе', 'Квалифицирован', 'Сделка создана', 'Отказ'],
+  orders: ['Новый', 'Подтверждён', 'В производство', 'Готов к отгрузке', 'Оплачен', 'Отгружен', 'Отменён'],
+  invoices: ['Выставлен', 'Оплачен', 'Просрочен'],
+  shipments: ['Запланирована', 'В пути', 'Доставлена', 'Получено клиентом'],
+  warehouse: ['В наличии', 'Зарезервировано', 'Списан'],
+  production: ['План', 'В работе', 'Завершено'],
+  tasks: ['Открыта', 'В работе', 'Выполнена', 'Отменена'],
+  quotes: ['Черновик', 'Отправлено', 'Принят', 'Отклонено'],
+  social: ['Идея', 'Черновик', 'В работе', 'На согласовании', 'Готово к публикации', 'Запланировано', 'Опубликовано'],
+  knowledge: ['Черновик', 'На проверке', 'Утверждено'],
+  skus: ['В модели', 'Активный', 'Архив'],
+};
+
+export function statusOptions(coll, records, additional = []) {
+  return [...new Set([...(statuses[coll] || []), ...additional, ...records.map((row) => row.status)]
+    .filter((value) => typeof value === 'string' && value.trim()))];
+}
 
 export function crmDisplayValue(value) {
   if (value == null || value === '') return '—';
