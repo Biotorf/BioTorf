@@ -449,7 +449,8 @@ def delete(comm_id: str) -> bool:
         return cur.rowcount > 0
 
 
-def chats(limit: int = 200, peer_key: str | None = None, queue: str = "all", login: str = "") -> list[dict]:
+def chats(limit: int = 200, peer_key: str | None = None, queue: str = "all", login: str = "",
+          *, compact: bool = False) -> list[dict]:
     """Собрать чаты — группировка сообщений по собеседнику, как в мессенджере.
 
     Возвращает список диалогов: identity (клиент/контакт/телефон/ник), канал,
@@ -477,20 +478,40 @@ def chats(limit: int = 200, peer_key: str | None = None, queue: str = "all", log
             "w.assignee, w.state, w.response_due, w.lead_id, w.revision FROM comms c "
             "LEFT JOIN comms_work w ON w.peer_key=c.peer_key WHERE c.peer_key IS NOT NULL"
             + condition + " GROUP BY c.peer_key, w.assignee, w.state, w.response_due, w.lead_id, w.revision "
-            "ORDER BY last_ts DESC LIMIT ?", (*params, limit)).fetchall()
+            "ORDER BY last_ts DESC, c.peer_key LIMIT ?", (*params, limit)).fetchall()
+        previews = {}
+        kinds = {}
+        drafts = {}
+        if compact and peers:
+            keys = tuple(row["peer_key"] for row in peers)
+            marks = ",".join("?" for _ in keys)
+            rows = conn.execute(
+                f"SELECT * FROM (SELECT c.{seq_col} AS message_seq, c.*, "
+                f"ROW_NUMBER() OVER (PARTITION BY c.peer_key ORDER BY c.ts DESC, c.{seq_col} DESC) AS rank "
+                f"FROM comms c WHERE c.peer_key IN ({marks})) AS preview WHERE rank<=4 ORDER BY rank",
+                keys,
+            ).fetchall()
+            for row in rows:
+                previews.setdefault(row["peer_key"], []).append(row)
+            for row in conn.execute(f"SELECT DISTINCT peer_key, kind FROM comms WHERE peer_key IN ({marks})", keys):
+                kinds.setdefault(row["peer_key"], []).append(row["kind"])
+            drafts = {row["peer_key"]: row["draft"] for row in conn.execute(
+                f"SELECT peer_key, draft FROM chat_drafts WHERE peer_key IN ({marks})", keys,
+            )}
         out = []
         for pr in peers:
-            msgs_rows = conn.execute(
+            key = pr["peer_key"]
+            msgs_rows = previews.get(key, []) if compact else conn.execute(
                 f"SELECT {seq_col} AS message_seq, * FROM comms WHERE peer_key=? "
-                f"ORDER BY ts DESC, {seq_col} DESC LIMIT 300",
-                (pr["peer_key"],)).fetchall()
+                f"ORDER BY ts DESC, {seq_col} DESC LIMIT 300", (key,),
+            ).fetchall()
             msgs = []
             for r in reversed(msgs_rows):
                 d = to_dict(r)
                 d["seq"] = r["message_seq"]
                 msgs.append(d)
             g = {
-                "key": pr["peer_key"],
+                "key": key,
                 "kind": "call",
                 "farmId": None,
                 "contact": None,
@@ -498,6 +519,7 @@ def chats(limit: int = 200, peer_key: str | None = None, queue: str = "all", log
                 "handle": None,
                 "chatId": None,
                 "messages": msgs,
+                "kinds": sorted(kinds.get(key, ())) if compact else sorted({m["kind"] for m in msgs}),
                 "unread": pr["unread"],
                 "lastTs": pr["last_ts"],
                 "total": pr["total"],
@@ -519,9 +541,11 @@ def chats(limit: int = 200, peer_key: str | None = None, queue: str = "all", log
                 if m["dir"] == "out" and m["kind"] != "call" and m.get("status"):
                     g["lastOutStatus"] = m["status"]
             g["lastMessage"] = msgs[-1] if msgs else None
-            dr = conn.execute(
-                "SELECT draft FROM chat_drafts WHERE peer_key=?", (pr["peer_key"],)).fetchone()
-            g["draft"] = (dr["draft"] if dr else "") or ""
+            if compact:
+                g["draft"] = drafts.get(key) or ""
+            else:
+                dr = conn.execute("SELECT draft FROM chat_drafts WHERE peer_key=?", (key,)).fetchone()
+                g["draft"] = (dr["draft"] if dr else "") or ""
             g["work"] = work_dict(pr)
             out.append(g)
         return out
@@ -596,12 +620,15 @@ def telegram_target(handle: str) -> dict | None:
     return next(iter(targets.values()), None)
 
 
-def mark_peer_read(peer_key: str) -> int:
-    """Отметить прочитанными все входящие конкретного чата."""
+def mark_peer_read(peer_key: str, through: int | None = None) -> int:
+    """Отметить прочитанными входящие, которые оператор уже видел."""
+    seq_col = "seq" if IS_POSTGRES else "rowid"
     with connect() as conn:
         cur = conn.execute(
-            "UPDATE comms SET read=1 WHERE peer_key=? AND read=0 AND dir='in'",
-            (peer_key,))
+            "UPDATE comms SET read=1 WHERE peer_key=? AND read=0 AND dir='in'" +
+            (f" AND {seq_col}<=?" if through is not None else ""),
+            (peer_key, through) if through is not None else (peer_key,),
+        )
         return cur.rowcount
 
 

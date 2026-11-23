@@ -8,11 +8,8 @@ Telegram не даёт webhook без публичного HTTPS, поэтому
     TELEGRAM_WEBHOOK_SECRET=<тот же секрет, что в .env> \
     python telegram_worker.py [--api http://127.0.0.1:8787]
 
-Токен бота и секрет вебхука берутся ИЗ ФАЙЛА .env (TELEGRAM_BOT_TOKEN,
-TELEGRAM_WEBHOOK_SECRET) — как в ранней версии, когда отдельной вкладки
-«Каналы CRM» ещё не было. Никаких обращений к CRM за секретами: тот механизм
-(worker-token / with_token / сервисная учётка «worker») нестабильно проходил
-авторизацию middleware и порождал вечные 401 — удалён полностью.
+Токен бота и секрет вебхука берутся из окружения. Внутренний воркер Docker
+также может использовать активный аккаунт Telegram, настроенный в CRM.
 
 Чтобы бот получал сообщения с телефонами контактов:
     @BotFather -> /setprivacy -> Disable  (или используйте личные чаты)
@@ -49,15 +46,6 @@ API_KEY = os.environ.get("CRM_API_KEY", "").strip()  # необязательн�
 OFFSET = 0
 
 
-# ── токен бота и секрет вебхука — строго из файла .env (как в ранней версии) ──
-# Механизм получения секретов из CRM через вкладку «Каналы» (эндпоинт
-# /api/internal/worker-token, сервисная учётка «worker», with_token=1) удалён:
-# он зависел от JWT-middleware и порождал вечные 401 у tg-воркера. Воркер
-# больше НИКОГДА не запрашивает секреты у CRM; для обращений к /api/*
-# используется Authorization, который middleware принимает в режиме общего
-# пароля AUTH_PASSWORD (или DEV_MODE=1).
-
-
 def _wait_backend(timeout_s: float = 60.0) -> bool:
     """Дождаться готовности CRM API (health). Возвращает True, если дождались.
 
@@ -84,16 +72,21 @@ def _wait_backend(timeout_s: float = 60.0) -> bool:
 
 
 def _auth_headers() -> dict:
-    """Заголовок Authorization для /api/* CRM.
-
-    Ранняя схема: воркер работает в режиме общего пароля — middleware бэкенда
-    принимает любой непустой Bearer-токен, когда сотрудники ещё не
-    зарегистрированы, либо токен сотрудника, выданный POST /auth/login по
-    AUTH_PASSWORD. Поэтому: 1) явный CRM_API_KEY из .env; 2) штатный логин
-    worker@biotorf.local c паролем AUTH_PASSWORD (если задан); 3) fallback —
-    сам AUTH_PASSWORD (старое поведение legacy-воркера)."""
+    """Использовать явно выданный токен либо короткий JWT внутреннего воркера."""
     if API_KEY:
         return {"Authorization": f"Bearer {API_KEY}"}
+    now = time.time()
+    if _LOGIN_CACHE["tok"] and _LOGIN_CACHE["exp"] > now:
+        return {"Authorization": f"Bearer {_LOGIN_CACHE['tok']}"}
+    try:
+        endpoint = f"{API.rstrip('/')}/api/internal/worker-token"
+        with urllib.request.urlopen(endpoint, timeout=5) as resp:
+            tok = (json.loads(resp.read() or b"{}").get("token") or "").strip()
+        if tok:
+            _LOGIN_CACHE.update(tok=tok, exp=now + 540)
+            return {"Authorization": f"Bearer {tok}"}
+    except (OSError, ValueError):
+        pass
     pw = os.environ.get("AUTH_PASSWORD", "").strip()
     if not pw:
         return {}
@@ -110,7 +103,7 @@ def _login_for_password(pw: str) -> str:
     if _LOGIN_CACHE["tok"] and _LOGIN_CACHE["exp"] > now:
         return _LOGIN_CACHE["tok"]
     try:
-        body = json.dumps({"login": "worker@biotorf.local", "password": pw}).encode()
+        body = json.dumps({"user": "worker@biotorf.local", "password": pw}).encode()
         req = urllib.request.Request(
             f"{API.rstrip('/')}/auth/login", data=body, method="POST",
             headers={"Content-Type": "application/json"})
@@ -121,9 +114,9 @@ def _login_for_password(pw: str) -> str:
             _LOGIN_CACHE["exp"] = now + 540
             return tok
     except Exception as e:
-        print(f"[tg-worker] /auth/login не выполнен ({e}) — использую пароль как Bearer",
+        print(f"[tg-worker] /auth/login не выполнен ({type(e).__name__})",
               file=sys.stderr)
-    return pw  # legacy-режим: режим общего пароля принимает любой Bearer
+    return ""
 
 
 def _get_json_auth(path: str) -> dict:
@@ -153,13 +146,17 @@ def _get_json_auth(path: str) -> dict:
 
 
 def resolve_webhook_secret() -> str:
-    """Секрет вебхука Telegram — из TELEGRAM_WEBHOOK_SECRET в .env."""
-    return WEBHOOK_SECRET
+    if WEBHOOK_SECRET:
+        return WEBHOOK_SECRET
+    return _get_json_auth("/api/channels/telegram/secrets").get("secret") or ""
 
 
 def resolve_bot_token() -> str:
-    """Токен бота — из TELEGRAM_BOT_TOKEN в .env."""
-    return ENV_BOT_TOKEN
+    if ENV_BOT_TOKEN:
+        return ENV_BOT_TOKEN
+    accounts = _get_json_auth("/api/channels/telegram/accounts?with_token=true").get("items", [])
+    account = max((row for row in accounts if row.get("token")), key=lambda row: row.get("updatedAt") or "", default={})
+    return account.get("token") or ""
 
 
 def post_json(url: str, payload: dict, headers: dict | None = None) -> dict:
@@ -183,7 +180,7 @@ def send_to_user(chat_id, text: str, voice_path: str | None = None, bot_token: s
     BOT_TOKEN = bot_token or resolve_bot_token()
     try:
         if voice_path:
-            ok, msg_id, err = _send_voice_multipart(chat_id, voice_path)
+            ok, msg_id, err = _send_voice_multipart(chat_id, voice_path, BOT_TOKEN)
             if ok or "400" not in str(err or ""):
                 return ok, msg_id, err
             # Telegram отверг голосовое — fallback: обычный текст-заглушка
@@ -255,7 +252,7 @@ def resolve_media_path(media_id: str, api: str):
         return None
 
 
-def deliver_outbox(api: str):
+def deliver_outbox(api: str, bot_token: str | None = None):
     """Доставка исходящих ответов, созданных в ленте CRM (/api/comms/outbox).
 
     Бот может писать только пользователям, которые сами начали с ним диалог,
@@ -284,7 +281,7 @@ def deliver_outbox(api: str):
         media = payload.get("media") or {}
         if media.get("mediaId"):
             voice_path = resolve_media_path(media["mediaId"], api)
-        ok, msg_id, err = send_to_user(chat_id, item.get("text") or "", voice_path)
+        ok, msg_id, err = send_to_user(chat_id, item.get("text") or "", voice_path, bot_token)
         if voice_path:
             try:
                 os.unlink(voice_path)
@@ -321,10 +318,11 @@ def main():
     # выходил с кодом 1 в restart-шторм
     _wait_backend()
 
-    # токен бота и секрет вебхука — из файла .env (TELEGRAM_BOT_TOKEN,
-    # TELEGRAM_WEBHOOK_SECRET), как в ранней версии проекта
-    BOT_TOKEN = resolve_bot_token()
-    WEBHOOK_SECRET = resolve_webhook_secret()
+    try:
+        BOT_TOKEN = resolve_bot_token()
+        WEBHOOK_SECRET = resolve_webhook_secret()
+    except (OSError, ValueError) as exc:
+        sys.exit(f"[tg-worker] Не удалось прочитать конфигурацию Telegram: {type(exc).__name__}")
 
     if not BOT_TOKEN:
         sys.exit(
@@ -335,8 +333,6 @@ def main():
     if not WEBHOOK_SECRET:
         sys.exit("[tg-worker] ОШИБКА: не задан секрет вебхука — заполните "
                  "TELEGRAM_WEBHOOK_SECRET в .env")
-    print(f"[tg-worker] старт, токен выглядит как {BOT_TOKEN[:12]}...{BOT_TOKEN[-4:]}")
-
     # Сбрасываем webhook, если он был назначен ранее — иначе getUpdates вернёт ошибку 409.
     try:
         with urllib.request.urlopen(
@@ -354,11 +350,11 @@ def main():
             with urllib.request.urlopen(url, timeout=40) as resp:
                 data = json.loads(resp.read())
             for upd in data.get("result", []):
-                OFFSET = max(OFFSET, upd["update_id"] + 1)
                 res = post_json(
                     f"{args.api}/webhooks/telegram", upd,
                     headers={"X-Bot-Secret": WEBHOOK_SECRET},
                 )
+                OFFSET = max(OFFSET, upd["update_id"] + 1)
                 print(f"[tg-worker] update {upd['update_id']} -> {res}")
         except Exception as e:
             print(f"[tg-worker] error: {e}", file=sys.stderr)
@@ -366,7 +362,7 @@ def main():
         # раз в ~10 секунд проверяем очередь исходящих ответов из CRM
         if time.time() - last_outbox >= 10:
             last_outbox = time.time()
-            deliver_outbox(args.api)
+            deliver_outbox(args.api, BOT_TOKEN)
         if args.once:
             break
 

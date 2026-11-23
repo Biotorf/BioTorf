@@ -38,21 +38,22 @@ export function apiEnabled() {
   return apiState.online;
 }
 
-async function req(path, options = {}) {
+async function req(path, { signal, timeout = 8000, ...options } = {}) {
   // JWT авторизованного сотрудника (см. authClient); в DEMO-режиме пусто
   const { authHeaders } = await import('./authClient');
   const resp = await fetch(COMMS_API_URL + path, {
     ...options,
     headers: { 'Content-Type': 'application/json', ...authHeaders(), ...(options.headers || {}) },
-    signal: AbortSignal.timeout(5000),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout),
   });
   if (!resp.ok) {
     const raw = await resp.text();
     let detail;
     try { detail = JSON.parse(raw).detail; } catch { /* ответ прокси может быть не JSON */ }
     const message = typeof detail === 'string' ? detail : detail?.message;
-    const error = new Error(message && resp.status !== 401 && resp.status !== 403
-      ? message : `Comms API ${resp.status}: ${raw}`);
+    const error = new Error(resp.status === 401 ? 'Сеанс завершился. Войдите в CRM заново.'
+      : message || (resp.status === 403 ? 'У вашей роли нет доступа к этому действию.'
+        : `Сервер коммуникаций ответил с ошибкой ${resp.status}.`));
     error.status = resp.status;
     error.detail = detail;
     throw error;
@@ -62,19 +63,20 @@ async function req(path, options = {}) {
 }
 
 let healthPromise = null;
+let healthCheckedAt = 0;
 let healthTimer = null;
-export function checkApi() {
+export function checkApi({ force = false } = {}) {
+  if (healthPromise) return healthPromise;
+  if (!force && Date.now() - healthCheckedAt < 30000) return Promise.resolve(apiState.online);
   healthPromise ??= req('/health')
     .then(() => { apiState.online = true; return true; })
-    .catch(() => { apiState.online = false; return false; });
+    .catch(() => { apiState.online = false; return false; })
+    .finally(() => { healthPromise = null; healthCheckedAt = Date.now(); });
   // фоновый watchdog: если бэкенд (или telegram-worker) упал и снова поднялся,
   // лента должна «вернуться к жизни» без перезагрузки страницы — иначе
   // входящие Telegram-сообщения перестают приходить на сайт молча
   if (!healthTimer && typeof setInterval === 'function') {
-    healthTimer = setInterval(() => {
-      healthPromise = null;
-      checkApi();
-    }, 30000);
+    healthTimer = setInterval(() => checkApi({ force: true }), 30000);
   }
   return healthPromise;
 }
@@ -101,19 +103,22 @@ export const commsApi = {
   send: (id, text) => req(`/api/comms/${id}/send`, { method: 'POST', body: JSON.stringify({ text }) }),
   capabilities: () => req('/api/capabilities').then((c) => Object.assign(caps, c)),
   // ── мессенджер: диалоги-чаты ────────────────────────────────────────────
-  chats: (limit = 200, queue = 'all') => req(`/api/chat-list?limit=${limit}&queue=${encodeURIComponent(queue)}`),
-  chat: (peerKey) => req(`/api/chat/${encodeURIComponent(peerKey)}`),
+  chats: (limit = 200, queue = 'all', { compact, signal } = {}) => req('/api/chat-list?' + new URLSearchParams({
+    limit, queue, ...(compact ? { compact: true } : {}),
+  }), { signal }),
+  chat: (peerKey, { signal } = {}) => req(`/api/chat/${encodeURIComponent(peerKey)}`, { signal }),
   assignees: () => req('/api/chat-assignees'),
   updateWork: (peerKey, work) => req(`/api/chat/${encodeURIComponent(peerKey)}/work`, { method: 'PUT', body: JSON.stringify(work) }),
   createLead: (peerKey, revision) => req(`/api/chat/${encodeURIComponent(peerKey)}/lead`, { method: 'POST', body: JSON.stringify({ revision }) }),
   clientContext: (peerKey) => req(`/api/chat/${encodeURIComponent(peerKey)}/client`),
   saveClient: (peerKey, body) => req(`/api/chat/${encodeURIComponent(peerKey)}/client`, { method: 'POST', body: JSON.stringify(body) }),
-  markChatRead: (peerKey) => req(`/api/chat/${encodeURIComponent(peerKey)}/read`, { method: 'POST' }),
+  markChatRead: (peerKey, through = 0) => req(`/api/chat/${encodeURIComponent(peerKey)}/read` +
+    (through > 0 ? '?' + new URLSearchParams({ through }) : ''), { method: 'POST' }),
   saveDraft: (peerKey, draft) => req(`/api/chat/${encodeURIComponent(peerKey)}/draft`, { method: 'PUT', body: JSON.stringify({ draft }) }),
-  sendToChat: (peerKey, text, kind = null) => req(`/api/chat/${encodeURIComponent(peerKey)}/send`, { method: 'POST', body: JSON.stringify({ text, kind }) }),
+  sendToChat: (peerKey, text, kind = null) => req(`/api/chat/${encodeURIComponent(peerKey)}/send`, { method: 'POST', body: JSON.stringify({ text, kind }), timeout: 30000 }),
   whatsappTemplates: () => req('/api/comms/whatsapp/templates'),
   sendWhatsAppTemplate: (entry) => req('/api/comms/whatsapp/templates/send', {
-    method: 'POST', body: JSON.stringify(entry),
+    method: 'POST', body: JSON.stringify(entry), timeout: 30000,
   }),
-  startChat: (entry) => req('/api/comms/send-to', { method: 'POST', body: JSON.stringify(entry) }),
+  startChat: (entry) => req('/api/comms/send-to', { method: 'POST', body: JSON.stringify(entry), timeout: 30000 }),
 };

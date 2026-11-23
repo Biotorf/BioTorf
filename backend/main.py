@@ -35,7 +35,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
@@ -98,16 +98,50 @@ WHATSAPP_PHONE_NUMBER_ID = (_env("WHATSAPP_PHONE_NUMBER_ID") or "").strip()  # i
 
 
 def tg_token() -> str:
-    """Токен Telegram-бота: берётся из .env (TELEGRAM_BOT_TOKEN) — как в ранней
-    версии проекта. Привязка через вкладку «Каналы» удалена: она зависела от
-    внутреннего worker-token и порождала 401 у tg-воркера."""
-    return _env("TELEGRAM_BOT_TOKEN").strip()
+    return _env("TELEGRAM_BOT_TOKEN").strip() or channels.get_secret("telegram", "token") or ""
+
+
+def tg_webhook_secret() -> str:
+    return TELEGRAM_SECRET.strip() or channels.get_secret("telegram", "secret") or ""
 
 
 def wa_send_creds() -> tuple[str, str]:
-    """(token, phone_number_id) для WhatsApp Cloud API — из .env
-    (WHATSAPP_TOKEN / WHATSAPP_PHONE_NUMBER_ID), прежняя схема до «Каналов»."""
-    return WHATSAPP_SEND_TOKEN, WHATSAPP_PHONE_NUMBER_ID
+    if WHATSAPP_SEND_TOKEN and WHATSAPP_PHONE_NUMBER_ID:
+        return WHATSAPP_SEND_TOKEN, WHATSAPP_PHONE_NUMBER_ID
+    token, number = channels.wa_credentials()
+    return token or "", number or ""
+
+
+def channel_outbox_enabled(kind: str) -> bool:
+    return _env(f"CHANNEL_OUTBOX_ENABLED_{kind.upper()}").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def channel_outbound_url(kind: str) -> str:
+    return _env(f"CHANNEL_OUTBOUND_WEBHOOK_{kind.upper()}").strip()
+
+
+def channel_status(kind: str, enabled: bool) -> dict:
+    if not enabled:
+        return {"mode": "disabled", "inbound": False, "reason": "Канал отключён в настройках."}
+    if kind == "call":
+        return {"mode": "archive", "inbound": bool(TELEPHONY_TOKEN), "reason": "Здесь хранится журнал звонков."}
+    if kind == "telegram":
+        inbound = bool(tg_webhook_secret())
+        if tg_token():
+            return {"mode": "direct", "inbound": inbound, "verified": bool(TELEGRAM_BOT_INFO)}
+    elif kind == "whatsapp":
+        inbound = bool(WHATSAPP_APP_SECRET)
+        if all(wa_send_creds()):
+            return {"mode": "direct", "inbound": inbound, "verified": bool(WHATSAPP_INFO and WHATSAPP_INFO.get("ok"))}
+        return {"mode": "archive", "inbound": inbound, "reason": "Для отправки нужен подключённый номер WhatsApp Business."}
+    else:
+        inbound = bool(channels.get_secret(kind, "secret"))
+        if channel_outbound_url(kind):
+            return {"mode": "direct", "inbound": inbound}
+    if channel_outbox_enabled(kind):
+        return {"mode": "queue", "inbound": inbound, "reason": "Сообщения отправляет внешний коннектор из очереди."}
+    reason = "Канал принимает сообщения. Исходящая отправка пока не настроена." if inbound else "Исходящий коннектор пока не настроен."
+    return {"mode": "archive", "inbound": inbound, "reason": reason}
 
 CORS_ORIGINS = [o.strip() for o in _env(
     "CORS_ORIGINS",
@@ -220,6 +254,7 @@ def _schema_worker():
         if _ensure_schema():
             _schema_ready[0] = True
             log.info("[db] схема готова")
+            _refresh_channel_status()
             return
         time.sleep(delay)
         delay = min(delay * 2, 30.0)
@@ -371,6 +406,12 @@ async def _auth_middleware_inner(request: Request, call_next, path: str):
                     "detail": "Ваша роль изменена администратором — войдите заново"})
             request.state.user_name = live.get("name")
     request.state.role = payload["role"]
+    if request.state.user == "worker":
+        worker_reads = {"/api/channels/telegram/accounts", "/api/channels/telegram/secrets", "/api/comms/outbox"}
+        allowed = ((request.method == "GET" and (path in worker_reads or path.startswith("/api/media/"))) or
+                   (request.method == "POST" and re.fullmatch(r"/api/comms/[^/]+/delivered", path)))
+        if not allowed:
+            return JSONResponse(status_code=403, content={"detail": "Доступ ограничен задачами воркера Telegram"})
     # Свой профиль доступен ожидающему сотруднику после сверки с реестром.
     if path.startswith("/api/me/"):
         return await call_next(request)
@@ -537,8 +578,9 @@ def _startup_checks():
                           "отправляться НЕ будут", res.get("description"))
         except Exception as e:
             TELEGRAM_BOT_INFO = None
-            log.error("[telegram] ОШИБКА проверки токена (%s) — проверьте сеть и токен канала", e)
+            log.error("[telegram] ОШИБКА проверки токена (%s) — проверьте сеть и токен канала", type(e).__name__)
     else:
+        TELEGRAM_BOT_INFO = None
         log.info("[telegram] токен бота не задан — исходящие ответы в Telegram отключены. "
                  "Подключите аккаунт Telegram в «Настройки → Каналы» (или задайте "
                  "TELEGRAM_BOT_TOKEN в .env) и выполните docker compose up -d --force-recreate")
@@ -603,7 +645,8 @@ def startup():
                         "смените пароль = аннулируются все токены. Лучше задать отдельный AUTH_SECRET")
     else:
         log.info("[auth] DEV_MODE: авторизация API ослаблена (только локальная разработка!)")
-    threading.Thread(target=_startup_checks, daemon=True).start()
+    if not store.IS_POSTGRES:
+        _refresh_channel_status()
 
 
 def now_iso() -> str:
@@ -628,6 +671,21 @@ def auto_link(phone: str | None) -> str | None:
     Чтение файла кэшируется по mtime (farms_index), см. также index по @username.
     """
     return farms_index.link_by_phone(FARMS_FILE, phone)
+
+
+def crm_contact_match(handle: str | None, phone: str | None) -> str | None:
+    with closing(store.connect()) as conn:
+        return crm.auto_link_tg(conn, handle, phone)
+
+
+def record_comm_history(item: dict) -> None:
+    if not item.get("farmId"):
+        return
+    try:
+        with closing(store.connect()) as conn:
+            crm.register_comm(conn, item)
+    except Exception as exc:
+        log.warning("[crm] register_comm skip: %s", exc)
 
 
 # ── модели ───────────────────────────────────────────────────────────────────
@@ -701,8 +759,10 @@ def internal_worker_token(request: Request):
 
 
 @app.get("/api/comms/outbox")
-def outbox(kind: str = Query("telegram"), limit: int = Query(20, le=100)):
+def outbox(request: Request, kind: str = Query("telegram"), limit: int = Query(20, ge=1, le=100)):
     """Очередь неотправленных исходящих ответов (забирает telegram_worker)."""
+    if request.state.user == "worker" and kind != "telegram":
+        raise HTTPException(403, "Воркер обслуживает только Telegram")
     items = store.pending_outbox(kind, limit)
     return {"items": items, "count": len(items)}
 
@@ -714,33 +774,42 @@ def comms_events(since: int = Query(0, ge=0), limit: int = Query(100, le=500)):
     ссылка БД (PostgreSQL identity / SQLite rowid), не зависит от часов клиента.
     Используется фронтендом для надёжного получения входящих Telegram/WhatsApp
     без рассинхрона по ts."""
+    seq_col = "seq" if store.IS_POSTGRES else "rowid"
     with store.connect() as conn:
         rows = conn.execute(
-            "SELECT seq, * FROM comms WHERE seq > ? ORDER BY seq ASC LIMIT ?",
+            f"SELECT {seq_col} AS event_seq, * FROM comms WHERE {seq_col} > ? ORDER BY {seq_col} ASC LIMIT ?",
             (since, limit),
         ).fetchall()
     items = []
     for r in rows:
         d = store.to_dict(r)
-        d["seq"] = r["seq"]
+        d["seq"] = r["event_seq"]
         items.append(d)
-    return {"items": items, "maxSeq": rows[-1]["seq"] if rows else since}
+    return {"items": items, "maxSeq": rows[-1]["event_seq"] if rows else since}
 
 
 # ── мессенджер: чаты (диалоги с клиентами) ───────────────────────────────────
 @app.get("/api/chat-list")
 def chats_list(request: Request, limit: int = Query(200, ge=1, le=500),
-               queue: str = Query("all", pattern="^(all|active|closed|mine|overdue)$")):
+               queue: str = Query("all", pattern="^(all|active|closed|mine|overdue)$"),
+               compact: bool = False):
     """Список чатов как в Telegram: по одному диалогу на собеседника,
     последнее сообщение, счётчик непрочитанных, статус доставки ответа."""
-    return {"items": store.chats(limit, queue=queue, login=request.state.user)}
+    return {"items": store.chats(limit, queue=queue, login=request.state.user, compact=compact)}
 
 
 @app.get("/api/chat/{peer_key}")
 def chat_detail(peer_key: str):
     chats = store.chats(limit=1, peer_key=peer_key)
     if chats:
-        return chats[0]
+        chat = chats[0]
+        if "whatsapp" in chat["kinds"]:
+            target = store.chat_target(peer_key, "whatsapp")
+            phone = target.get("phone") if target else None
+            _, number_id = wa_send_creds()
+            chat["whatsappPhone"] = phone
+            chat["whatsappTextUntil"] = whatsapp_text_until(phone, number_id)
+        return chat
     raise HTTPException(404, "Чат не найден")
 
 
@@ -809,8 +878,8 @@ def chat_lead_create(peer_key: str, body: ChatWorkRevision, request: Request):
 
 
 @app.post("/api/chat/{peer_key}/read")
-def chat_read(peer_key: str):
-    return {"updated": store.mark_peer_read(peer_key)}
+def chat_read(peer_key: str, through: int | None = Query(None, ge=1)):
+    return {"updated": store.mark_peer_read(peer_key, through)}
 
 
 class DraftIn(BaseModel):
@@ -958,13 +1027,10 @@ def create_comm(body: CommIn):
     if item["kind"] == "call" and not item.get("status"):
         item["status"] = "Разговор"
     if not item.get("farmId"):
-        item["farmId"] = (auto_link(item.get("phone"))
-                          or crm.auto_link_tg(store.connect(), item.get("handle"), item.get("phone")))
+        handle = item.get("handle") if item["kind"] == "telegram" else None
+        item["farmId"] = auto_link(item.get("phone")) or crm_contact_match(handle, item.get("phone"))
     saved = store.insert(item)
-    try:
-        crm.register_comm(store.connect(), saved)
-    except Exception as e:
-        log.warning("[crm] register_comm skip: %s", e)
+    record_comm_history(saved)
     return saved
 
 
@@ -1030,7 +1096,7 @@ def api_channel_secrets(kind: str, request: Request):
         raise HTTPException(404, "Канал не найден")
     if getattr(request.state, "user", "") != "worker":
         raise HTTPException(403, "Доступно только сервисному воркеру")
-    return {"secret": channels.get_secret(kind, field="secret") or ""}
+    return {"secret": tg_webhook_secret() if kind == "telegram" else channels.get_secret(kind, field="secret") or ""}
 
 
 @app.post("/api/channels/{kind}/accounts", status_code=201)
@@ -1039,14 +1105,13 @@ def api_channel_connect(kind: str, body: dict, request: Request):
         raise HTTPException(403, "Подключать аккаунты каналов может только генеральный директор")
     try:
         acc = channels.connect_account(kind, body, who=_who(request))
+    except FileExistsError as e:
+        raise HTTPException(409, str(e))
     except ValueError as e:
         raise HTTPException(422, str(e))
     except KeyError:
         raise HTTPException(404, "Канал не найден. Добавьте его в списке каналов.")
-    # телеграм: проверить токен живым запросом getMe (graceful — если сети нет)
-    if kind == "telegram" and acc.get("tokenMask"):
-        threading.Thread(target=_verify_tg_account, args=(body.get("token", ""),), daemon=True).start()
-    elif kind == "whatsapp":
+    if kind in {"telegram", "whatsapp"}:
         _refresh_channel_status()
     return acc
 
@@ -1070,20 +1135,6 @@ def api_channel_account_delete(account_id: str):
     _refresh_channel_status()
 
 
-def _verify_tg_account(token: str):
-    global TELEGRAM_BOT_INFO
-    try:
-        res = tg_api("getMe", {}, token_override=token)
-        if res.get("ok"):
-            TELEGRAM_BOT_INFO = res["result"]
-            log.info("[channels] telegram-аккаунт @%s подтверждён — исходящая отправка активна",
-                     res["result"].get("username"))
-        else:
-            log.warning("[channels] Telegram отверг токен аккаунта: %s", res.get("description"))
-    except Exception as e:
-        log.warning("[channels] проверка telegram-токена: %s", e)
-
-
 # generic входящий вебхук для любого канала (instagram/vk/avito/… через n8n/Zapier/скрипт)
 @app.post("/webhooks/channel/{kind}")
 async def webhook_channel(kind: str, request: Request,
@@ -1093,34 +1144,43 @@ async def webhook_channel(kind: str, request: Request,
     phone?, text, ts?, externalId?, payload?}. Секрет — заголовок X-Webhook-Secret."""
     if not channels.valid_kind(kind):
         raise HTTPException(404, "Канал не найден или отключён. Подключите его в Настройках.")
+    if kind in {"telegram", "whatsapp", "call"}:
+        raise HTTPException(404, "У канала есть собственный адрес для входящих сообщений.")
     expected = channels.get_secret(kind, field="secret") or ""
     got = x_webhook_secret or secret or ""
-    if expected and not hmac.compare_digest(expected, got):
-        raise HTTPException(401, "Неверный секрет вебхука")
-    body = await request.json()
+    if expected or not auth.DEV_MODE:
+        check_secret(got, expected, "для канала")
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        raise HTTPException(422, "Ожидается JSON-объект") from exc
     if not isinstance(body, dict):
         raise HTTPException(422, "Ожидается JSON-объект")
+    direction = body.get("dir", "in")
+    if direction not in ("in", "out"):
+        raise HTTPException(422, "Направление сообщения должно быть in или out")
+    text = body.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise HTTPException(422, "Поле text обязательно")
+    if any(body.get(field) is not None and not isinstance(body[field], str)
+           for field in ("contact", "phone", "handle", "ts", "externalId")):
+        raise HTTPException(422, "Контакт, адрес, дата и идентификатор должны быть строками")
+    if body.get("payload") is not None and not isinstance(body["payload"], dict):
+        raise HTTPException(422, "Поле payload должно быть JSON-объектом")
     item = {
-        "kind": body.get("kind") or kind,
-        "dir": body.get("dir", "in"),
+        "kind": kind,
+        "dir": direction,
         "contact": body.get("contact"), "handle": body.get("handle"),
-        "phone": body.get("phone"), "text": body.get("text") or "",
+        "phone": body.get("phone"), "text": text.strip(),
         "ts": body.get("ts") or now_iso(),
         "externalId": body.get("externalId"),
         "source": f"webhook:{kind}",
         "payload": body.get("payload"),
     }
-    if not item["text"]:
-        raise HTTPException(422, "Поле text обязательно")
     item["id"] = new_id()
-    if not item.get("farmId"):
-        item["farmId"] = (auto_link(item.get("phone"))
-                          or crm.auto_link_tg(store.connect(), item.get("handle"), item.get("phone")))
+    item["farmId"] = auto_link(item.get("phone")) or crm_contact_match(None, item.get("phone"))
     saved = store.insert(item)
-    try:
-        crm.register_comm(store.connect(), saved)
-    except Exception as e:
-        log.warning("[crm] register_comm skip: %s", e)
+    record_comm_history(saved)
     return {"ok": True, "id": saved["id"]}
 
 
@@ -1153,11 +1213,7 @@ def link_comm(comm_id: str, farmId: str = Query(...)):
                 raise HTTPException(409, "Весь диалог уже связан с другим клиентом")
         tx.execute("UPDATE comms SET farm_id=? WHERE id=?", (farmId, comm_id))
         item["farmId"] = farmId
-    try:
-        with store.connect() as conn:
-            crm.register_comm(conn, item)
-    except Exception as e:
-        log.warning("[crm] register_comm skip: %s", e)
+    record_comm_history(item)
     return item
 
 
@@ -1205,7 +1261,8 @@ def new_log_id(kind: str) -> str:
 
 @app.get("/api/logistics")
 def list_logistics(kind: str | None = Query(None, pattern="^(supply|dispatch)$")):
-    return {"items": logistics.list_docs(store.connect(), kind)}
+    with closing(store.connect()) as conn:
+        return {"items": logistics.list_docs(conn, kind)}
 
 
 @app.post("/api/logistics", status_code=201)
@@ -1215,7 +1272,8 @@ def create_logistics(body: LogisticsIn):
         prefix = "SUP" if body.kind == "supply" else "DSP"
         doc_id = prefix + "-" + body.clientId.removeprefix("LOC-")
     try:
-        return logistics.upsert_doc(store.connect(), body.model_dump(), doc_id, create_only=True)
+        with closing(store.connect()) as conn:
+            return logistics.upsert_doc(conn, body.model_dump(), doc_id, create_only=True)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
 
@@ -1236,8 +1294,9 @@ def update_logistics(doc_id: str, body: LogisticsIn):
 
 @app.delete("/api/logistics/{doc_id}", status_code=204)
 def delete_logistics(doc_id: str):
-    if not logistics.delete_doc(store.connect(), doc_id):
-        raise HTTPException(404, "Документ не найден")
+    with closing(store.connect()) as conn:
+        if not logistics.delete_doc(conn, doc_id):
+            raise HTTPException(404, "Документ не найден")
 
 
 @app.get("/api/inventory")
@@ -1610,6 +1669,29 @@ def send_whatsapp(item: dict, text: str) -> dict:
     return {"sent": True, "via": "whatsapp", "messageId": msg_id}
 
 
+def whatsapp_text_until(phone: str | None, number_id: str) -> str | None:
+    number = digits(phone or "")
+    if not number:
+        return None
+    with closing(store.connect()) as conn:
+        records = conn.execute(
+            "SELECT ts, payload FROM comms WHERE kind='whatsapp' AND dir='in' "
+            "AND source='webhook:whatsapp' AND phone IN (?,?) ORDER BY ts DESC LIMIT 20",
+            (number, "+" + number),
+        ).fetchall()
+    for record in records:
+        try:
+            payload = json.loads(record["payload"] or "{}")
+            if payload.get("phoneNumberId") and payload["phoneNumberId"] != number_id:
+                continue
+            stamp = datetime.fromisoformat(record["ts"].replace("Z", "+00:00"))
+            if stamp.tzinfo:
+                return (stamp + timedelta(hours=24)).isoformat()
+        except (AttributeError, TypeError, ValueError):
+            continue
+    return None
+
+
 def send_generic_outbox(kind: str, text: str, item: dict) -> tuple[bool | None, str | None]:
     """Отправка в каналы без «живого» коннектора на сервере (instagram, facebook,
     vk, ok, avito, youdo, email …).
@@ -1621,7 +1703,7 @@ def send_generic_outbox(kind: str, text: str, item: dict) -> tuple[bool | None, 
     phone, handle, payload} на этот URL — коннектор не нужен.
 
     Возвращает признак отправки, None при постановке в очередь и текст ошибки."""
-    url = (os.environ.get(f"CHANNEL_OUTBOUND_WEBHOOK_{kind.upper()}") or "").strip()
+    url = channel_outbound_url(kind)
     if not url:
         return None, None  # заберёт внешний воркер
     payload = {
@@ -1664,6 +1746,14 @@ def save_outgoing(item: dict, text: str, reply_to: str | None = None, media_file
     if not text or len(text) > 4000:
         raise HTTPException(422, "Введите сообщение от 1 до 4000 символов")
     kind = item["kind"]
+    status = channel_status(kind, enabled=channels.valid_kind(kind))
+    if status["mode"] in {"archive", "disabled"}:
+        raise HTTPException(409, status["reason"])
+    if kind == "whatsapp":
+        _, number_id = wa_send_creds()
+        until = whatsapp_text_until(item.get("phone"), number_id)
+        if not until or datetime.fromisoformat(until) <= datetime.now(timezone.utc):
+            raise HTTPException(422, "24 часа с последнего входящего сообщения WhatsApp истекли. Выберите одобренный шаблон.")
     payload = dict(item.get("payload") or {})
     payload.pop("sendError", None)
     payload.pop("tgMessageId", None)
@@ -1678,7 +1768,7 @@ def save_outgoing(item: dict, text: str, reply_to: str | None = None, media_file
         if kind == "telegram":
             if not (payload.get("chatId") or payload.get("userIndex")):
                 raise HTTPException(422, "Клиент должен начать диалог с ботом Telegram")
-            if tg_token() or media_file:
+            if status["mode"] == "direct":
                 sent = send_telegram(item, text, media_file=media_file)
         elif kind == "whatsapp":
             sent = send_whatsapp(item, text)
@@ -1733,14 +1823,24 @@ class DeliveredIn(BaseModel):
 
 
 @app.post("/api/comms/{comm_id}/delivered")
-def mark_delivered(comm_id: str, body: DeliveredIn):
-    """Воркер подтверждает доставку ответа клиенту."""
-    fields = {"status": "Доставлено" if body.ok else "Ошибка доставки"}
+def mark_delivered(comm_id: str, body: DeliveredIn, request: Request):
+    """Получить результат отправки сообщения из очереди коннектора."""
     item = store.get(comm_id)
-    if item and (body.messageId or body.error):
+    if not item:
+        raise HTTPException(404, "Коммуникация не найдена")
+    if request.state.user == "worker" and item["kind"] != "telegram":
+        raise HTTPException(403, "Воркер обслуживает только Telegram")
+    if item["dir"] != "out" or item["kind"] == "call":
+        raise HTTPException(422, "Статус доставки относится к исходящему сообщению")
+    if item["status"] != "В очереди":
+        return item
+    success = "Отправлено" if item["kind"] == "telegram" else "Доставлено"
+    fields = {"status": success if body.ok else "Ошибка доставки"}
+    if body.messageId or body.error:
         payload = dict(item.get("payload") or {})
         if body.messageId:
-            payload["tgMessageId"] = body.messageId
+            key = "tgMessageId" if item["kind"] == "telegram" else "providerMessageId"
+            payload[key] = body.messageId
         if body.error:
             payload["sendError"] = body.error[:200]
         fields["payload"] = payload
@@ -1783,7 +1883,7 @@ def send_to(body: dict):
     return save_outgoing({
         "kind": kind,
         "farmId": body.get("farmId") or auto_link(phone)
-                  or crm.auto_link_tg(store.connect(), handle if kind == "telegram" else None, phone),
+                  or crm_contact_match(handle if kind == "telegram" else None, phone),
         "contact": body.get("contact"),
         "phone": phone,
         "handle": handle,
@@ -1802,7 +1902,7 @@ def _wa_approved_templates() -> list[dict]:
 @app.get("/api/comms/whatsapp/templates")
 def wa_approved_templates():
     token, phone_number_id = wa_send_creds()
-    return {"items": _wa_approved_templates() if token and phone_number_id else []}
+    return {"items": _wa_approved_templates() if token and phone_number_id and channels.valid_kind("whatsapp") else []}
 
 
 class WhatsAppTemplateIn(BaseModel):
@@ -1816,6 +1916,8 @@ class WhatsAppTemplateIn(BaseModel):
 @app.post("/api/comms/whatsapp/templates/send")
 def wa_send_template(body: WhatsAppTemplateIn):
     """Отправка по одному получателю из списка шаблонов, одобренных в Meta."""
+    if not channels.valid_kind("whatsapp"):
+        raise HTTPException(409, "Канал WhatsApp отключён в настройках")
     template = next((entry for entry in _wa_approved_templates()
                      if (entry["name"], entry["language"]) == (body.name, body.language)), None)
     if not template:
@@ -1868,14 +1970,21 @@ def wa_send_template(body: WhatsAppTemplateIn):
 
 
 @app.get("/api/capabilities")
-def capabilities():
+def capabilities(request: Request):
     """Что умеет текущая конфигурация бэкенда (фронт показывает/скрывает кнопки)."""
+    statuses = {entry["id"]: channel_status(entry["id"], entry["enabled"])
+                for entry in channels.list_channels()}
+    telegram = statuses.get("telegram", {})
+    whatsapp = statuses.get("whatsapp", {})
     return {
-        "telegramSend": bool(tg_token() and TELEGRAM_BOT_INFO),
+        "canSend": auth.can_write(request.state.role, "comms"),
+        "channelStatuses": statuses,
+        "telegramSend": telegram.get("mode") in {"direct", "queue"},
         "telegramBot": (TELEGRAM_BOT_INFO or {}).get("username"),
-        "whatsappSend": bool(WHATSAPP_INFO and WHATSAPP_INFO.get("ok")),
+        "whatsappSend": whatsapp.get("mode") == "direct",
+        "whatsappTemplates": whatsapp.get("mode") == "direct" and bool(_wa_approved_templates()),
         "whatsappPhone": (WHATSAPP_INFO or {}).get("phone"),
-        "whatsappError": None if (WHATSAPP_INFO or {}).get("ok") else (WHATSAPP_INFO or {}).get("error"),
+        "whatsappError": whatsapp.get("reason"),
     }
 
 
@@ -2103,19 +2212,26 @@ async def telegram_webhook(
     # секрет приходит либо от нашего воркера (заголовок X-Bot-Secret),
     # либо напрямую от Telegram (заголовок X-Telegram-Bot-Api-Secret-Token,
     # заданный через setWebhook) — принимаем любой из них.
-    # Ожидаемый секрет: TELEGRAM_WEBHOOK_SECRET из .env (прежняя схема до
-    # вкладки «Каналы»; привязка секретов к CRM-аккаунтам удалена).
-    provided = x_bot_secret or request.headers.get("x-telegram-bot-api-secret-token") or secret
-    expected = TELEGRAM_SECRET
-    check_secret(provided, expected, "TELEGRAM_WEBHOOK_SECRET")
-    payload = await request.json()
+    if not channels.valid_kind("telegram"):
+        raise HTTPException(404, "Канал Telegram отключён")
+    provided = x_bot_secret or request.headers.get("x-telegram-bot-api-secret-token") or x_webhook_secret or secret
+    check_secret(provided, tg_webhook_secret(), "TELEGRAM_WEBHOOK_SECRET")
+    try:
+        payload = await request.json()
+    except ValueError as exc:
+        raise HTTPException(400, "Неверный JSON вебхука") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "Ожидается JSON-объект")
     msg = payload.get("message") or payload.get("channel_post")
-    if not msg:
+    if not isinstance(msg, dict):
         return {"ignored": True, "reason": "не message-событие"}
 
     chat = msg.get("chat") or {}
     frm = msg.get("from") or {}
-    external_id = str(payload.get("update_id") or msg.get("message_id"))
+    update_id = payload.get("update_id")
+    external_id = str(update_id) if update_id is not None else (
+        f"{chat['id']}:{msg['message_id']}" if chat.get("id") and msg.get("message_id") else None
+    )
 
     # голосовые/аудио: скачиваем файл сразу при приёме, чтобы его можно было
     # прослушать в чате CRM (Bot API отдаёт file_path только на время)
@@ -2148,14 +2264,11 @@ async def telegram_webhook(
         },
     }
     item["farmId"] = (auto_link(item["phone"]) or auto_link_handle(item["handle"])
-                      or crm.auto_link_tg(store.connect(), item["handle"], item["phone"]))
+                      or crm_contact_match(item["handle"], item["phone"]))
     saved = store.insert(item)
     # сквозная интеграция: входящее сообщение попадает в карточку клиента и
     # в историю связанного сквозного процесса (руководство §6 «История»)
-    try:
-        crm.register_comm(store.connect(), saved)
-    except Exception as e:
-        log.warning("[crm] register_comm skip: %s", e)
+    record_comm_history(saved)
     return saved
 
 
@@ -2169,10 +2282,25 @@ def auto_link_handle(handle: str | None) -> str | None:
 
 
 # ── вебхук: WhatsApp Business Cloud API ──────────────────────────────────────
+def whatsapp_message_text(message: dict) -> str:
+    message_type = message.get("type")
+    content = message.get(message_type) if message_type else message.get("text")
+    details = content if isinstance(content, dict) else {}
+    if message_type == "interactive":
+        return next((reply["title"] for key in ("button_reply", "list_reply")
+                     if isinstance(reply := details.get(key), dict) and reply.get("title")), "Интерактивный ответ")
+    labels = {"image": "Фото", "audio": "Аудио", "video": "Видео", "document": "Документ",
+              "location": "Геолокация", "contacts": "Контакт", "sticker": "Стикер",
+              "reaction": "Реакция", "order": "Заказ"}
+    return details.get("body") or details.get("text") or details.get("caption") or labels.get(message_type, "Сообщение WhatsApp")
+
+
 @app.post("/webhooks/whatsapp")
 async def whatsapp_webhook(request: Request, x_hub_signature_256: str | None = Header(None)):
     raw = await request.body()
     verify_whatsapp_signature(raw, x_hub_signature_256)
+    if not channels.valid_kind("whatsapp"):
+        raise HTTPException(404, "Канал WhatsApp отключён")
     try:
         payload = json.loads(raw)
     except (ValueError, UnicodeError) as exc:
@@ -2180,43 +2308,46 @@ async def whatsapp_webhook(request: Request, x_hub_signature_256: str | None = H
     if not isinstance(payload, dict):
         raise HTTPException(400, "Ожидается JSON-объект")
 
-    created, statuses = [], 0
+    _, expected_phone_id = wa_send_creds()
+    created, statuses = 0, 0
     for entry in payload.get("entry", []):
         for change in entry.get("changes", []):
             value = change.get("value", {})
             metadata = value.get("metadata") or {}
             business_phone = metadata.get("display_phone_number", "")
-            _, expected_phone_id = wa_send_creds()
-            if not expected_phone_id or str(metadata.get("phone_number_id") or "") == expected_phone_id:
-                for event in value.get("statuses") or []:
-                    if isinstance(event, dict) and whatsapp_templates.record_status(event):
-                        statuses += 1
+            phone_id = str(metadata.get("phone_number_id") or "")
+            if expected_phone_id and phone_id != expected_phone_id:
+                continue
+            for event in value.get("statuses") or []:
+                if isinstance(event, dict) and whatsapp_templates.record_status(event):
+                    statuses += 1
+            contacts = {str(contact.get("wa_id")): contact for contact in value.get("contacts") or [] if isinstance(contact, dict)}
             for msg in value.get("messages") or []:
-                text = (msg.get("text") or {}).get("body") or \
-                    (msg.get("interactive") or {}).get("button_reply", {}).get("title") or ""
-                contacts = value.get("contacts") or [{}]
+                if not isinstance(msg, dict) or not msg.get("id"):
+                    continue
+                number = digits(str(msg.get("from") or ""))
+                if not re.fullmatch(r"[1-9][0-9]{7,14}", number):
+                    continue
+                contact = contacts.get(number, {})
                 item = {
                     "id": new_id(),
                     "kind": "whatsapp",
                     "dir": "in",
-                    "phone": "+" + digits(msg.get("from", "")),
-                    "contact": contacts[0].get("profile", {}).get("name") or contacts[0].get("wa_id"),
+                    "phone": "+" + number,
+                    "contact": (contact.get("profile") or {}).get("name"),
                     "ts": datetime.fromtimestamp(int(msg.get("timestamp", time.time())), timezone.utc).isoformat(timespec="seconds"),
-                    "text": text,
+                    "text": whatsapp_message_text(msg),
                     "read": False,
                     "source": "webhook:whatsapp",
                     "externalId": msg.get("id"),
-                    "payload": {"to": business_phone},
+                    "payload": {"to": business_phone, "phoneNumberId": phone_id},
                 }
-                item["farmId"] = auto_link(item["phone"]) \
-                    or crm.auto_link_tg(store.connect(), None, item["phone"])
+                item["farmId"] = auto_link(item["phone"]) or crm_contact_match(None, item["phone"])
                 saved = store.insert(item)
-                try:
-                    crm.register_comm(store.connect(), saved)
-                except Exception as e:
-                    log.warning("[crm] register_comm skip: %s", e)
-                created.append(saved)
-    return {"created": len(created), "statuses": statuses}
+                if saved["id"] == item["id"]:
+                    created += 1
+                record_comm_history(saved)
+    return {"created": created, "statuses": statuses}
 
 
 # GET-верификация вебхука при настройке в Meta Developers
@@ -2271,13 +2402,9 @@ async def telephony_webhook(
     created = []
     for c in calls:
         item = normalize_cdr(c)
-        item["farmId"] = auto_link(item["phone"]) \
-            or crm.auto_link_tg(store.connect(), None, item["phone"])
+        item["farmId"] = auto_link(item["phone"]) or crm_contact_match(None, item["phone"])
         saved = store.insert(item)
-        try:
-            crm.register_comm(store.connect(), saved)
-        except Exception as e:
-            log.warning("[crm] register_comm skip: %s", e)
+        record_comm_history(saved)
         created.append(saved)
     return {"created": len(created)}
 

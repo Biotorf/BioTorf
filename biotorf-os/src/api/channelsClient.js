@@ -10,7 +10,10 @@ async function req(path, options = {}) {
     headers: { 'Content-Type': 'application/json', ...authHeaders(), ...(options.headers || {}) },
     signal: AbortSignal.timeout(8000),
   });
-  if (!resp.ok) throw new Error(`Channels API ${resp.status}: ${await resp.text()}`);
+  if (!resp.ok) {
+    const data = await resp.json().catch(() => null);
+    throw new Error(typeof data?.detail === 'string' ? data.detail : `Не удалось обновить настройки каналов (HTTP ${resp.status}).`);
+  }
   if (resp.status === 204) return null;
   return resp.json();
 }

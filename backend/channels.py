@@ -315,6 +315,10 @@ def connect_account(kind: str, data: dict, who: str = "") -> dict:
     secret = (data.get("secret") or "").strip()
     if kind == "telegram" and not re.match(r"^\d{6,12}:[\w-]{20,}$", token or ""):
         raise ValueError("Формат токена Telegram: 1234567:AA...")
+    if kind == "whatsapp" and (not token or not any(re.fullmatch(r"[0-9]{6,20}", field) for field in (login, secret))):
+        raise ValueError("Укажите токен WhatsApp Business и числовой Phone Number ID")
+    if kind == "telegram" and secret and not re.fullmatch(r"[A-Za-z0-9_-]{1,256}", secret):
+        raise ValueError("Секрет Telegram должен содержать латинские буквы, цифры, дефис или подчёркивание")
     if kind == "telegram" and not secret:
         # секрет вебхука обязателен: воркер передаёт его в X-Bot-Secret, а
         # /webhooks/telegram сверяет с полем secret аккаунта. Без секрета все
@@ -323,13 +327,15 @@ def connect_account(kind: str, data: dict, who: str = "") -> dict:
     aid = secrets.token_hex(8)
     now = _now()
     with _conn() as conn:
-        conn.execute(
+        cur = conn.execute(
             "INSERT INTO channel_accounts (id,channel,login,display_name,farm_id,token,secret,status,created_by,created_at,updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (channel,login) DO NOTHING",
             (aid, kind, login, data.get("displayName") or login or kind,
              data.get("farmId"), _enc(token), _enc(secret),
              data.get("status", "active"), who, now, now),
         )
+        if not cur.rowcount:
+            raise FileExistsError("Этот аккаунт уже подключён к каналу")
         r = conn.execute("SELECT * FROM channel_accounts WHERE id=?", (aid,)).fetchone()
     return _mask(r)
 
@@ -410,8 +416,8 @@ def get_secret(kind: str, field: str = "token") -> str | None:
         try:
             import secrets_store
             return secrets_store.decrypt(r["v"])
-        except Exception:
-            return r["v"]
+        except RuntimeError:
+            return _env_secret(kind, field)
     return _env_secret(kind, field)
 
 
@@ -421,23 +427,18 @@ def wa_credentials() -> tuple[str | None, str | None]:
     Приоритет — аккаунт канала «whatsapp», подключённый из UI («Настройки →
     Каналы»): токен в поле token, phone_number_id — в login либо в secret.
     Если аккаунт не подключён — None (вызывающий может использовать env-фолбэк)."""
-    token = get_secret("whatsapp", "token")
-    if not token:
-        return None, None
-    pid = None
     with _conn() as conn:
         r = conn.execute(
-            "SELECT login, secret FROM channel_accounts WHERE channel='whatsapp' "
+            "SELECT login, token, secret FROM channel_accounts WHERE channel='whatsapp' "
             "AND status='active' AND token IS NOT NULL ORDER BY updated_at DESC LIMIT 1"
         ).fetchone()
-    if r:
+    if not r:
+        return None, None
+    import secrets_store
+    try:
+        token = (secrets_store.decrypt(r["token"]) or "").strip()
         login = (r["login"] or "").strip()
-        if re.fullmatch(r"\d{6,20}", login):
-            pid = login
-        elif r["secret"]:
-            try:
-                import secrets_store
-                pid = (secrets_store.decrypt(r["secret"]) or "").strip() or None
-            except Exception:
-                pid = (r["secret"] or "").strip() or None
-    return token, pid
+        number = login if re.fullmatch(r"[0-9]{6,20}", login) else (secrets_store.decrypt(r["secret"]) or "").strip()
+    except RuntimeError:
+        return None, None
+    return token or None, number if re.fullmatch(r"[0-9]{6,20}", number) else None
