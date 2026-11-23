@@ -7,7 +7,7 @@ import CrmDataTable from '@/components/CrmDataTable.vue';
 // Таблицы в стиле Excel: итоговые карточки, поиск, фильтр по статусу,
 // редактирование позиций в модалке, экспорт всего реестра в .xls/.csv,
 // печать реестра и создание актов приёма-передачи под каждый документ.
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
 import { useFormatters } from '@/composables/useFormatters';
@@ -23,6 +23,7 @@ const editRec = ref(null);
 function editShipment(record) { editRec.value = record; rowOpen.value = true; }
 
 const db = useDbStore();
+const trainingActive = inject('trainingActive', ref(false));
 const ui = useUiStore();
 const { canEdit, canEditCollection } = usePermissions();
 const { money, num } = useFormatters();
@@ -37,7 +38,7 @@ const syncing = ref(false);
 
 onMounted(async () => {
   syncing.value = true;
-  await db.syncLogistics().catch(() => false);
+  await db.syncLogistics({ uploadPending: !trainingActive.value }).catch(() => false);
   syncing.value = false;
 });
 
@@ -134,13 +135,13 @@ function canPostReceipt(doc) {
   <div>
     <div class="pagehead">
       <div>
-        <h1>Поставки и отгрузки</h1>
+        <h1 data-tour="supply-view">Поставки и отгрузки</h1>
         <ManualLink />
         <div class="subtitle">Приёмка порошка и доставка готовой продукции.</div>
       <BackendBadge collection="shipments" />
       </div>
       <div v-if="canEdit('shipments')" class="actionbar">
-        <button class="btn primary" @click="openEditor()">{{ tab === 'supply' ? 'Новая поставка' : 'Новая отгрузка' }}</button>
+        <button class="btn primary" data-tour="supply-create" @click="openEditor()">{{ tab === 'supply' ? 'Новая поставка' : 'Новая отгрузка' }}</button>
       </div>
     </div>
 

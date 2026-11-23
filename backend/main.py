@@ -1969,6 +1969,8 @@ def health():
     status = 200 if db_ok else 503
     return JSONResponse(status_code=status, content={
         "ok": db_ok, "service": "biotorf-comms", "version": app.version,
+        "revision": os.environ.get("RENDER_GIT_COMMIT") or None,
+        "features": {"inventory": True, "chatClientCapture": True, "automationRules": True},
         "db": ("postgres: " + ("up" if db_ok else "DOWN — " + db_msg))
               if store.IS_POSTGRES else "sqlite",
         "ts": now_iso(),

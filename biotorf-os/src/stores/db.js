@@ -257,13 +257,17 @@ export const useDbStore = defineStore('db', {
     // Как и с коммуникациями: если бэкенд доступен — документы общие (SQLite),
     // иначе живут локально в localStorage. Локальные несохранённые на сервер
     // документы догоняются синхронизацией при возможности.
-    async syncLogistics() {
+    async syncLogistics({ uploadPending = true } = {}) {
       this.data.logistics ??= [];
       const remote = await logisticsApi.list();
       if (!remote) return false;               // бэкенд недоступен — остаёмся локальными
       const synced = [...remote];
       for (const document of this.data.logistics) {
         if (!String(document.id).startsWith('LOC-')) continue;
+        if (!uploadPending) {
+          synced.push(document);
+          continue;
+        }
         try {
           const saved = await logisticsApi.create({ ...document, clientId: document.id });
           if (!synced.some((entry) => entry.id === saved.id)) synced.push(saved);

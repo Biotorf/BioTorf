@@ -245,12 +245,12 @@ function skuChanged(line) {
       </div>
       <div class="actionbar">
         <BackendBadge collection="journeys" />
-        <button v-if="canWork" type="button" class="btn primary" @click="openEditor('lead')">＋ Новая заявка</button>
+        <button v-if="canWork" type="button" class="btn primary" data-tour="sale-create" @click="openEditor('lead')">＋ Новая заявка</button>
       </div>
     </header>
 
     <div class="sales-grid">
-      <aside class="panel sales-inbox" aria-label="Заявки">
+      <aside class="panel sales-inbox" data-tour="sale-list" aria-label="Заявки">
         <div class="rail-title"><h2>Заявки</h2><span class="mini">{{ journeys.length }}</span></div>
         <input v-model="ui.search" class="input" type="search" placeholder="Имя или компания" aria-label="Поиск по заявкам" />
         <div v-if="journeys.length" class="request-list">
@@ -284,7 +284,7 @@ function skuChanged(line) {
             </li>
           </ol>
 
-          <section v-if="!editor" class="next-panel" aria-label="Следующий шаг">
+          <section v-if="!editor" class="next-panel" data-tour="sale-next" aria-label="Следующий шаг">
             <div>
               <h3>{{ next.title }}</h3>
               <p>{{ next.text }}</p>

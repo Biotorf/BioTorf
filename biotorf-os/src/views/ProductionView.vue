@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue';
+import { computed, inject, onMounted, ref } from 'vue';
 import { useDbStore } from '@/stores/db';
 import { usePermissions } from '@/composables/usePermissions';
 import { useFormatters } from '@/composables/useFormatters';
@@ -10,13 +10,14 @@ import CrmRowModal from '@/components/CrmRowModal.vue';
 import StatusPill from '@/components/ui/StatusPill.vue';
 
 const db = useDbStore();
+const trainingActive = inject('trainingActive', ref(false));
 const { canEditCollection } = usePermissions();
 const { day } = useFormatters();
 const rowOpen = ref(null);
 const receiptError = ref('');
 onMounted(async () => {
   try {
-    await db.syncLogistics();
+    await db.syncLogistics({ uploadPending: !trainingActive.value });
   } catch {
     receiptError.value = 'Не удалось обновить данные приёмки сырья.';
   }
@@ -35,10 +36,10 @@ function canPost(row) {
   <section>
     <div class="pagehead">
       <div>
-        <h1>Производство</h1>
+        <h1 data-tour="production-view">Производство</h1>
         <p class="subtitle">Планируйте выпуск по заказам и фиксируйте расход порошка и фактический выпуск.</p>
       </div>
-      <button v-if="canEditCollection('production')" class="btn primary" @click="rowOpen = { record: null }">Новая партия</button>
+      <button v-if="canEditCollection('production')" class="btn primary" data-tour="production-create" @click="rowOpen = { record: null }">Новая партия</button>
     </div>
     <p v-if="receiptError" class="danger-text" role="alert">{{ receiptError }}</p>
     <div class="toolbar">

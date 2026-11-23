@@ -569,7 +569,7 @@ onBeforeUnmount(() => {
 
     <div class="messenger">
         <aside class="chat-side">
-          <div class="chat-side-head">
+          <div class="chat-side-head" data-tour="inbox-queue">
             <span class="panel-title">Чаты</span>
             <button v-if="online" class="btn slim primary" @click="newChatOpen = !newChatOpen; templateMode = false">＋ Диалог</button>
           </div>

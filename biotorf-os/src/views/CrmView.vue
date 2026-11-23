@@ -162,7 +162,7 @@ async function createClient() {
         </div>
         <div class="actionbar">
           <BackendBadge collection="farms" />
-          <button v-if="canEditCollection('farms')" class="btn primary" @click="startCreate">＋ Новый клиент</button>
+          <button v-if="canEditCollection('farms')" class="btn primary" data-tour="client-create" @click="startCreate">＋ Новый клиент</button>
         </div>
       </header>
 
@@ -202,7 +202,7 @@ async function createClient() {
         </div>
       </form>
 
-      <section class="customer-directory" aria-label="Фильтры клиентов">
+      <section class="customer-directory" data-tour="client-directory" aria-label="Фильтры клиентов">
         <div class="client-list-tools">
           <input v-model="ui.search" type="search" class="input" aria-label="Поиск клиентов" placeholder="Имя, компания, телефон, e-mail…" />
           <select v-model="category" class="select" aria-label="Тип клиента">

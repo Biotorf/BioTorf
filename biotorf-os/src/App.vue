@@ -1,9 +1,10 @@
 <script setup>
-import { computed, ref, defineAsyncComponent, markRaw, onMounted, onBeforeUnmount } from 'vue';
+import { computed, nextTick, provide, ref, defineAsyncComponent, markRaw, onMounted, onBeforeUnmount } from 'vue';
 import { useUiStore } from '@/stores/ui';
 import { useDbStore } from '@/stores/db';
 import AppSidebar from '@/components/layout/AppSidebar.vue';
 import AppTopbar from '@/components/layout/AppTopbar.vue';
+import GuidedTraining from '@/components/onboarding/GuidedTraining.vue';
 import AppModal from '@/components/ui/AppModal.vue';
 import AuthGate from '@/components/auth/AuthGate.vue';
 import { authState, checkAuthRequired, isAuthed, logout } from '@/api/authClient';
@@ -11,6 +12,21 @@ import { authState, checkAuthRequired, isAuthed, logout } from '@/api/authClient
 const ui = useUiStore();
 const db = useDbStore();
 const authChecked = ref(false);
+const trainingOpen = ref(false);
+provide('trainingActive', trainingOpen);
+let trainingTrigger;
+
+function startTraining(event) {
+  trainingTrigger = event.currentTarget;
+  if (ui.modal) ui.closeModal();
+  trainingOpen.value = true;
+}
+
+async function closeTraining() {
+  trainingOpen.value = false;
+  await nextTick();
+  trainingTrigger?.focus({ preventScroll: true });
+}
 const pending = computed(() => ui.role === 'pending');
 
 // при старте: восстанавливаем профиль из localStorage, затем узнаём у /health,
@@ -38,6 +54,7 @@ function onSession() {
 
 // 401 — сессия истекла или её отозвали. 403 сообщает об ограничении доступа.
 function sessionExpired() {
+  trainingOpen.value = false;
   logout(); ui.clearSession(); ui.closeModal(); authChecked.value = true;
 }
 onMounted(() => window.addEventListener('unhandledrejection', (ev) => {
@@ -99,10 +116,10 @@ const currentView = computed(() => views[ui.view] || views.dashboard);
     </section>
     <AppModal />
   </main>
-  <div v-else class="shell">
+  <div v-else class="shell" :inert="trainingOpen">
     <AppSidebar />
     <main class="main">
-      <AppTopbar />
+      <AppTopbar @start-training="startTraining" />
       <div class="content">
         <Suspense>
           <component :is="currentView" />
@@ -114,6 +131,7 @@ const currentView = computed(() => views[ui.view] || views.dashboard);
       </div>
     </main>
     <AppModal />
+    <GuidedTraining v-if="trainingOpen" @close="closeTraining" />
   </div>
 </template>
 

@@ -40,7 +40,7 @@ onMounted(() => run(automationApi.list));
   <section class="automation">
     <header class="pagehead">
       <div>
-        <h1>Автоматизация</h1>
+        <h1 data-tour="automation-view">Автоматизация</h1>
         <p class="subtitle">Правила, которые срабатывают при изменении записей CRM.</p>
       </div>
       <button type="button" class="btn" :disabled="busy" @click="run(automationApi.list)">Обновить</button>
@@ -48,7 +48,7 @@ onMounted(() => run(automationApi.list));
     <p v-if="error" class="danger-text" role="alert">{{ error }}</p>
     <p v-else-if="busy && !rules.length" role="status">Загрузка правил…</p>
     <section v-for="rule in rules" :key="rule.id" class="panel rule">
-      <div>
+      <div data-tour="automation-rule">
         <h2>{{ rule.title }}</h2>
         <p>{{ rule.description }}</p>
       </div>

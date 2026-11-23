@@ -51,13 +51,13 @@ function clientName(sale) {
         <h1>Рабочий день</h1>
         <p class="subtitle">Задачи, продажи и операции BioTorf</p>
       </div>
-      <div class="actionbar">
+      <div class="actionbar workspace-actions">
         <a class="btn" href="#/comms">Открыть входящие</a>
         <a v-if="canEditCollection('farms')" class="btn primary" href="#/crm?new=1">＋ Новый клиент</a>
       </div>
     </header>
 
-    <div class="metrics" aria-label="Показатели рабочего дня">
+    <div class="metrics" data-tour="workday-summary" aria-label="Показатели рабочего дня">
       <a v-for="metric in metrics" :key="metric.label" class="metric" :class="metric.tone" :href="metric.href">
         <span>{{ metric.label }}</span>
         <strong>{{ metric.value }}</strong>
@@ -117,13 +117,30 @@ function clientName(sale) {
 <style scoped>
 .workspace { max-width: 1280px; margin-inline: auto; }
 .workspace-head, .section-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
-.workspace-head { margin-bottom: 18px; align-items: start; }
-.workspace-head h1 { font-size: clamp(25px, 3vw, 32px); margin-bottom: 4px; }
-.workspace-head p { margin: 0; }
+.workspace-head {
+  margin-bottom: 16px;
+  padding: clamp(16px, 3vw, 26px);
+  align-items: center;
+  background: linear-gradient(118deg, #103d2e, #176747);
+  border-radius: 17px;
+  color: #fff;
+  box-shadow: var(--shadow);
+}
+.workspace-head h1 { font-size: clamp(25px, 3vw, 34px); margin-bottom: 4px; color: inherit; }
+.workspace-head p { margin: 0; color: #d8eee1; }
+.workspace-actions .btn { border-color: #d8eee1; color: #164835; background: #f4fbf6; }
+.workspace-actions .btn.primary { border-color: #aee0bf; color: #103e2a; background: #bceaca; box-shadow: none; }
+.workspace-actions .btn.primary:hover { background: #d4f2dd; color: #103e2a; }
+.workspace-head .btn:focus-visible { outline-color: #fff; }
 .workspace-head a, .work-panel a { text-decoration: none; }
 .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
 .metric { display: grid; min-width: 0; gap: 3px; padding: 15px 17px; border: 1px solid #e2ebe5; border-radius: 14px; color: var(--ink); text-decoration: none; }
 .metric:hover { border-color: #95b8a8; box-shadow: var(--shadow); }
+.metric { border-top-width: 3px; }
+.metric.mint { border-top-color: #63ac82; }
+.metric.blue { border-top-color: #87a9ca; }
+.metric.sand { border-top-color: #cab07b; }
+.metric.lilac { border-top-color: #a69bbd; }
 .metric > span { font-weight: 650; }
 .metric > strong { overflow-wrap: anywhere; font-size: clamp(22px, 3vw, 29px); line-height: 1.25; letter-spacing: -.025em; font-variant-numeric: tabular-nums; }
 .metric > small { color: #4e6660; }

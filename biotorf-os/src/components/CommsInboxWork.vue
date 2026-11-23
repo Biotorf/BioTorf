@@ -142,7 +142,7 @@ async function createLead() {
       <span v-if="dueText" :class="{ 'work-error': isResponseOverdue(work) }">Ответ до {{ dueText }}</span>
       <button v-if="chat.farmId" type="button" class="btn slim ghost" @click="ui.openClient(chat.farmId)">Карточка клиента</button>
       <button v-else-if="editable && canEditCollection('farms') && !clientDraft" type="button" class="btn slim primary"
-              :disabled="busy" @click="openClientForm">＋ Сохранить клиента</button>
+              data-tour="inbox-save-client" :disabled="busy" @click="openClientForm">＋ Сохранить клиента</button>
       <button v-if="work.leadId" type="button" class="btn slim ghost" @click="openLead(work.leadId)">Открыть лид</button>
       <button v-else-if="editable && canLinkLead && inbound" type="button" class="btn slim ghost" :disabled="busy"
               @click="createLead">Создать лид</button>

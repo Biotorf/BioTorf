@@ -73,7 +73,7 @@ function addPayment(invoice) {
       <div class="stat"><div class="label">Счетов с остатком</div><div class="val">{{ totals.open }}</div></div>
     </div>
 
-    <div class="toolbar finance-tools">
+    <div class="toolbar finance-tools" data-tour="finance-controls">
       <div class="actionbar" aria-label="Раздел финансов">
         <button class="btn slim" :class="{ primary: mode === 'invoices' }" :aria-pressed="mode === 'invoices'" @click="switchMode('invoices')">Счета</button>
         <button class="btn slim" :class="{ primary: mode === 'payments' }" :aria-pressed="mode === 'payments'" @click="switchMode('payments')">Платежи</button>

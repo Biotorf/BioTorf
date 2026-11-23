@@ -10,6 +10,7 @@ import { useUiStore } from '@/stores/ui';
 const db = useDbStore();
 const ui = useUiStore();
 const { canEdit } = usePermissions();
+const emit = defineEmits(['legacy-mode']);
 const labels = {
   opening: 'Начальный остаток',
   receipt_powder: 'Приёмка порошка',
@@ -50,6 +51,8 @@ const formError = ref('');
 const success = ref('');
 const form = ref(null);
 const ready = ref(false);
+const unavailable = ref(false);
+const canPost = computed(() => ready.value && !unavailable.value && !loading.value && !error.value);
 let lastSubmission = null;
 const warehouseListId = useId();
 const orderListId = useId();
@@ -102,13 +105,24 @@ const orderRequired = computed(() => ['reserve', 'release'].includes(form.value?
 const orderVisible = computed(() => orderRequired.value || ['dispatch', 'return'].includes(form.value?.type));
 
 function accept(data) {
-  if (!Array.isArray(data.balances) || !Array.isArray(data.events)) throw new Error('Сервер не вернул складской журнал.');
   balances.value = data.balances;
   events.value = data.events;
   if (!ready.value && selectedSource.value && form.value?.lines?.every((row) => !row.warehouse)) {
     prefillSource(selectedSource.value);
   }
   ready.value = true;
+  if (unavailable.value) {
+    unavailable.value = false;
+    emit('legacy-mode', false);
+  }
+}
+function useLegacyMode() {
+  ready.value = false;
+  unavailable.value = true;
+  balances.value = [];
+  events.value = [];
+  tab.value = 'balances';
+  emit('legacy-mode', true);
 }
 async function refresh() {
   if (loading.value || saving.value) return;
@@ -117,10 +131,12 @@ async function refresh() {
   try {
     accept(await inventoryApi.list());
   } catch (cause) {
-    error.value = `Не удалось обновить склад. ${cause.message}`;
+    if (cause.inventoryUnavailable) useLegacyMode();
+    else error.value = `Не удалось обновить склад. ${cause.message}`;
   } finally {
     loading.value = false;
   }
+  if (canPost.value) showLinkedForm();
 }
 function line(sku = '', warehouse = '') {
   return { sku, lot: '', warehouse, qty: '' };
@@ -136,7 +152,7 @@ function changeType() {
     : [line(draft.type === 'receipt_powder' ? 'POWDER' : '', warehouse)];
 }
 function showForm(type = canEdit('warehouse') && balances.value.length ? 'receipt_powder' : inventoryTypes.value[0], source = {}, orderId = '') {
-  if (!inventoryTypes.value.includes(type)) return;
+  if (!canPost.value || !inventoryTypes.value.includes(type)) return;
   formError.value = '';
   success.value = '';
   lastSubmission = null;
@@ -193,7 +209,7 @@ function showLinkedForm() {
   showForm(type, { collection: query.get('sourceCollection'), id: query.get('sourceId') || '' }, query.get('orderId') || '');
 }
 function showReverse(event) {
-  if (!canEdit('warehouse') || event.reversedBy || event.type === 'reversal') return;
+  if (!canPost.value || !canEdit('warehouse') || event.reversedBy || event.type === 'reversal') return;
   formError.value = '';
   success.value = '';
   lastSubmission = null;
@@ -255,7 +271,7 @@ function makeId() {
   return [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join('-');
 }
 async function submit() {
-  if (saving.value || loading.value) return;
+  if (saving.value || !canPost.value) return;
   formError.value = '';
   saving.value = true;
   try {
@@ -268,7 +284,8 @@ async function submit() {
     saving.value = false;
     closeForm();
   } catch (cause) {
-    formError.value = cause.message;
+    if (cause.inventoryUnavailable) useLegacyMode();
+    else formError.value = cause.message;
   } finally {
     saving.value = false;
   }
@@ -286,7 +303,6 @@ function effectsText(row) {
 onMounted(() => {
   refresh();
   logisticsApi.list().then((docs) => { logisticsDocuments.value = docs || []; }).catch(() => {});
-  showLinkedForm();
   window.addEventListener('hashchange', showLinkedForm);
 });
 onBeforeUnmount(() => window.removeEventListener('hashchange', showLinkedForm));
@@ -295,19 +311,23 @@ onBeforeUnmount(() => window.removeEventListener('hashchange', showLinkedForm));
 <template>
   <section class="inventory">
     <div class="inventory-bar">
-      <div class="actionbar">
-        <button class="btn slim" :class="{ primary: tab === 'balances' }" :aria-pressed="tab === 'balances'" @click="tab = 'balances'">Остатки</button>
+      <div v-if="ready" class="actionbar">
+        <button class="btn slim" data-tour="warehouse-balance" :class="{ primary: tab === 'balances' }" :aria-pressed="tab === 'balances'" @click="tab = 'balances'">Остатки</button>
         <button class="btn slim" :class="{ primary: tab === 'history' }" :aria-pressed="tab === 'history'" @click="tab = 'history'">Журнал движений</button>
       </div>
       <div class="actionbar">
         <button class="btn slim ghost" :disabled="loading || saving" @click="refresh">{{ loading ? 'Обновление…' : 'Обновить' }}</button>
-        <button v-if="inventoryTypes.length" class="btn primary slim" :disabled="loading || saving || !!form" @click="showForm()">＋ Складская операция</button>
+        <button v-if="ready && inventoryTypes.length" class="btn primary slim" data-tour="warehouse-post" :disabled="!canPost || saving || !!form" @click="showForm()">＋ Складская операция</button>
       </div>
     </div>
 
     <p v-if="error" class="note danger-text" role="alert">{{ error }}</p>
     <p v-if="success" class="note" role="status">{{ success }}</p>
-    <form v-if="form" class="panel operation" @submit.prevent="submit">
+    <section v-if="unavailable" class="legacy-mode" data-tour="warehouse-balance">
+      <p class="note" role="status">На сервере пока недоступен складской журнал. Ниже можно посмотреть прежний реестр. После обновления сервера нажмите «Обновить».</p>
+      <slot name="legacy" />
+    </section>
+    <form v-if="ready && form" class="panel operation" @submit.prevent="submit">
       <h2>{{ form.reverseOf ? 'Сторно складской операции' : 'Новая складская операция' }}</h2>
       <fieldset :disabled="saving">
         <p v-if="reverseEvent">{{ labels[reverseEvent.type] }} · {{ dateTime(reverseEvent.createdAt) }} · {{ reverseEvent.reference || reverseEvent.id }}</p>
@@ -363,7 +383,7 @@ onBeforeUnmount(() => window.removeEventListener('hashchange', showLinkedForm));
 
         <p v-if="formError" class="danger-text" role="alert">{{ formError }}</p>
         <div class="actionbar operation-footer">
-          <button type="submit" class="btn slim primary" :disabled="loading">{{ saving ? 'Проведение…' : form.reverseOf ? 'Провести сторно' : 'Провести операцию' }}</button>
+          <button type="submit" class="btn slim primary" :disabled="!canPost">{{ saving ? 'Проведение…' : form.reverseOf ? 'Провести сторно' : 'Провести операцию' }}</button>
           <button type="button" class="btn slim ghost" @click="closeForm">Отмена</button>
         </div>
       </fieldset>
@@ -414,7 +434,7 @@ onBeforeUnmount(() => window.removeEventListener('hashchange', showLinkedForm));
                 <div v-if="event.reference">{{ event.reference }}</div>
               </td>
               <td>{{ event.createdBy || '—' }}</td>
-              <td v-if="canEdit('warehouse')"><button v-if="!event.reversedBy && event.type !== 'reversal'" class="btn slim ghost" :disabled="!!form || saving || loading" @click="showReverse(event)">Сторно</button></td>
+              <td v-if="canEdit('warehouse')"><button v-if="!event.reversedBy && event.type !== 'reversal'" class="btn slim ghost" :disabled="!!form || saving || !canPost" @click="showReverse(event)">Сторно</button></td>
             </tr>
             <tr v-if="!visibleEvents.length"><td :colspan="canEdit('warehouse') ? 6 : 5" class="empty">{{ query ? 'Движения не найдены.' : 'Проведённых движений пока нет.' }}</td></tr>
           </tbody>

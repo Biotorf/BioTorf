@@ -3,6 +3,7 @@ import { computed } from 'vue';
 import { useUiStore } from '@/stores/ui';
 import MiniProfile from '@/components/auth/MiniProfile.vue';
 
+const emit = defineEmits(['start-training']);
 const ui = useUiStore();
 const navigation = [
   { name: 'Продажи', views: [['journey', 'Маршруты'], ['pipeline', 'Воронка'], ['orders', 'Заказы'], ['finance', 'Финансы']] },
@@ -23,7 +24,10 @@ const searchable = computed(() => ['orders', 'pilots'].includes(ui.view));
       <span aria-hidden="true">⌕</span>
       <input v-model="ui.search" type="search" aria-label="Поиск по разделу" placeholder="Поиск по разделу" />
     </label>
-    <div class="topright profile"><MiniProfile /></div>
+    <div class="topright profile">
+      <button type="button" class="btn slim training-trigger" @click="emit('start-training', $event)">Обучение</button>
+      <MiniProfile />
+    </div>
   </header>
 </template>
 
