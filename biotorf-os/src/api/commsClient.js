@@ -97,10 +97,17 @@ export const commsApi = {
   send: (id, text) => req(`/api/comms/${id}/send`, { method: 'POST', body: JSON.stringify({ text }) }),
   capabilities: () => req('/api/capabilities').then((c) => Object.assign(caps, c)),
   // ── мессенджер: диалоги-чаты ────────────────────────────────────────────
-  chats: (limit = 200) => req(`/api/chat-list?limit=${limit}`),
+  chats: (limit = 200, queue = 'all') => req(`/api/chat-list?limit=${limit}&queue=${encodeURIComponent(queue)}`),
   chat: (peerKey) => req(`/api/chat/${encodeURIComponent(peerKey)}`),
+  assignees: () => req('/api/chat-assignees'),
+  updateWork: (peerKey, work) => req(`/api/chat/${encodeURIComponent(peerKey)}/work`, { method: 'PUT', body: JSON.stringify(work) }),
+  createLead: (peerKey, revision) => req(`/api/chat/${encodeURIComponent(peerKey)}/lead`, { method: 'POST', body: JSON.stringify({ revision }) }),
   markChatRead: (peerKey) => req(`/api/chat/${encodeURIComponent(peerKey)}/read`, { method: 'POST' }),
   saveDraft: (peerKey, draft) => req(`/api/chat/${encodeURIComponent(peerKey)}/draft`, { method: 'PUT', body: JSON.stringify({ draft }) }),
   sendToChat: (peerKey, text, kind = null) => req(`/api/chat/${encodeURIComponent(peerKey)}/send`, { method: 'POST', body: JSON.stringify({ text, kind }) }),
+  whatsappTemplates: () => req('/api/comms/whatsapp/templates'),
+  sendWhatsAppTemplate: (entry) => req('/api/comms/whatsapp/templates/send', {
+    method: 'POST', body: JSON.stringify(entry),
+  }),
   startChat: (entry) => req('/api/comms/send-to', { method: 'POST', body: JSON.stringify(entry) }),
 };

@@ -1,4 +1,6 @@
 <script setup>
+import { inventoryLink } from '@/utils/inventoryLink';
+import { usePermissions } from '@/composables/usePermissions';
 import CrmDataTable from '@/components/CrmDataTable.vue';
 // «Заказы» (§3 шаги 18–20): реестр заказов с переходом в карточку (§5).
 import { computed, ref } from 'vue';
@@ -15,6 +17,7 @@ const importColl = ref('');   // непусто — открыта модалк�
 
 const db = useDbStore();
 const ui = useUiStore();
+const { canEdit } = usePermissions();
 const statusFilter = ref('Все');
 const STATUSES = computed(() => ['Все', ...new Set(db.orders.map((o) => o.status))]);
 const rows = computed(() =>
@@ -46,11 +49,12 @@ const rows = computed(() =>
       <button class="btn primary slim" @click="rowModal = { coll: 'orders' }">＋ Заказ</button>
     </div>
 
-    <div class="note">При подтверждении заказа производственная партия создаётся автоматически (раздел «Производство»), склад резервирует позиции. Основание — паста (концентрат), розлив на BIOTORF Agro (5/10 л) и Home (200 мл/1 л) выполняет производство.</div>
+    <div class="note">Подтверждённый заказ создаёт план выпуска. Перед отгрузкой проверьте доступный остаток и оформите резерв на складе.</div>
 
     <section class="panel">
       <CrmDataTable coll="orders" :rows="rows" empty="Заказов нет.">
         <template #actions="{ row: o }">
+          <a v-if="canEdit('warehouse')" class="btn slim ghost" :href="inventoryLink('reserve', 'orders', o.id, o.id)">Резерв</a>
           <button class="btn slim ghost" @click="ui.openRecord('order', o.id)">Открыть</button>
           <button v-if="o.journeyId" class="btn slim ghost" @click="ui.openJourney(o.journeyId)">Процесс</button>
           <button class="btn slim ghost" @click="rowModal = { coll: 'orders', record: o }">Изменить</button>

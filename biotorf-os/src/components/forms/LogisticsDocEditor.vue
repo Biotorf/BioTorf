@@ -110,12 +110,12 @@ function validatePayload(payload) {
     if (!Number.isFinite(item.qty) || item.qty <= 0 || !Number.isFinite(item.price) || item.price < 0) {
       throw new Error('Укажите положительное количество и неотрицательную цену каждой позиции.');
     }
-    if (item.material !== 'paste') continue;
+    if (!isRawMaterial(item)) continue;
     if (payload.kind !== 'supply' || !item.lot || !['кг', 'т'].includes(item.unit)) {
-      throw new Error('Для пасты укажите партию поставщика и массу в кг или т.');
+      throw new Error('Для сырья укажите партию поставщика и массу в кг или т.');
     }
     if (payload.status === 'Принят' && item.qcStatus !== 'Пройден') {
-      throw new Error('Перед приёмкой подтвердите контроль качества каждой партии пасты.');
+      throw new Error('Перед приёмкой подтвердите контроль качества каждой партии сырья.');
     }
   }
 }
@@ -145,8 +145,10 @@ async function save(closeAfter = true) {
   }
 }
 
-function addPasteRow() {
-  const material = { ...emptyItem(), name: 'Паста-концентрат', material: 'paste', lot: '', unit: 'кг', qcStatus: 'Ожидается' };
+function isRawMaterial(item) { return ['powder', 'paste'].includes(item.material); }
+
+function addPowderRow() {
+  const material = { ...emptyItem(), name: 'Порошок', material: 'powder', lot: '', unit: 'кг', qcStatus: 'Ожидается' };
   const first = form.items[0];
   if (form.items.length === 1 && !first.skuId && !first.name) form.items.splice(0, 1, material);
   else form.items.push(material);
@@ -160,7 +162,7 @@ function actRows() {
   const rows = [['№', 'Наименование', 'Кол-во', 'Ед.', 'Цена, сом', 'Сумма, сом']];
   form.items.forEach((it, i) => {
     if (!it.name && !it.skuId) return;
-    const description = it.material === 'paste' && it.lot ? `${it.name || 'Паста-концентрат'} · партия ${it.lot}` : it.name || it.skuId;
+    const description = isRawMaterial(it) && it.lot ? `${it.name || 'Сырьё'} · партия ${it.lot}` : it.name || it.skuId;
     rows.push([i + 1, description, Number(it.qty) || 0, it.unit, Number(it.price) || 0, Math.round(lineSum(it))]);
   });
   rows.push(['', '', '', '', 'ИТОГО:', Math.round(totalPrice.value)]);
@@ -290,13 +292,14 @@ function exportCsv() {
         <tbody>
           <tr v-for="(it, i) in form.items" :key="i">
             <td>
-              <select v-if="it.material !== 'paste'" class="input slim-in" :value="it.skuId" @change="onSku(i, $event)">
+              <select v-if="!isRawMaterial(it)" class="input slim-in" :value="it.skuId" @change="onSku(i, $event)">
                 <option value="">— свободная позиция —</option>
                 <option v-for="s in db.skus" :key="s.id" :value="s.id"
                         :data-name="s.name" :data-price="s.price || 0">{{ s.name }} ({{ s.pack }})</option>
               </select>
               <input v-model="it.name" class="input slim-in" style="margin-top:4px" placeholder="Наименование">
-              <template v-if="it.material === 'paste'">
+              <template v-if="isRawMaterial(it)">
+                <span v-if="it.material === 'paste'" class="mini">Архивная позиция: паста</span>
                 <label>{{ label('lot') }} <input v-model.trim="it.lot" class="input slim-in" maxlength="200" /></label>
                 <label>{{ label('qcStatus') }}
                   <select v-model="it.qcStatus" class="input slim-in">
@@ -309,7 +312,7 @@ function exportCsv() {
             <td>
               <select v-model="it.unit" class="input slim-in">
                 <option v-if="it.unit && !UNITS.includes(it.unit)" :value="it.unit">{{ it.unit }}</option>
-                <option v-for="u in it.material === 'paste' ? ['кг', 'т'] : UNITS" :key="u">{{ u }}</option>
+                <option v-for="u in isRawMaterial(it) ? ['кг', 'т'] : UNITS" :key="u">{{ u }}</option>
               </select>
             </td>
             <td><input v-model.number="it.price" type="number" min="0" step="1" class="input slim-in num-in"></td>
@@ -331,7 +334,7 @@ function exportCsv() {
 
     <div class="actionbar" style="margin-bottom:14px">
       <button class="btn slim" @click="addRow">＋ Строка</button>
-      <button v-if="!isDispatch" class="btn slim" @click="addPasteRow">＋ Партия пасты</button>
+      <button v-if="!isDispatch" class="btn slim" @click="addPowderRow">＋ Партия порошка</button>
       <button class="btn slim ghost" @click="exportXls">⬇ Скачать .xls</button>
       <button class="btn slim ghost" @click="exportCsv">⬇ Скачать .csv</button>
     </div>

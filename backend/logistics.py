@@ -85,12 +85,12 @@ def normalize_doc(body: dict, doc_id: str) -> dict:
         qc_status = it.get("qcStatus") or ""
         if not math.isfinite(qty) or qty <= 0 or not math.isfinite(price) or price < 0:
             raise ValueError("У каждой позиции должны быть положительное количество и неотрицательная цена")
-        if material == "paste":
+        if material in ("powder", "paste"):
             if body.get("kind") != "supply" or not lot or unit not in ("кг", "т"):
-                raise ValueError("У пасты укажите номер партии поставщика и количество в кг или т")
+                raise ValueError("Для сырья укажите партию поставщика и количество в кг или т")
             if body.get("status") == "Принят" and qc_status != "Пройден":
-                raise ValueError("Для приёмки пасты подтвердите контроль качества каждой партии")
-            name = name or "Паста-концентрат"
+                raise ValueError("Для приёмки сырья подтвердите контроль качества каждой партии")
+            name = name or ("Порошок" if material == "powder" else "Паста-концентрат")
         items.append({
             "skuId": sku, "name": name, "qty": qty, "unit": unit, "price": price,
             "note": str(it.get("note") or ""), "material": material,

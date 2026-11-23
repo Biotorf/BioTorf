@@ -509,13 +509,25 @@ export const useDbStore = defineStore('db', {
         planned.volume += qty * pack;
         demand.set(item.sku, planned);
       }
-      const plans = [...demand.values()].map((item) => ({
-        id: this.uid('PLAN'), date: order.date,
-        sku: item.sku, product: item.name, qty: item.qty, unit: 'шт.',
-        plannedVolumeL: Math.round(item.volume * 1000) / 1000,
-        status: 'План', orderId: order.id,
-        notes: 'Потребность заказа. Перед запуском проверьте остаток готового товара и доступность пасты.',
-      }));
+      const plans = [...demand.values()].map((item) => {
+        const sku = this.skuById(item.sku);
+        const norm = Number(sku?.powderKgPerL);
+        const loss = Number(sku?.lossPct);
+        const plannedPowder = item.volume * norm / (1 - loss / 100);
+        const hasNorm = sku?.recipeVersion && sku.lossPct != null && sku.lossPct !== '' &&
+          Number.isFinite(plannedPowder) && norm > 0 && loss >= 0 && loss < 100;
+        return {
+          id: this.uid('PLAN'), date: order.date,
+          sku: item.sku, product: item.name, qty: item.qty, unit: 'шт.',
+          plannedVolumeL: Math.round(item.volume * 1000) / 1000,
+          ...(hasNorm ? {
+            recipeVersion: sku.recipeVersion,
+            plannedPowderKg: Number(plannedPowder.toFixed(3)),
+          } : {}),
+          status: 'План', orderId: order.id,
+          notes: 'Потребность заказа. Перед запуском проверьте остаток готового товара и наличие сырья.',
+        };
+      });
       this.data.production.unshift(...plans);
       return plans;
     },

@@ -1,36 +1,23 @@
 <script setup>
+import { computed } from 'vue';
 import { useUiStore } from '@/stores/ui';
-import { useDbStore } from '@/stores/db';
-import { usePermissions } from '@/composables/usePermissions';
 import MiniProfile from '@/components/auth/MiniProfile.vue';
-import ManualLink from '@/components/ui/ManualLink.vue';
 
 const ui = useUiStore();
-const db = useDbStore();
-const { ROLES } = usePermissions();
+const searchable = computed(() => ['orders', 'pipeline', 'pilots'].includes(ui.view));
 </script>
 
 <template>
-  <div class="topbar">
-    <div class="search">
-      <span>⌕</span>
-      <input
-        v-model="ui.search"
-        type="search"
-        placeholder="Поиск по текущему разделу…"
-      />
-    </div>
-    <div class="topright">
-      <button class="toolbar-icon" @click="ui.go('comms')" title="Коммуникации: звонки и сообщения">
-        ☎<i v-if="db.comms.filter((c) => !c.read).length">{{ db.comms.filter((c) => !c.read).length }}</i>
-      </button>
-      <button class="toolbar-icon" @click="ui.go('notifications')" title="Уведомления">
-        ♢<i>{{ db.lateTasks.length }}</i>
-      </button>
-      <button class="toolbar-icon" @click="ui.go('calendar')" title="Календарь">▦</button>
-      <ManualLink />
-      <!-- мини-профиль: аватар с выпадающим меню (Профиль / Выйти) -->
-      <MiniProfile />
-    </div>
-  </div>
+  <header class="topbar">
+    <label v-if="searchable" class="search">
+      <span aria-hidden="true">⌕</span>
+      <input v-model="ui.search" type="search" aria-label="Поиск по разделу" placeholder="Поиск по разделу" />
+    </label>
+    <div class="topright profile"><MiniProfile /></div>
+  </header>
 </template>
+
+<style scoped>
+.topbar { min-height: 56px; height: auto; padding-block: 7px; }
+.profile { margin-inline-start: auto; }
+</style>

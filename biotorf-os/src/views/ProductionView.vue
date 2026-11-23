@@ -1,18 +1,18 @@
 <script setup>
-import CrmDataTable from '@/components/CrmDataTable.vue';
-// «Производство» (демо v0.9): планы и партии розлива AGRO/HOME.
 import { computed, onMounted, ref } from 'vue';
 import { useDbStore } from '@/stores/db';
-import BackendBadge from '@/components/ui/BackendBadge.vue';
-
+import { usePermissions } from '@/composables/usePermissions';
+import { useFormatters } from '@/composables/useFormatters';
+import { inventoryLink } from '@/utils/inventoryLink';
+import { statusOptions } from '@/data/crmFields';
+import CrmDataTable from '@/components/CrmDataTable.vue';
 import CrmRowModal from '@/components/CrmRowModal.vue';
-import ManualLink from '@/components/ui/ManualLink.vue';
-const rowColl = ref('production');
-const rowOpen = ref(false);
-const editRec = ref(null);
-function openEdit(rec) { editRec.value = rec; rowOpen.value = true; }
+import StatusPill from '@/components/ui/StatusPill.vue';
 
 const db = useDbStore();
+const { canEditCollection } = usePermissions();
+const { day } = useFormatters();
+const rowOpen = ref(null);
 const receiptError = ref('');
 onMounted(async () => {
   try {
@@ -22,39 +22,61 @@ onMounted(async () => {
   }
 });
 const statusFilter = ref('Все');
-const rows = computed(() => (db.data.production || []).filter((p) => statusFilter.value === 'Все' || p.status === statusFilter.value));
-const STATUSES = ['Все', 'План', 'В работе', 'Завершено'];
+const source = computed(() => db.data.production || []);
+const statuses = computed(() => ['Все', ...statusOptions('production', source.value)]);
+const rows = computed(() => source.value.filter((row) => statusFilter.value === 'Все' || row.status === statusFilter.value));
+function canPost(row) {
+  return canEditCollection('production') && row.status === 'Завершено' && row.powderUsedKg > 0 &&
+    !!row.inputLot && !!row.lot && ['Пройден', 'Отклонён'].includes(row.qcStatus);
+}
 </script>
 
 <template>
-  <div>
+  <section>
     <div class="pagehead">
       <div>
         <h1>Производство</h1>
-        <ManualLink />
-        <div class="subtitle">Планы розлива и производственные партии</div>
+        <p class="subtitle">Планируйте выпуск по заказам и фиксируйте расход порошка и фактический выпуск.</p>
       </div>
-      <BackendBadge collection="production" />
-    
-      <button class="btn primary slim" @click="rowOpen = true" title="Добавить запись вручную">＋ Добавить</button>
+      <button v-if="canEditCollection('production')" class="btn primary" @click="rowOpen = { record: null }">Новая партия</button>
     </div>
-
-    <div class="note">Из подтверждённого заказа поступает план по каждому артикулу. Перед запуском сверяйте остаток готового товара и принятые партии пасты в <a href="#/shipments">логистике</a>. Укажите партию сырья, фактический выпуск и результат контроля качества.</div>
     <p v-if="receiptError" class="danger-text" role="alert">{{ receiptError }}</p>
-
     <div class="toolbar">
-      <select v-model="statusFilter" class="select" style="max-width:220px"><option v-for="s in STATUSES" :key="s">{{ s }}</option></select>
+      <label>Статус
+        <select v-model="statusFilter" class="select"><option v-for="status in statuses" :key="status">{{ status }}</option></select>
+      </label>
+      <a href="#/shipments?kind=supply">Поставки порошка</a>
     </div>
-
-    <section class="panel">
-      <CrmDataTable coll="production" :rows="rows" empty="Партий нет.">
-        <template #actions="{ row: p }">
-          <button class="btn slim ghost" @click="openEdit(p)">Изменить</button>
-        </template>
-      </CrmDataTable>
-    </section>
-  </div>
-  <CrmRowModal v-if="rowOpen" :coll="rowColl" :record="editRec" @close="rowOpen = false; editRec = null" />
+    <div v-if="rows.length" class="batch-grid">
+      <article v-for="row in rows" :key="row.id" class="panel batch">
+        <header>
+          <h2>{{ row.product || db.skuById(row.sku)?.name || row.id }}</h2>
+          <StatusPill :status="row.status" />
+        </header>
+        <p class="subtitle">{{ [row.lot || row.batch, row.date ? day(row.date) : '', row.orderId ? 'Под заказ' : ''].filter(Boolean).join(' · ') }}</p>
+        <p v-if="row.qty || row.plannedVolumeL"><strong>План</strong> {{ row.qty ?? '—' }} {{ row.unit || 'шт.' }} <span v-if="row.plannedVolumeL">· {{ row.plannedVolumeL }} л</span></p>
+        <p v-if="row.plannedPowderKg != null"><strong>Порошок по рецептуре {{ row.recipeVersion }}</strong> {{ row.plannedPowderKg }} кг</p>
+        <p v-if="row.actualQty != null"><strong>Выпуск</strong> {{ row.actualQty }} {{ row.unit || 'шт.' }} · {{ row.qcStatus || 'Контроль ожидается' }}</p>
+        <div class="actionbar">
+          <button v-if="canEditCollection('production')" class="btn slim" @click="rowOpen = { record: row }">{{ row.status === 'Завершено' ? 'Открыть партию' : 'Заполнить партию' }}</button>
+          <a v-if="canPost(row)" :href="inventoryLink('production', 'production', row.id)">Провести на складе</a>
+        </div>
+      </article>
+    </div>
+    <p v-else class="empty">Партий по этому фильтру пока нет.</p>
+    <details class="panel full-table">
+      <summary>Таблица производства</summary>
+      <CrmDataTable coll="production" :rows="rows" empty="Партий нет." />
+    </details>
+    <CrmRowModal v-if="rowOpen" coll="production" :record="rowOpen.record" @close="rowOpen = null" />
+  </section>
 </template>
 
-<style scoped>.mono { font-variant-numeric: tabular-nums; }</style>
+<style scoped>
+.batch-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 250px), 1fr)); gap: 12px; }
+.batch header { display: flex; align-items: start; justify-content: space-between; gap: 8px; }
+.batch .actionbar { align-items: center; }
+.full-table { margin-top: 16px; }
+.full-table summary { cursor: pointer; font-weight: 650; }
+.full-table .table-wrap { margin-top: 12px; }
+</style>

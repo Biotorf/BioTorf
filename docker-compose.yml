@@ -44,7 +44,8 @@ services:
       FARMS_FILE: /data/farms.json
       # Секреты интеграций подхватываются из файла .env рядом с этим файлом:
       TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-dev-telegram-secret}
-      WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-dev-whatsapp-app-secret}
+      WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-}
+      WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:-}
       TELEPHONY_TOKEN: ${TELEPHONY_TOKEN:-dev-telephony-token}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173,null}
       # Токен бота нужен и бэкенду (проверка валидности через getMe при старте):
@@ -52,6 +53,7 @@ services:
       # WhatsApp Cloud API — исходящая отправка из ленты (см. README-WHATSAPP.md):
       WHATSAPP_TOKEN: ${WHATSAPP_TOKEN:-}
       WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+      WHATSAPP_TEMPLATES_JSON: ${WHATSAPP_TEMPLATES_JSON:-}
       # Авторизация API (вкладка «Вход»): AUTH_PASSWORD — общий пароль,
       # AUTH_SECRET — ключ подписи JWT; DEV_MODE=1 ослабляет авторизацию
       # (только локальная разработка). Без них /api/* закрыт (503/401),

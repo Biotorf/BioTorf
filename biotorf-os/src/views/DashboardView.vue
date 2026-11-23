@@ -1,103 +1,85 @@
 <script setup>
 import { computed } from 'vue';
-import { useDbStore } from '@/stores/db';
+import { useDbStore, isLate } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
-import { usePermissions } from '@/composables/usePermissions';
 import { useFormatters } from '@/composables/useFormatters';
-import StatCard from '@/components/ui/StatCard.vue';
 import StatusPill from '@/components/ui/StatusPill.vue';
-import ManualLink from '@/components/ui/ManualLink.vue';
 
 const db = useDbStore();
 const ui = useUiStore();
-const { canEdit } = usePermissions();
-const { money, num, day, pillColor } = useFormatters();
-
-const info = computed(() => {
-  const paidOrders = db.orders.filter((o) =>
-    ['Оплачен', 'Отправлен', 'Доставлен'].includes(o.status)
-  );
-  const revenue = paidOrders.reduce((a, b) => a + b.amount, 0);
-  const liters = paidOrders.reduce((a, b) => a + b.qty * db.skuById(b.sku).pack, 0);
-  const pipeline = db.deals
-    .filter((d) => !['Оплачено', 'Отгружено', 'Получено клиентом'].includes(d.stage))
-    .reduce((a, b) => a + b.amount, 0);
-  const pilots = db.pilots.filter(
-    (p) => !['Завершен', 'Пилот прекращен'].includes(p.status)
-  ).length;
-
-  return [
-    ['Выручка по оплаченным заказам', money(revenue), 'Не подтвержденная выручка компании'],
-    ['Продано BIOTORF', num(liters) + ' л', 'Условные оплаченные/отгруженные заказы'],
-    ['Открытая воронка', money(pipeline), 'Оценка потенциала сделок'],
-    ['Активные пилоты', pilots, 'С учетом протоколов'],
-  ];
-});
-
-const upcoming = computed(() =>
-  [...db.tasks]
-    .filter((t) => t.status !== 'Выполнена' && t.due)
-    .sort((a, b) => a.due.localeCompare(b.due))
-    .slice(0, 6)
-);
-const pilotControl = computed(() =>
-  db.pilots.filter((p) => !['Завершен', 'Пилот прекращен'].includes(p.status)).slice(0, 5)
-);
+const { day } = useFormatters();
+const doneTask = new Set(['Выполнена', 'Отменена']);
+const taskList = computed(() => db.tasks.filter((task) => !doneTask.has(task.status))
+  .slice().sort((a, b) => (a.due || '9999').localeCompare(b.due || '9999')).slice(0, 6));
+const unread = computed(() => db.comms.filter((item) => item.dir === 'in' && !item.read).length);
+const productionPlans = computed(() => (db.data.production || []).filter(({ status }) => ['План', 'В работе'].includes(status)).length);
+const unsettled = computed(() => db.invoices.filter((invoice) =>
+  !['Отменён', 'Отменен'].includes(invoice.status) && db.invoiceBalance(invoice) > 0).length);
+const shipments = computed(() => db.shipments.filter((record) => !record.received && !['Отменена', 'Получено клиентом'].includes(record.status)).length);
+const sales = [
+  ['comms', 'Входящие', unread, 'Открыть переписку и звонки'],
+  ['crm', 'Клиенты', null, 'Найти карточку клиента'],
+  ['journey', 'Продажи', null, 'Продолжить оформление сделки'],
+];
+const operations = [
+  ['shipments', 'Поставки и отгрузки', shipments, 'Принять сырьё или оформить доставку'],
+  ['production', 'Производство', productionPlans, 'Открыть планы и выпуск'],
+  ['warehouse', 'Склад', null, 'Проверить остатки и движения'],
+  ['finance', 'Финансы', unsettled, 'Сверить счета и оплаты'],
+];
+const operationsFirst = computed(() => ['production', 'warehouse', 'logistics', 'finance'].includes(ui.role));
+const groups = computed(() => operationsFirst.value
+  ? [['Операции', operations], ['Работа с клиентами', sales]]
+  : [['Работа с клиентами', sales], ['Операции', operations]]);
 </script>
 
 <template>
-  <div>
-    <div class="pagehead">
+  <section class="home">
+    <header class="pagehead">
       <div>
-        <h1>Панель управления</h1>
-        <ManualLink />
-        <div class="subtitle">
-          Ситуация по компании, критические события и ключевые показатели
-        </div>
+        <h1>Главная</h1>
+        <p class="subtitle">Входящие обращения, задачи и рабочие операции BioTorf.</p>
       </div>
-    </div>
+      <a class="btn primary" href="#/crm">Открыть клиентов</a>
+    </header>
 
+    <section v-for="[title, entries] in groups" :key="title" class="work-group">
+      <h2>{{ title }}</h2>
+      <div class="work-grid">
+        <button v-for="[view, label, count, description] in entries" :key="view" type="button" class="panel work-link" @click="ui.go(view)">
+          <span class="work-title">{{ label }}<span v-if="count?.value > 0" class="pill">{{ count.value }}</span></span>
+          <span class="subtitle">{{ description }}</span>
+        </button>
+      </div>
+    </section>
 
-    <div class="stats">
-      <StatCard v-for="[label, value, foot] in info" :key="label" :label="label" :value="value" :foot="foot" />
-    </div>
-
-    <div class="dash-grid">
-      <section class="panel">
-        <div class="panel-head">
-          <div class="panel-title">Критические отклонения</div>
-        </div>
-        <div v-if="db.lateTasks.length === 0" class="empty">Критических просрочек нет</div>
-        <div
-          v-for="t in db.lateTasks"
-          :key="t.id"
-          class="insight actionable"
-          @click="ui.openRecord('task', t.id)"
-        >
-          <div>
-            <b>{{ t.title }}</b>
-            <div class="mini">Задача · срок {{ day(t.due) }}</div>
-          </div>
-          <StatusPill status="Просрочено" />
-        </div>
-      </section>
-      <section class="panel">
-        <div class="panel-head"><div class="panel-title">Ближайшие задачи</div></div>
-        <div v-if="!upcoming.length" class="empty">Открытых задач с датой нет</div>
-        <div v-for="t in upcoming" :key="t.id" class="insight actionable" @click="ui.openRecord('task', t.id)">
-          <div><b>{{ t.title }}</b><div class="mini">{{ t.owner }} · срок {{ day(t.due) }}</div></div>
-          <StatusPill :status="t.status" />
-        </div>
-      </section>
-
-      <section class="panel">
-        <div class="panel-head"><div class="panel-title">Контроль агрономии</div></div>
-        <div v-if="!pilotControl.length" class="empty">Активных пилотов нет</div>
-        <div v-for="p in pilotControl" :key="p.id" class="insight actionable" @click="ui.openRecord('pilot', p.id)">
-          <div><b>{{ p.title || p.id }}</b><div class="mini">{{ p.crop || '' }} · {{ p.owner || '' }}</div></div>
-          <StatusPill :status="p.status" />
-        </div>
-      </section>
-    </div>
-  </div>
+    <section class="panel tasks">
+      <header class="panel-head">
+        <h2>Ближайшие задачи</h2>
+        <a href="#/tasks">Все задачи</a>
+      </header>
+      <p v-if="!taskList.length" class="subtitle">Открытых задач пока нет.</p>
+      <button v-for="task in taskList" :key="task.id" type="button" class="task-row" @click="ui.openRecord('task', task.id)">
+        <span>
+          <strong>{{ task.title }}</strong>
+          <small>{{ [task.owner, task.due ? day(task.due) : 'Без срока'].filter(Boolean).join(' · ') }}</small>
+        </span>
+        <StatusPill :status="isLate(task.due) ? 'Просрочено' : task.status" />
+      </button>
+    </section>
+  </section>
 </template>
+
+<style scoped>
+.home { max-width: 1100px; }
+.pagehead .btn { text-decoration: none; display: inline-block; }
+.work-group { margin-bottom: 24px; }
+.work-group h2 { margin-bottom: 9px; }
+.work-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr)); gap: 10px; }
+.work-link { display: grid; gap: 5px; text-align: start; padding: 15px; align-content: start; }
+.work-link:hover, .task-row:hover { background: #f7fbf8; border-color: #b3d2c4; }
+.work-title { display: flex; align-items: center; gap: 6px; font-weight: 720; }
+.tasks { max-width: 730px; }
+.task-row { background: #fff; width: 100%; border: 0; border-bottom: 1px solid #edf2ef; text-align: start; }
+.task-row small { display: block; color: var(--muted); }
+</style>

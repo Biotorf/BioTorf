@@ -6,7 +6,7 @@ import { defineAsyncComponent, markRaw } from 'vue';
 const VALID_VIEWS = [
   'dashboard', 'registry', 'crm', 'comms', 'pipeline', 'pilots', 'knowledge', 'social',
   'products', 'orders', 'production', 'warehouse', 'shipments', 'finance',
-  'tasks', 'analytics', 'journey', 'calendar', 'media', 'notifications', 'employees',
+  'tasks', 'analytics', 'journey', 'calendar', 'media', 'notifications', 'employees', 'channels',
 ];
 function viewFromHash() {
   const v = (location.hash || '').replace(/^#\/?/, '').split('?')[0];
@@ -34,11 +34,12 @@ export const useUiStore = defineStore('ui', {
   }),
   actions: {
     openClient(farmId) {
-      this.openModal('Карточка клиента', () => import('@/views/ClientCardModal.vue'), { farmId });
+      this.closeModal();
+      this.go('crm', { client: farmId });
     },
     openJourney(journeyId) {
       this.activeWork = { kind: 'journey', id: journeyId };
-      this.go('journey');
+      this.go('journey', { id: journeyId });
     },
     openRecord(kind, id) {
       // единый просмотр/редактирование объекта из любого реестра (§5 руководства)
@@ -51,13 +52,13 @@ export const useUiStore = defineStore('ui', {
       if (farmId) this.commsFocusFarm = farmId;
       this.go('comms');
     },
-    go(view) {
+    go(view, params) {
       this.view = view;
       this.search = '';
       this.filter = 'Все';
-      // синхронизируем URL, чтобы F5 возвращал в тот же раздел
-      const h = '#/' + view;
-      if (location.hash !== h) history.replaceState(null, '', h);
+      const query = new URLSearchParams(params);
+      const hash = '#/' + view + (query.size ? '?' + query : '');
+      if (location.hash !== hash) location.hash = hash;
     },
     openModal(title, component, props = {}) {
       const view = typeof component === 'function' ? defineAsyncComponent(component) : component;

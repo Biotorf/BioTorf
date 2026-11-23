@@ -24,6 +24,7 @@ import json
 import os
 import re
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Путь к SQLite-файлу — только для legacy-режима (DB_BACKEND=sqlite) и миграции.
@@ -70,11 +71,29 @@ CREATE INDEX IF NOT EXISTS idx_comms_unread  ON comms (read);
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_comms_ext ON comms (source, external_id)
     WHERE external_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS whatsapp_receipts (
+    provider_id TEXT PRIMARY KEY,
+    code        TEXT NOT NULL,
+    rank        INTEGER NOT NULL,
+    error       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_comms_whatsapp_id ON comms (external_id)
+    WHERE kind='whatsapp' AND dir='out';
 CREATE TABLE IF NOT EXISTS chat_drafts (
     peer_key TEXT PRIMARY KEY,
     draft    TEXT NOT NULL DEFAULT '',
     updated  TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS comms_work (
+    peer_key     TEXT PRIMARY KEY,
+    assignee     TEXT,
+    state        TEXT NOT NULL DEFAULT 'new' CHECK (state IN ('new','working','waiting','closed')),
+    response_due TEXT,
+    lead_id      TEXT,
+    revision     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_comms_peer_ts ON comms (peer_key, ts DESC);
 """
 
 FIELDS_SQL_COLS = [
@@ -303,6 +322,13 @@ def insert(item: dict) -> dict:
                 (item.get("source"), item.get("externalId")),
             ).fetchone()
             return to_dict(row)
+        if item.get("peerKey") and item["dir"] == "in" and (item.get("source") or "").startswith("webhook:"):
+            # Новый ответ клиента возвращает завершённый или ожидающий чат в очередь.
+            conn.execute(
+                "UPDATE comms_work SET state='new', response_due=NULL, revision=? "
+                "WHERE peer_key=? AND state IN ('waiting','closed')",
+                (item["id"], item["peerKey"]),
+            )
         row = conn.execute("SELECT * FROM comms WHERE id=?", (item["id"],)).fetchone()
         return to_dict(row)
 
@@ -385,19 +411,35 @@ def delete(comm_id: str) -> bool:
         return cur.rowcount > 0
 
 
-def chats(limit: int = 200, peer_key: str | None = None) -> list[dict]:
+def chats(limit: int = 200, peer_key: str | None = None, queue: str = "all", login: str = "") -> list[dict]:
     """Собрать чаты — группировка сообщений по собеседнику, как в мессенджере.
 
     Возвращает список диалогов: identity (клиент/контакт/телефон/ник), канал,
     счётчик непрочитанных, последние сообщения и черновик ответа."""
     seq_col = "seq" if IS_POSTGRES else "rowid"
     with connect() as conn:
-        where = "peer_key=?" if peer_key is not None else "peer_key IS NOT NULL"
-        params = (peer_key, limit) if peer_key is not None else (limit,)
+        condition = ""
+        params = []
+        if peer_key is not None:
+            condition = " AND c.peer_key=?"
+            params.append(peer_key)
+        elif queue == "active":
+            condition = " AND COALESCE(w.state, 'new') <> 'closed'"
+        elif queue == "closed":
+            condition = " AND w.state='closed'"
+        elif queue == "mine":
+            condition = " AND w.assignee=? AND w.state<>'closed'"
+            params.append(login)
+        elif queue == "overdue":
+            condition = " AND w.state IN ('new','working') AND w.response_due<?"
+            params.append(datetime.now(timezone.utc).isoformat())
         peers = conn.execute(
-            "SELECT peer_key, MAX(ts) last_ts, COUNT(*) total, "
-            "SUM(CASE WHEN dir='in' AND read=0 THEN 1 ELSE 0 END) unread FROM comms "
-            f"WHERE {where} GROUP BY peer_key ORDER BY last_ts DESC LIMIT ?", params).fetchall()
+            "SELECT c.peer_key, MAX(c.ts) last_ts, COUNT(*) total, "
+            "SUM(CASE WHEN c.dir='in' AND c.read=0 THEN 1 ELSE 0 END) unread, "
+            "w.assignee, w.state, w.response_due, w.lead_id, w.revision FROM comms c "
+            "LEFT JOIN comms_work w ON w.peer_key=c.peer_key WHERE c.peer_key IS NOT NULL"
+            + condition + " GROUP BY c.peer_key, w.assignee, w.state, w.response_due, w.lead_id, w.revision "
+            "ORDER BY last_ts DESC LIMIT ?", (*params, limit)).fetchall()
         out = []
         for pr in peers:
             msgs_rows = conn.execute(
@@ -442,8 +484,28 @@ def chats(limit: int = 200, peer_key: str | None = None) -> list[dict]:
             dr = conn.execute(
                 "SELECT draft FROM chat_drafts WHERE peer_key=?", (pr["peer_key"],)).fetchone()
             g["draft"] = (dr["draft"] if dr else "") or ""
+            g["work"] = work_dict(pr)
             out.append(g)
         return out
+
+
+def chat_work(conn, peer_key: str, *, lock=False) -> dict:
+    suffix = " FOR UPDATE" if lock and IS_POSTGRES else ""
+    row = conn.execute(
+        "SELECT assignee, state, response_due, lead_id, revision FROM comms_work WHERE peer_key=?" + suffix,
+        (peer_key,),
+    ).fetchone()
+    return work_dict(row)
+
+
+def work_dict(row) -> dict:
+    return {
+        "assignee": row["assignee"] if row else None,
+        "state": (row["state"] or "new") if row else "new",
+        "responseDue": row["response_due"] if row else None,
+        "leadId": row["lead_id"] if row else None,
+        "revision": row["revision"] if row else None,
+    }
 
 
 def chat_target(peer_key: str, kind: str | None = None) -> dict | None:

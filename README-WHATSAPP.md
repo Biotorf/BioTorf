@@ -50,19 +50,19 @@ cloudflared tunnel --url http://localhost:8787
 - Нажмите **Verify and save** → бэкенд ответит challenge'ем ✅
 - **Webhook fields:** включите подписку на `messages`.
 
-> Verify token из Meta должен совпадать с `WHATSAPP_APP_SECRET` в `.env` —
-> именно им Meta подписывает вебхуки (X-Hub-Signature-256), и GET-верификация
-> сравнивает его с этим значением.
-
 ## Шаг 3. Секреты в .env
 
 ```ini
-# подпись вебхуков Meta = Verify token из Шага 2
-WHATSAPP_APP_SECRET=moj-long-random-token
-# исходящая отправка:
-WHATSAPP_TOKEN=EAA...           # постоянный System User token (см. ниже)
-WHATSAPP_PHONE_NUMBER_ID=108812345678901
+WHATSAPP_VERIFY_TOKEN=             # значение Verify token из настройки callback
+WHATSAPP_APP_SECRET=               # App Secret из Meta App Settings → Basic
+WHATSAPP_TOKEN=                    # постоянный System User token
+WHATSAPP_PHONE_NUMBER_ID=          # ID бизнес-номера из Meta
+WHATSAPP_TEMPLATES_JSON=[]         # разрешённые шаблоны, описаны ниже
 ```
+
+GET-проверка callback использует `WHATSAPP_VERIFY_TOKEN`. POST-события Meta
+подписывает `WHATSAPP_APP_SECRET`; бэкенд проверяет `X-Hub-Signature-256`.
+В Render задайте эти переменные в настройках бэкенда.
 
 **Постоянный токен** (временный живёт 24 ч): Business Settings → Users →
 **System Users** → Add (+admin role) → Generate token → permissions
@@ -84,14 +84,28 @@ docker logs biotorf-backend | grep whatsapp
 curl "http://localhost:8787/api/comms?kind=whatsapp"   # запись появилась в ленте
 ```
 
-Или эмуляция вебхука (подпись считать не обязательно на dev-секрете,
-используйте /api/dev или просто пришлите payload с правильным HMAC).
+Для локальной эмуляции используйте отдельный тестовый App Secret и подпишите
+им точные байты JSON-пакета HMAC-SHA256.
 
-**Исходящие** — откройте http://localhost:8080 → «Коммуникации» → входящее
-WhatsApp-сообщение → **Ответить**. Над полем ввода должна быть зелёная строка
-«✉ Сообщение будет реально отправлено клиенту в WhatsApp с бизнес-номера …».
-Статус записи станет «Доставлено» (с wamid в payload) или «Ошибка доставки»
-с причиной от Meta (например, получатель вне списка тестовых номеров).
+**Исходящие** — откройте WhatsApp-диалог в «Коммуникациях» и отправьте ответ.
+После успешного ответа Graph API CRM покажет «Принято каналом».
+Подписанные события Meta обновят статус на «Передано WhatsApp»,
+«Доставлено», «Прочитано» или «Ошибка доставки». В Meta для входящих
+сообщений и статусов исходящих нужна подписка на поле `messages`.
+
+## Одобренные шаблоны для начала диалога
+
+1. В WhatsApp Manager подтвердите, что шаблон одобрен Meta и согласован
+   компанией. Возьмите его точное имя и код языка.
+2. Добавьте в `WHATSAPP_TEMPLATES_JSON` JSON-массив объектов. Поля
+   `name` и `language` содержат имя и язык из Meta, `label` — название
+   в CRM, `parameters` — подписи текстовых заполнителей тела сообщения.
+   Перечислите их в порядке от первого к последнему. При отсутствии
+   заполнителей укажите пустой массив. Шаблоны с параметрами заголовков,
+   кнопок и медиа требуют дополнительной поддержки.
+3. В CRM выберите WhatsApp и нажмите «Шаблон WhatsApp». Укажите номер в
+   международном формате, заполните параметры и проверьте, что получатель
+   согласился на сообщения. После отправки запись появится в диалоге.
 
 ## Частые ошибки Meta
 
@@ -101,11 +115,13 @@ WhatsApp-сообщение → **Ответить**. Над полем ввод
 | 132000 | вне 24-часового окна диалога | слать approved template |
 | 131013 | номер получателя в списке тестовых не найден | добавить в Manage test numbers |
 | 190 / 401 | токен истёк | перевыпустить System User token |
-| подпись не проходит | WHATSAPP_APP_SECRET ≠ Verify token в Meta | сверить значения |
+| не проходит GET-проверка | Verify token отличается от WHATSAPP_VERIFY_TOKEN | сверить значения |
+| POST-подпись не проходит | WHATSAPP_APP_SECRET отличается от App Secret | сверить секрет приложения Meta |
 
 ## Структура файлов
 
-- `backend/whatsapp_client.py` — обёртка Graph API (отправка + проверка конфигурации)
+- `backend/whatsapp_client.py` — Graph API для текста и шаблонов.
+- `backend/whatsapp_templates.py` — список разрешённых шаблонов и хранение статусов доставки.
 - `backend/main.py` — `/webhooks/whatsapp` (POST приём, GET верификация),
-  `POST /api/comms/{id}/send` для kind=whatsapp, `/api/capabilities`
+  `POST /api/comms/{id}/send` для WhatsApp, `/api/comms/whatsapp/templates` и `/api/capabilities`
 - Фронт показывает баннер «не настроен» с текстом конкретной ошибки Meta.

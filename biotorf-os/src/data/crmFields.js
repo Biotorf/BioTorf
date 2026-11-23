@@ -8,9 +8,9 @@ const SCHEMAS = {
   shipments:  ['id', 'number', 'orderId', 'farmId', 'journeyId', 'date', 'planDate', 'carrier', 'vehicle', 'transport', 'driver', 'plate', 'route', 'items', 'amount', 'status', 'received'],
   tasks:      ['id', 'title', 'owner', 'due', 'priority', 'status', 'refKind', 'refId'],
   contacts:   ['id', 'farmId', 'name', 'role', 'phone', 'whatsapp', 'telegram', 'email', 'primary'],
-  skus:       ['id', 'name', 'line', 'pack', 'recipe', 'status', 'category', 'unit', 'price', 'stock', 'notes'],
+  skus:       ['id', 'name', 'line', 'pack', 'recipe', 'recipeVersion', 'powderKgPerL', 'lossPct', 'status', 'category', 'unit', 'price', 'stock', 'notes'],
   warehouse:  ['id', 'sku', 'batch', 'qty', 'reserved', 'unit', 'warehouse', 'expiry', 'status', 'orderId'],
-  production: ['id', 'date', 'sku', 'product', 'lot', 'qty', 'unit', 'plannedVolumeL', 'status', 'supplyId', 'inputLot', 'pasteUsedKg', 'actualQty', 'qcStatus', 'shift', 'operator', 'notes', 'orderId'],
+  production: ['id', 'date', 'sku', 'product', 'lot', 'qty', 'unit', 'plannedVolumeL', 'recipeVersion', 'plannedPowderKg', 'status', 'supplyId', 'inputLot', 'powderUsedKg', 'actualQty', 'qcStatus', 'shift', 'operator', 'notes', 'orderId'],
   pilots:     ['id', 'title', 'farmId', 'dealId', 'journeyId', 'crop', 'area', 'startDate', 'endDate', 'nextCheck', 'control', 'goal', 'status', 'owner', 'result'],
   quotes:     ['id', 'number', 'dealId', 'farmId', 'journeyId', 'date', 'items', 'terms', 'total', 'status'],
   journeys:   ['id', 'leadId', 'farmId', 'dealId', 'pilotId', 'quoteId', 'orderId', 'invoiceId', 'shipmentId', 'stage', 'owner', 'next', 'qualification', 'history'],
@@ -24,7 +24,7 @@ const SCHEMAS = {
 };
 
 export const COLL_RU = {
-  farms: 'Хозяйства', leads: 'Лиды', deals: 'Сделки', orders: 'Заказы',
+  farms: 'Клиенты', leads: 'Лиды', deals: 'Сделки', orders: 'Заказы',
   invoices: 'Счета', payments: 'Платежи', shipments: 'Отгрузки', tasks: 'Задачи',
   contacts: 'Контакты', skus: 'Товары (SKU)', warehouse: 'Склад', production: 'Производство',
   pilots: 'Пилоты', quotes: 'КП', journeys: 'Маршруты клиентов', knowledge: 'База знаний',
@@ -37,7 +37,7 @@ export const FIELD_RU = {
   id: 'ID', name: 'Название', contactName: 'Контактное лицо', phone: 'Телефон',
   company: 'Компания', region: 'Регион', source: 'Источник', owner: 'Ответственный',
   status: 'Статус', next: 'Следующее действие', notes: 'Заметки', type: 'Тип',
-  crop: 'Культура', area: 'Площадь', title: 'Название / тема', farmId: 'Хозяйство (ID)',
+  crop: 'Культура', area: 'Площадь', title: 'Название / тема', farmId: 'Клиент',
   stage: 'Этап', volumeL: 'Объём, л', amount: 'Сумма', number: 'Номер', dealId: 'Сделка (ID)',
   date: 'Дата', orderId: 'Заказ (ID)', invoiceId: 'Счёт (ID)', paid: 'Оплачен (да/нет)',
   method: 'Способ оплаты', comment: 'Комментарий', transport: 'Транспорт', driver: 'Водитель',
@@ -59,8 +59,10 @@ export const FIELD_RU = {
   caption: 'Текст публикации', caseApproved: 'Кейс утверждён', public: 'Публичный материал', version: 'Версия',
   packs: 'Количество', skuId: 'Артикул (SKU)', sum: 'Сумма', liters: 'Объём, л',
   scheduledDate: 'Дата публикации', link: 'Ссылка', whatsapp: 'WhatsApp', telegram: 'Telegram',
-  plannedVolumeL: 'План выпуска, л', supplyId: 'Поставка пасты', inputLot: 'Партия пасты',
-  actualQty: 'Фактический выпуск', qcStatus: 'Контроль качества', pasteUsedKg: 'Расход пасты, кг',
+  plannedVolumeL: 'План выпуска, л', supplyId: 'Поставка сырья', inputLot: 'Партия сырья',
+  actualQty: 'Фактический выпуск', qcStatus: 'Контроль качества', pasteUsedKg: 'Расход пасты, кг', powderUsedKg: 'Расход порошка, кг',
+  recipeVersion: 'Версия рецептуры', powderKgPerL: 'Порошок на 1 л, кг',
+  lossPct: 'Плановые потери сырья, %', plannedPowderKg: 'План расхода порошка, кг',
   material: 'Тип сырья', control: 'Контрольный участок', goal: 'Цель пилота',
 };
 

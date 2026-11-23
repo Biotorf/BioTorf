@@ -23,6 +23,7 @@ API (подключается в main.py префиксом /api/crm):
 
 import hashlib
 import json
+import math
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -154,6 +155,15 @@ def _record_data(rec: dict, rid: str) -> dict:
 
 
 def _write(tx, coll: str, rec: dict, rid: str) -> dict:
+    if coll == "skus" and any(rec.get(field) not in (None, "") for field in ("powderKgPerL", "lossPct")):
+        try:
+            norm = float(str(rec.get("powderKgPerL")).replace(",", "."))
+            losses = float(str(rec.get("lossPct")).replace(",", "."))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Укажите норму расхода порошка и процент потерь") from exc
+        if not str(rec.get("recipeVersion") or "").strip() or not math.isfinite(norm) or norm <= 0 or not 0 <= losses < 100:
+            raise ValueError("Укажите действующую версию рецептуры, норму расхода больше нуля и потери от 0 до 100% (исключительно)")
+        rec = {**rec, "powderKgPerL": norm, "lossPct": losses}
     stamp = _now()
     tx.execute(
         "INSERT INTO crm_records (id, coll, data, updated) VALUES (?,?,?,?) "

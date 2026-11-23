@@ -18,7 +18,7 @@ const db = useDbStore();
 const modalId = useId();
 const fieldId = (key) => `${modalId}-${key}`;
 
-const NUM_FIELDS = new Set(['area', 'volumeL', 'amount', 'qty', 'price', 'stock', 'pack', 'reserved', 'total', 'version', 'plannedVolumeL', 'pasteUsedKg', 'actualQty']);
+const NUM_FIELDS = new Set(['area', 'volumeL', 'amount', 'qty', 'price', 'stock', 'pack', 'reserved', 'total', 'version', 'plannedVolumeL', 'pasteUsedKg', 'powderUsedKg', 'actualQty', 'powderKgPerL', 'lossPct', 'plannedPowderKg']);
 const BOOL_FIELDS = new Set(['paid', 'primary', 'received', 'public']);
 const LONG_FIELDS = new Set(['notes', 'text', 'route', 'result', 'tags', 'caption']);
 
@@ -47,18 +47,18 @@ const LIST_FIELD = {
   product: 'products', priority: 'priorities', method: 'methods', category: 'categories',
 };
 // Жёсткие перечисления (этапы воронки, приоритеты и т.п.)
-function acceptedPasteLots(doc) {
+function acceptedRawLots(doc, includeLegacy = false) {
   if (doc?.kind !== 'supply' || doc.status !== 'Принят') return [];
   return [...new Set((Array.isArray(doc.items) ? doc.items : [])
-    .filter((item) => item?.material === 'paste' && item.qcStatus === 'Пройден' && item.lot)
+    .filter((item) => (item?.material === 'powder' || (includeLegacy && item?.material === 'paste')) && item.qcStatus === 'Пройден' && item.lot)
     .map((item) => String(item.lot)))];
 }
-function pasteLots() {
+function rawLots() {
   const supply = (db.data.logistics || []).find((row) => String(row.id) === form.value.supplyId);
-  return acceptedPasteLots(supply);
+  return acceptedRawLots(supply, String(props.record?.supplyId) === form.value.supplyId);
 }
 const ENUM_FIELD = {
-  inputLot: () => pasteLots(),
+  inputLot: () => rawLots(),
   qcStatus: () => ['Ожидается', 'Пройден', 'Отклонён'],
   stage: () => props.coll === 'deals'
     ? [...new Set([...DEAL_STAGES, ...(db.data.deals || []).map((row) => dealStage(row.stage))].filter(Boolean))]
@@ -81,7 +81,7 @@ function referenceTable(key) {
 }
 function referenceRows(key) {
   const rows = db.data[referenceTable(key)] || [];
-  return key === 'supplyId' ? rows.filter((row) => acceptedPasteLots(row).length > 0) : rows;
+  return key === 'supplyId' ? rows.filter((row) => acceptedRawLots(row, String(row.id) === String(props.record?.supplyId)).length > 0) : rows;
 }
 function isSelectField(key) {
   return BOOL_FIELDS.has(key) || key in ENUM_FIELD || !!referenceTable(key) || !!listKeyFor(key);
@@ -102,7 +102,7 @@ function selectOptions(key) {
 function onChoiceChange(key) {
   if (key === 'refKind') form.value.refId = '';
   if (key === 'supplyId') {
-    const lots = pasteLots();
+    const lots = rawLots();
     form.value.inputLot = lots.length === 1 ? lots[0] : '';
   }
 }
@@ -112,6 +112,16 @@ const isEdit = computed(() => !!props.record);
 
 const fields = computed(() => crmFields(props.coll, [props.record || props.initialValues]));
 const form = ref({});
+const showExtraFields = ref(false);
+const coreFields = {
+  skus: ['id', 'name', 'line', 'pack', 'price', 'recipeVersion', 'powderKgPerL', 'lossPct'],
+  production: ['date', 'sku', 'lot', 'qty', 'unit', 'plannedVolumeL', 'plannedPowderKg', 'status',
+    'supplyId', 'inputLot', 'powderUsedKg', 'pasteUsedKg', 'actualQty', 'qcStatus'],
+};
+const visibleFields = computed(() => fields.value.filter((key) => key !== 'items' &&
+  (!coreFields[props.coll] || showExtraFields.value || coreFields[props.coll].includes(key))));
+const extraFieldsCount = computed(() => coreFields[props.coll] ?
+  fields.value.filter((key) => !coreFields[props.coll].includes(key)).length : 0);
 let initial = {};
 const jsonFields = new Set(['history', 'qualification']);
 const lineItems = ref([]);
@@ -169,6 +179,10 @@ async function save() {
   error.value = ''; busy.value = true;
   try {
     const rec = {};
+    if (props.coll === 'production' && form.value.status === 'Завершено' && !form.value.lot?.trim() &&
+        (!isEdit.value || form.value.status !== initial.status || form.value.lot !== initial.lot)) {
+      throw new Error('Укажите номер партии готовой продукции.');
+    }
     const suppliedId = form.value.id?.trim();
     if (!isEdit.value && suppliedId && (db.data[props.coll] || []).some((row) => String(row.id) === suppliedId)) {
       throw new Error('Запись с таким ID уже существует. Откройте её для редактирования.');
@@ -182,20 +196,31 @@ async function save() {
       if (!!form.value.refKind !== !!form.value.refId) throw new Error('Укажите тип связи и выберите связанную запись.');
     }
     if (props.coll === 'production') {
-      const { supplyId, inputLot, status, qcStatus, plannedVolumeL, actualQty, pasteUsedKg } = form.value;
+      const { supplyId, inputLot, status, qcStatus, plannedVolumeL, actualQty, powderUsedKg, pasteUsedKg } = form.value;
+      const linkedSupply = (db.data.logistics || []).find((row) => String(row.id) === supplyId);
+      const isLegacyLot = linkedSupply?.items?.some((item) => item.lot === inputLot && item.material === 'paste')
+        && !linkedSupply?.items?.some((item) => item.lot === inputLot && item.material === 'powder');
+      const actualUsed = isLegacyLot ? pasteUsedKg : powderUsedKg;
       const changed = (...keys) => !isEdit.value || keys.some((key) => form.value[key] !== initial[key]);
-      const validLot = !!supplyId && !!inputLot && pasteLots().includes(inputLot);
+      const validLot = !!supplyId && !!inputLot && rawLots().includes(inputLot);
       if (changed('supplyId', 'inputLot') && (supplyId || inputLot) && !validLot) {
-        throw new Error('Выберите принятую поставку пасты и партию, прошедшую контроль качества.');
+        throw new Error('Выберите принятую поставку сырья и партию, прошедшую контроль качества.');
       }
       const finishing = status === 'Завершено' && Number(String(plannedVolumeL).replace(',', '.')) > 0
-        && changed('status', 'qcStatus', 'plannedVolumeL', 'actualQty', 'pasteUsedKg', 'supplyId', 'inputLot');
+        && changed('status', 'qcStatus', 'plannedVolumeL', 'actualQty', 'pasteUsedKg', 'powderUsedKg', 'supplyId', 'inputLot');
       if (finishing && (
         !validLot || !(Number(String(actualQty).replace(',', '.')) > 0) ||
-        !(Number(String(pasteUsedKg).replace(',', '.')) > 0) || !['Пройден', 'Отклонён'].includes(qcStatus)
+        !(Number(String(actualUsed).replace(',', '.')) > 0) || !['Пройден', 'Отклонён'].includes(qcStatus)
       )) {
-        throw new Error('Для завершения партии укажите принятую партию пасты, фактический выпуск, расход пасты и результат контроля качества.');
+        throw new Error('Для завершения партии укажите принятую партию сырья, фактический выпуск, расход сырья и результат контроля качества.');
       }
+    }
+    if (props.coll === 'skus') {
+      const { recipeVersion, powderKgPerL, lossPct } = form.value;
+      if ((powderKgPerL !== '' || lossPct !== '') && (
+        !recipeVersion?.trim() || !(Number(powderKgPerL.replace(',', '.')) > 0) ||
+        lossPct === '' || !(Number(lossPct.replace(',', '.')) >= 0 && Number(lossPct.replace(',', '.')) < 100)
+      )) throw new Error('Для расчёта сырья укажите версию рецептуры, норму порошка больше нуля и потери от 0 до 100% (исключительно).');
     }
     for (const k of fields.value) {
       if (k === 'items' || (k === 'stage' && props.coll === 'deals' && props.record?.journeyId)) continue;
@@ -319,7 +344,7 @@ async function removeRecord() {
           </div>
           <button type="button" class="btn slim" @click="addLine">＋ Позиция</button>
         </fieldset>
-        <div v-for="k in fields.filter((key) => key !== 'items')" :key="k" class="field" :class="{ wide: (LONG_FIELDS.has(k) || isJsonField(k)) }">
+        <div v-for="k in visibleFields" :key="k" class="field" :class="{ wide: (LONG_FIELDS.has(k) || isJsonField(k)) }">
           <label class="fname" :for="fieldId(k)">{{ fieldLabel(k) }}</label>
           <!-- выпадающий список + кнопка «＋» добавления нового значения -->
           <template v-if="isSelectField(k)">
@@ -339,7 +364,12 @@ async function removeRecord() {
             </div>
           </template>
           <textarea v-else-if="LONG_FIELDS.has(k) || isJsonField(k)" :id="fieldId(k)" v-model="form[k]" rows="3"></textarea>
-          <input v-else :id="fieldId(k)" v-model="form[k]" :readonly="k === 'id' && isEdit" :placeholder="k === 'id' && !isEdit ? 'Можно оставить пустым' : undefined" :inputmode="NUM_FIELDS.has(k) ? 'decimal' : undefined" />
+          <input v-else :id="fieldId(k)" v-model="form[k]" :readonly="(k === 'id' && isEdit) || (coll === 'production' && k === 'plannedPowderKg')" :placeholder="k === 'id' && !isEdit ? 'Можно оставить пустым' : undefined" :inputmode="NUM_FIELDS.has(k) ? 'decimal' : undefined" />
+        </div>
+        <div v-if="extraFieldsCount" class="wide">
+          <button type="button" class="btn slim ghost" :aria-expanded="showExtraFields" @click="showExtraFields = !showExtraFields">
+            {{ showExtraFields ? 'Скрыть дополнительные поля' : 'Дополнительные поля' }}
+          </button>
         </div>
         <div v-if="optionsError" class="err" role="alert">{{ optionsError }}</div>
         <div v-if="error" class="err" role="alert">{{ error }}</div>

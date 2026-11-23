@@ -52,15 +52,31 @@ def send_message(token: str, phone_number_id: str, to: str, text: str) -> dict:
     Возвращает ответ Graph API: {"messages": [{"id": "wamid..."}], ...}.
     Бросает WhatsAppError при любой проблеме (разбор ответа Meta).
     """
+    return _send(token, phone_number_id, to, {
+        "type": "text", "text": {"preview_url": False, "body": text},
+    })
+
+
+def send_template(token: str, phone_number_id: str, to: str, name: str,
+                  language: str, parameters: list[str]) -> dict:
+    template = {"name": name, "language": {"code": language}}
+    if parameters:
+        template["components"] = [{
+            "type": "body",
+            "parameters": [{"type": "text", "text": value} for value in parameters],
+        }]
+    return _send(token, phone_number_id, to, {"type": "template", "template": template})
+
+
+def _send(token: str, phone_number_id: str, to: str, message: dict) -> dict:
     if not token or not phone_number_id:
         raise WhatsAppError("WhatsApp не настроен на сервере (WHATSAPP_TOKEN / WHATSAPP_PHONE_NUMBER_ID пусты)")
 
     url = f"https://graph.facebook.com/{GRAPH_VERSION}/{phone_number_id}/messages"
     payload = {
         "messaging_product": "whatsapp",
-        "to": "".join(ch for ch in (to or "") if ch.isdigit()),  # Meta принимает только цифры
-        "type": "text",
-        "text": {"preview_url": False, "body": text},
+        "to": "".join(ch for ch in (to or "") if ch.isdigit()),
+        **message,
     }
     req = urllib.request.Request(
         url,

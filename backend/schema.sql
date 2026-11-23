@@ -31,11 +31,30 @@ CREATE INDEX IF NOT EXISTS idx_comms_seq    ON comms (seq);
 -- индекс; NULL-ы в source/external_id не конфликтуют (NULL DISTINCT в PG).
 CREATE UNIQUE INDEX IF NOT EXISTS idx_comms_ext ON comms (source, external_id);
 
+CREATE TABLE IF NOT EXISTS whatsapp_receipts (
+    provider_id TEXT PRIMARY KEY,
+    code        TEXT NOT NULL,
+    rank        INTEGER NOT NULL,
+    error       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_comms_whatsapp_id ON comms (external_id)
+    WHERE kind='whatsapp' AND dir='out';
+
 CREATE TABLE IF NOT EXISTS chat_drafts (
     peer_key TEXT PRIMARY KEY,
     draft    TEXT NOT NULL DEFAULT '',
     updated  TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS comms_work (
+    peer_key     TEXT PRIMARY KEY,
+    assignee     TEXT,
+    state        TEXT NOT NULL DEFAULT 'new' CHECK (state IN ('new','working','waiting','closed')),
+    response_due TEXT,
+    lead_id      TEXT,
+    revision     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_comms_peer_ts ON comms (peer_key, ts DESC);
 
 CREATE TABLE IF NOT EXISTS channels (
     id          TEXT PRIMARY KEY,

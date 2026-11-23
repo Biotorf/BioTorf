@@ -1,10 +1,13 @@
 <script setup>
+import { inventoryLink } from '@/utils/inventoryLink';
+import { usePermissions } from '@/composables/usePermissions';
+import StatusPill from '@/components/ui/StatusPill.vue';
 import CrmDataTable from '@/components/CrmDataTable.vue';
 // Раздел «Логистика»: реестры ПОСТАВОК (приход) и ВЫГРУЗОК (отгрузка) товара.
 // Таблицы в стиле Excel: итоговые карточки, поиск, фильтр по статусу,
 // редактирование позиций в модалке, экспорт всего реестра в .xls/.csv,
 // печать реестра и создание актов приёма-передачи под каждый документ.
-import { computed, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
 import { useFormatters } from '@/composables/useFormatters';
@@ -21,9 +24,15 @@ function editShipment(record) { editRec.value = record; rowOpen.value = true; }
 
 const db = useDbStore();
 const ui = useUiStore();
+const { canEdit, canEditCollection } = usePermissions();
 const { money, num } = useFormatters();
 
-const tab = ref('dispatch');                 // dispatch | supply
+const tabFromHash = () => new URLSearchParams(location.hash.split('?')[1]).get('kind') === 'supply' ? 'supply' : 'dispatch';
+const tab = ref(tabFromHash());
+function locationTab(kind) { location.hash = '#/shipments?kind=' + kind; }
+const readTab = () => { tab.value = tabFromHash(); ui.filter = 'Все'; };
+onMounted(() => window.addEventListener('hashchange', readTab));
+onBeforeUnmount(() => window.removeEventListener('hashchange', readTab));
 const syncing = ref(false);
 
 onMounted(async () => {
@@ -40,7 +49,7 @@ const filtered = computed(() => {
     if (ui.filter !== 'Все' && d.status !== ui.filter) return false;
     if (!q) return true;
     return [d.number, d.party, d.warehouse, d.base, d.driver, d.vehicle, d.status,
-      (d.items || []).map((i) => i.name).join(' '),
+      (d.items || []).map((i) => [i.name, i.lot].filter(Boolean).join(' ')).join(' '),
       d.act ? `акт ${d.act.number} ${d.act.type}` : 'без акта',
     ].join(' ').toLowerCase().includes(q);
   });
@@ -114,8 +123,9 @@ function printRegistry() {
 }
 
 // быстрый переход к документу для создания акта прямо из таблицы
-function quickAct(d) {
-  openEditor(d);
+function canPostReceipt(doc) {
+  return canEdit('warehouse') && doc.kind === 'supply' && doc.status === 'Принят' &&
+    doc.items?.some((item) => item.material === 'powder' && item.qcStatus === 'Пройден');
 }
 
 </script>
@@ -124,26 +134,30 @@ function quickAct(d) {
   <div>
     <div class="pagehead">
       <div>
-        <h1>Логистика · поставки и выгрузки</h1>
+        <h1>Поставки и отгрузки</h1>
         <ManualLink />
-        <div class="subtitle">Excel-подобные реестры документов движения товара с актами приёма-передачи</div>
+        <div class="subtitle">Приёмка порошка и доставка готовой продукции.</div>
       <BackendBadge collection="shipments" />
       </div>
+      <div v-if="canEdit('shipments')" class="actionbar">
+        <button class="btn primary" @click="openEditor()">{{ tab === 'supply' ? 'Новая поставка' : 'Новая отгрузка' }}</button>
+      </div>
+    </div>
+
+    <details class="panel logistics-extra export-tools">
+      <summary>Экспорт документов</summary>
       <div class="actionbar">
         <button class="btn slim ghost" @click="exportRegistry('xls')" title="Скачать отфильтрованный реестр в Excel">⬇ Excel (.xls)</button>
         <button class="btn slim ghost" @click="exportRegistry('csv')" title="Скачать реестр в CSV">⬇ CSV</button>
         <button class="btn slim ghost" @click="printRegistry" title="Печать реестра / PDF">🖨 Печать</button>
-        <button class="btn primary" @click="openEditor()">＋ {{ tab === 'supply' ? 'Новая поставка' : 'Новая выгрузка' }}</button>
       </div>
-        <div class="actionbar" style="margin-top:10px">
-          <button class="btn primary slim" @click="editShipment(null)" title="Добавить отгрузку CRM">＋ Отгрузка CRM</button>
-        </div></div>
+    </details>
 
     <div class="chips" style="margin-bottom:16px">
-      <button class="btn slim" :class="{ primary: tab === 'dispatch' }" @click="tab = 'dispatch'; ui.filter = 'Все'">
+      <button class="btn slim" :class="{ primary: tab === 'dispatch' }" @click="locationTab('dispatch')">
         ➜ Выгрузки (отгрузки)
       </button>
-      <button class="btn slim" :class="{ primary: tab === 'supply' }" @click="tab = 'supply'; ui.filter = 'Все'">
+      <button class="btn slim" :class="{ primary: tab === 'supply' }" @click="locationTab('supply')">
         ⬅ Поставки (приход)
       </button>
       <span v-if="syncing" class="mini right">синхронизация…</span>
@@ -163,41 +177,51 @@ function quickAct(d) {
       </select>
     </div>
 
-    <CrmDataTable coll="logistics" :rows="filtered" empty="Документов нет.">
-        <template #actions="{ row: d }">
-          <button class="btn slim ghost" @click="openEditor(d)">Изменить</button>
-          <button class="btn slim ghost" @click="removeDoc(d)">Удалить</button>
-          <button v-if="!d.act" class="btn slim ghost" @click="quickAct(d)">Создать акт</button>
+    <div v-if="filtered.length" class="logistics-grid">
+      <article v-for="doc in filtered" :key="doc.id" class="panel logistics-card">
+        <header>
+          <h2>{{ doc.number }}</h2>
+          <StatusPill :status="doc.status" />
+        </header>
+        <p class="subtitle">{{ [doc.party, doc.date, doc.warehouse].filter(Boolean).join(' · ') }}</p>
+        <p>{{ itemsSummary(doc) }}</p>
+        <div class="actionbar">
+          <button class="btn slim" @click="openEditor(doc)">Открыть документ</button>
+          <a v-if="canPostReceipt(doc)" :href="inventoryLink('receipt_powder', 'logistics', doc.id)">Провести приёмку</a>
+        </div>
+      </article>
+    </div>
+    <p v-else class="empty">Документов нет.</p>
+    <details class="panel logistics-extra">
+      <summary>Таблица документов</summary>
+      <CrmDataTable coll="logistics" :rows="filtered" empty="Документов нет.">
+        <template #actions="{ row: doc }">
+          <button class="btn slim ghost" @click="openEditor(doc)">Открыть</button>
+          <button v-if="canEdit('shipments')" class="btn slim ghost danger-text" @click="removeDoc(doc)">Удалить</button>
         </template>
       </CrmDataTable>
-    <p v-if="filtered.length">
-      Документов {{ filtered.length }} · Количество {{ num(filtered.reduce((sum, d) => sum + qtyOf(d), 0)) }}
-      · Сумма {{ money(filtered.reduce((sum, d) => sum + sumOf(d), 0)) }}
-    </p>
-    <section v-if="tab === 'dispatch'">
-      <h2>Отгрузки CRM</h2>
+    </details>
+    <details v-if="tab === 'dispatch'" class="panel logistics-extra">
+      <summary>Заказы к отгрузке</summary>
+      <button v-if="canEditCollection('shipments')" class="btn slim" @click="editShipment(null)">Добавить отгрузку заказа</button>
       <CrmDataTable coll="shipments" :rows="db.data.shipments || []" empty="Отгрузок CRM нет.">
         <template #actions="{ row: s }">
-          <button class="btn slim ghost" @click="editShipment(s)">Изменить</button>
+          <button v-if="canEditCollection('shipments')" class="btn slim ghost" @click="editShipment(s)">Изменить</button>
+          <a v-if="canEdit('warehouse') && s.orderId" :href="inventoryLink('dispatch', 'shipments', s.id, s.orderId)">Со склада</a>
           <button v-if="s.journeyId" class="btn slim ghost" @click="ui.openJourney(s.journeyId)">Процесс</button>
         </template>
       </CrmDataTable>
-    </section>
-
-    <div class="note" style="margin-top:18px">
-      Документы хранятся в общей базе (backend → SQLite), если сервис запущен — реестры видны всем сотрудникам.
-      Кнопка «Изменить» открывает редактор с таблицей позиций; там же создаётся <b>акт приёма-передачи</b>
-      (печатная форма A4 → PDF) и скачиваются выгрузки в Excel/CSV.
-    </div>
+    </details>
   </div>
   <CrmRowModal v-if="rowOpen" :coll="rowColl" :record="editRec" @close="rowOpen = false; editRec = null" />
 </template>
 
 <style scoped>
-.right-h { text-align: right; }
-.right { text-align: right; }
-.mono { font-variant-numeric: tabular-nums; }
-.reg-table td { vertical-align: top; }
-tfoot td { border-top: 2px solid #dfeae4; background: #fafcfb; padding: 12px 14px; }
-.chips .btn.primary { background: var(--green); color: #fff; border-color: var(--green); }
+.logistics-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 250px), 1fr)); gap: 12px; }
+.logistics-card header { display: flex; justify-content: space-between; align-items: start; gap: 8px; }
+.logistics-card .actionbar { align-items: center; }
+.logistics-extra { margin-top: 14px; }
+.logistics-extra summary { cursor: pointer; font-weight: 650; }
+.logistics-extra .table-wrap, .logistics-extra .actionbar { margin-top: 12px; }
+.export-tools { margin: 0 0 12px; padding: 10px 15px; }
 </style>

@@ -4,11 +4,26 @@ import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
 import { apiState, commsApi } from '@/api/commsClient';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
+import WhatsAppTemplateSender from '@/components/WhatsAppTemplateSender.vue';
+import CommsInboxWork from '@/components/CommsInboxWork.vue';
+import { INBOX_STATES, isResponseOverdue } from '@/data/commsInbox';
 
 const db = useDbStore();
 const ui = useUiStore();
 
 const online = ref(apiState.online);
+const inboxFilter = ref('active');
+const inboxStaff = ref({ items: [], login: '', canAssignOthers: false });
+
+async function loadInboxStaff() {
+  try { inboxStaff.value = await commsApi.assignees(); }
+  catch { /* доступность списка сотрудников не блокирует переписку */ }
+}
+
+function applyInboxWork(key, work) {
+  const chat = chatList.value.find((row) => row.key === key);
+  if (chat) chat.work = work;
+}
 
 // фильтр сети (канала) прямо в списке чатов
 const chatKindFilter = ref(localStorage.getItem('biotorf_chat_kind') || 'all');
@@ -22,6 +37,7 @@ const chatSending = ref(false);
 const chatError = ref('');
 const chatNotice = ref('');
 const newChatOpen = ref(false);
+const templateMode = ref(false);
 const newChat = ref({ kind: 'telegram', handle: '', phone: '', contact: '', text: '' });
 const newChatError = ref('');
 const linkFarmId = ref('');
@@ -82,6 +98,11 @@ const sortedChats = computed(() =>
   [...chatList.value].sort((a, b) => (a.lastTs < b.lastTs ? 1 : -1))
     .filter((c) => {
       if (chatKindFilter.value !== 'all' && !chatKinds(c).includes(chatKindFilter.value)) return false;
+      const state = c.work?.state;
+      if (inboxFilter.value === 'active' && state === 'closed') return false;
+      if (inboxFilter.value === 'closed' && state !== 'closed') return false;
+      if (inboxFilter.value === 'mine' && (state === 'closed' || !c.work?.assignee || c.work.assignee !== inboxStaff.value.login)) return false;
+      if (inboxFilter.value === 'overdue' && !isResponseOverdue(c.work)) return false;
       const q = ui.search.toLowerCase();
       if (!q) return true;
       return [peerTitle(c), c.contact, c.handle, c.phone, c.lastMessage?.text]
@@ -122,7 +143,7 @@ async function loadChats(quiet = false, focusKey = null) {
   const version = ++loadVersion;
   let rows;
   try {
-    rows = online.value ? (await commsApi.chats()).items || [] : localChats();
+    rows = online.value ? (await commsApi.chats(200, inboxFilter.value)).items || [] : localChats();
     if (online.value) rows.push(...localChats().filter((c) => c.id?.startsWith('C-local-')));
     if (online.value && focusKey && !rows.some((row) => row.key === focusKey)) {
       try { rows.unshift(await commsApi.chat(focusKey)); }
@@ -299,6 +320,40 @@ async function startNewChat() {
   }
 }
 
+function whatsappAddress(chat) {
+  return (chat.messages || []).findLast((message) => message.kind === 'whatsapp' && message.phone)
+    || (chat.kind === 'whatsapp' && chat.phone ? chat : null);
+}
+
+function showWhatsAppTemplate(chat) {
+  const address = whatsappAddress(chat);
+  if (!address) return;
+  newChat.value = { kind: 'whatsapp', phone: address.phone, contact: address.contact || '', handle: '', text: '' };
+  newChatError.value = '';
+  newChatOpen.value = true;
+  templateMode.value = true;
+}
+
+async function templateResult(result) {
+  if (result.item?.peerKey) await loadChats(true, result.item.peerKey);
+  if (result.sent) {
+    newChatOpen.value = false;
+    templateMode.value = false;
+    sendFeedback(result);
+  }
+}
+
+function deliveryLabel(status) {
+  return ({
+    'Отправлено': 'Принято каналом',
+    'Передано WhatsApp': 'Передано WhatsApp',
+    'Доставлено': 'Доставлено',
+    'Прочитано': 'Прочитано',
+    'В очереди': 'В очереди',
+    'Ошибка доставки': 'Ошибка доставки',
+  })[status] || '';
+}
+
 function chatGoClient(c) {
   if (c.farmId) ui.openClient(c.farmId);
 }
@@ -389,6 +444,7 @@ let pollTimer = null;
 
 let polling = false;
 let mounted = true;
+watch(inboxFilter, () => loadChats(false, activeKey.value));
 async function tick() {
   if (!mounted || !autoRefresh.value || document.hidden || polling) return;
   polling = true;
@@ -397,7 +453,7 @@ async function tick() {
     await db.syncComms(true);
     if (!mounted) return;
     online.value = apiState.online;
-    if (!wasOnline && online.value) await loadChannels();
+    if (!wasOnline && online.value) await Promise.all([loadChannels(), loadInboxStaff()]);
     await loadChats(true, activeKey.value);
   } finally { polling = false; }
 }
@@ -406,7 +462,7 @@ onMounted(async () => {
   await db.syncComms();
   if (!mounted) return;
   online.value = apiState.online;
-  await loadChannels();
+  if (online.value) await Promise.all([loadChannels(), loadInboxStaff()]);
   await loadChats();
   if (!mounted) return;
   pollTimer = setInterval(tick, 4000);
@@ -525,7 +581,16 @@ onBeforeUnmount(() => {
         <aside class="chat-side">
           <div class="chat-side-head">
             <span class="panel-title">Чаты</span>
-            <button v-if="online" class="btn slim primary" @click="newChatOpen = !newChatOpen">＋ Диалог</button>
+            <button v-if="online" class="btn slim primary" @click="newChatOpen = !newChatOpen; templateMode = false">＋ Диалог</button>
+          </div>
+          <div v-if="online" class="chat-kind-filter">
+            <select v-model="inboxFilter" aria-label="Очередь диалогов" class="select">
+              <option value="active">Активные</option>
+              <option value="mine">Мои диалоги</option>
+              <option value="overdue">Просроченные</option>
+              <option value="closed">Закрытые</option>
+              <option value="all">Все диалоги</option>
+            </select>
           </div>
           <div class="chat-kind-filter">
             <button class="chip mini-chip" :class="{ selected: chatKindFilter === 'all' }"
@@ -541,7 +606,7 @@ onBeforeUnmount(() => {
                     @click="setChatKind(ch.id)">{{ ch.icon }} {{ ch.label }}</button>
           </div>
           <div v-if="online && newChatOpen" class="newchat">
-            <select v-model="newChat.kind" class="select">
+            <select v-model="newChat.kind" class="select" @change="templateMode = false">
               <option value="telegram">✈ Telegram</option>
               <option value="whatsapp">◔ WhatsApp</option>
               <option v-for="ch in dynChannels" :key="ch.id" :value="ch.id">{{ ch.icon }} {{ ch.label }}</option>
@@ -552,9 +617,15 @@ onBeforeUnmount(() => {
             <input v-if="HANDLE_KINDS.includes(newChat.kind)" v-model="newChat.handle" class="input" placeholder="@ник клиента / ссылка на профиль" />
             <input v-else v-model="newChat.phone" class="input" placeholder="+996 … номер" />
             <input v-model="newChat.contact" class="input" placeholder="Имя (необязательно)" />
-            <textarea v-model="newChat.text" class="textarea" rows="2" maxlength="4000" placeholder="Первое сообщение…"></textarea>
-            <p v-if="newChatError" class="comms-error" role="alert">{{ newChatError }}</p>
-            <button class="btn primary slim" :disabled="chatSending" @click="startNewChat">Начать диалог</button>
+            <button v-if="newChat.kind === 'whatsapp'" class="btn slim" @click="templateMode = !templateMode">
+              {{ templateMode ? 'Обычное сообщение' : 'Шаблон WhatsApp' }}
+            </button>
+            <WhatsAppTemplateSender v-if="templateMode" :phone="newChat.phone" :contact="newChat.contact" @result="templateResult" />
+            <template v-else>
+              <textarea v-model="newChat.text" class="textarea" rows="2" maxlength="4000" placeholder="Первое сообщение…"></textarea>
+              <p v-if="newChatError" class="comms-error" role="alert">{{ newChatError }}</p>
+              <button class="btn primary slim" :disabled="chatSending" @click="startNewChat">Начать диалог</button>
+            </template>
           </div>
           <div class="chat-list">
             <div
@@ -572,6 +643,9 @@ onBeforeUnmount(() => {
                   <span class="chat-preview">{{ c.lastMessage?.dir === 'out' ? '→ ' : '' }}{{ (c.lastMessage?.text || c.lastMessage?.note || c.lastMessage?.status || '').slice(0, 60) }}</span>
                   <span v-if="c.unread" class="badge">{{ c.unread }}</span>
                 </div>
+                <span v-if="c.work" class="mini" :class="{ 'comms-error': isResponseOverdue(c.work) }">
+                  {{ isResponseOverdue(c.work) ? 'Просрочен ответ' : INBOX_STATES[c.work.state] }}
+                </span>
               </div>
             </div>
             <div v-if="!sortedChats.length" class="empty" style="padding:18px">Диалогов пока нет.</div>
@@ -592,10 +666,15 @@ onBeforeUnmount(() => {
                 <option value="all">Все сети</option>
                 <option v-for="k in chatKinds(activeChat)" :key="k" :value="k">{{ channelMeta[k]?.icon || '💬' }} {{ channelMeta[k]?.label || k }}</option>
               </select>
-              <span v-if="['Отправлено', 'Доставлено'].includes(activeChat.lastOutStatus)" class="pill green">передано в канал ✓</span>
-              <span v-else-if="activeChat.lastOutStatus === 'В очереди'" class="pill amber">⏳ в очереди</span>
-              <span v-else-if="activeChat.lastOutStatus === 'Ошибка доставки'" class="pill red">✕ ошибка</span>
+              <button v-if="online && whatsappAddress(activeChat)" class="btn slim"
+                      @click="showWhatsAppTemplate(activeChat)">Шаблон WhatsApp</button>
+              <span v-if="deliveryLabel(activeChat.lastOutStatus)" class="pill"
+                    :class="activeChat.lastOutStatus === 'Ошибка доставки' ? 'red' : activeChat.lastOutStatus === 'В очереди' ? 'amber' : 'green'">
+                {{ deliveryLabel(activeChat.lastOutStatus) }}
+              </span>
             </header>
+            <CommsInboxWork v-if="online && activeChat.work" :key="activeChat.key" :chat="activeChat"
+                            :staff="inboxStaff" @updated="applyInboxWork" />
             <div v-if="online && !activeChat.farmId && !activeChat.lastMessage?.id?.startsWith('C-local-')" class="chat-link">
               <select v-model="linkFarmId" class="select" aria-label="Клиент для привязки">
                 <option value="">Выберите клиента</option>
@@ -615,11 +694,7 @@ onBeforeUnmount(() => {
                     <div v-if="m.payload?.sendError && m.status === 'Ошибка доставки'" class="mini comms-error">{{ m.payload.sendError }}</div>
                     <div class="bubble-meta">
                       <span>{{ fmtTime(m.ts) }}</span>
-                      <span v-if="m.dir === 'out'">
-                        <template v-if="['Отправлено', 'Доставлено'].includes(m.status)"> ✓</template>
-                        <template v-else-if="m.status === 'В очереди'"> 🕓</template>
-                        <template v-else-if="m.status === 'Ошибка доставки'"> ✕</template>
-                      </span>
+                      <span v-if="m.dir === 'out'">{{ deliveryLabel(m.status) }}</span>
                     </div>
                   </div>
                 </div>

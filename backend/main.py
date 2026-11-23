@@ -40,8 +40,8 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, Field
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from pydantic import AwareDatetime, BaseModel, Field
 
 import auth
 import farms_index
@@ -50,10 +50,13 @@ import psycopg   # OperationalError — «БД недоступна» в middlew
 if store.IS_POSTGRES:
     from pg import check_connection as pg_check
 import logistics
+import inventory
 import channels
+import chat_inbox
 import crm
 import users
 import whatsapp_client
+import whatsapp_templates
 
 # Единая точка логирования вместо print(): уровень настраивается переменной
 # LOG_LEVEL (по умолчанию INFO; в проде можно поставить WARNING).
@@ -81,7 +84,8 @@ def _env(name: str, default: str = "") -> str:
 FARMS_FILE = Path(_env("FARMS_FILE", str(Path(__file__).resolve().parent / "farms.json")))
 
 TELEGRAM_SECRET = _env("TELEGRAM_WEBHOOK_SECRET")          # X-Bot-Secret для TG-воркера
-WHATSAPP_TOKEN = _env("WHATSAPP_APP_SECRET")               # секрет Meta для проверки подписи
+WHATSAPP_APP_SECRET = _env("WHATSAPP_APP_SECRET")          # подпись POST-событий Meta
+WHATSAPP_VERIFY_TOKEN = _env("WHATSAPP_VERIFY_TOKEN")       # GET-проверка callback при настройке
 TELEPHONY_TOKEN = _env("TELEPHONY_TOKEN")                  # ?token= для телефонии
 
 # ── WhatsApp Cloud API (исходящая отправка из ленты) ──
@@ -184,8 +188,8 @@ def _ensure_schema():
 
 
 # таблицы, которые ОБЯЗАНЫ существовать после успешной инициализации схемы
-_PG_SCHEMA_TABLES = ("comms", "chat_drafts", "channels", "channel_accounts",
-                     "crm_records", "logistics_docs", "users")
+_PG_SCHEMA_TABLES = ("comms", "chat_drafts", "comms_work", "channels", "channel_accounts",
+                     "crm_records", "logistics_docs", "users", "whatsapp_receipts")
 
 
 def _missing_pg_tables() -> list[str]:
@@ -718,10 +722,11 @@ def comms_events(since: int = Query(0, ge=0), limit: int = Query(100, le=500)):
 
 # ── мессенджер: чаты (диалоги с клиентами) ───────────────────────────────────
 @app.get("/api/chat-list")
-def chats_list(limit: int = Query(200, le=500)):
+def chats_list(request: Request, limit: int = Query(200, ge=1, le=500),
+               queue: str = Query("all", pattern="^(all|active|closed|mine|overdue)$")):
     """Список чатов как в Telegram: по одному диалогу на собеседника,
     последнее сообщение, счётчик непрочитанных, статус доставки ответа."""
-    return {"items": store.chats(limit)}
+    return {"items": store.chats(limit, queue=queue, login=request.state.user)}
 
 
 @app.get("/api/chat/{peer_key}")
@@ -730,6 +735,44 @@ def chat_detail(peer_key: str):
     if chats:
         return chats[0]
     raise HTTPException(404, "Чат не найден")
+
+
+@app.get("/api/chat-assignees")
+def chat_assignees(request: Request):
+    role, login = request.state.role, request.state.user
+    if not auth.can_write(role, "comms"):
+        return {"items": [], "login": login, "canAssignOthers": False}
+    return {
+        "items": chat_inbox.assignees(login, role), "login": login,
+        "canAssignOthers": role in chat_inbox.MANAGERS,
+    }
+
+
+class ChatWorkRevision(BaseModel):
+    revision: str | None = Field(max_length=100)
+
+
+class ChatWorkIn(ChatWorkRevision):
+    assignee: str | None = Field(max_length=320)
+    state: str = Field(pattern="^(new|working|waiting|closed)$")
+    responseDue: AwareDatetime | None
+    leadId: str | None = Field(max_length=320)
+
+
+@app.put("/api/chat/{peer_key}/work")
+def chat_work_update(peer_key: str, body: ChatWorkIn, request: Request):
+    try:
+        return chat_inbox.update(peer_key, body.model_dump(), request.state.user, request.state.role)
+    except chat_inbox.InboxError as exc:
+        raise HTTPException(exc.status, exc.detail) from exc
+
+
+@app.post("/api/chat/{peer_key}/lead")
+def chat_lead_create(peer_key: str, body: ChatWorkRevision, request: Request):
+    try:
+        return chat_inbox.create_lead(peer_key, body.revision, request.state.user, request.state.role)
+    except chat_inbox.InboxError as exc:
+        raise HTTPException(exc.status, exc.detail) from exc
 
 
 @app.post("/api/chat/{peer_key}/read")
@@ -1080,7 +1123,7 @@ def link_comm(comm_id: str, farmId: str = Query(...)):
 # ── REST: логистика — поставки и выгрузки (отгрузки) товара ─────────────────
 class LogisticsItem(BaseModel):
     skuId: str | None = None
-    material: str | None = Field(None, pattern="^(paste)?$")
+    material: str | None = Field(None, pattern="^(powder|paste)?$")
     lot: str | None = Field(None, max_length=200)
     qcStatus: str | None = Field(None, pattern="^(Ожидается|Пройден|Отклонён)?$")
     name: str | None = None
@@ -1154,6 +1197,25 @@ def update_logistics(doc_id: str, body: LogisticsIn):
 def delete_logistics(doc_id: str):
     if not logistics.delete_doc(store.connect(), doc_id):
         raise HTTPException(404, "Документ не найден")
+
+
+@app.get("/api/inventory")
+def inventory_state():
+    with closing(store.connect()) as conn:
+        return inventory.get_state(conn)
+
+
+@app.post("/api/inventory", status_code=201)
+def inventory_post(body: dict, request: Request):
+    try:
+        with closing(store.connect()) as conn:
+            return inventory.post_event(conn, body, actor=request.state.user, role=request.state.role)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from exc
+    except inventory.InventoryConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 # ── CRM ядро: сквозной процесс и операционные реестры (руководство v0.9) ─────
@@ -1465,6 +1527,8 @@ def send_whatsapp(item: dict, text: str) -> dict:
     except whatsapp_client.WhatsAppError as e:
         raise HTTPException(502, f"WhatsApp/Meta не принял сообщение: {e}")
     msg_id = ((res.get("messages") or [{}])[0]).get("id")
+    if not isinstance(msg_id, str) or not msg_id:
+        raise HTTPException(502, "Meta не вернула ID сообщения")
     return {"sent": True, "via": "whatsapp", "messageId": msg_id}
 
 
@@ -1526,6 +1590,8 @@ def save_outgoing(item: dict, text: str, reply_to: str | None = None, media_file
     payload.pop("sendError", None)
     payload.pop("tgMessageId", None)
     payload.pop("waMessageId", None)
+    payload.pop("waReceipt", None)
+    payload.pop("waTemplate", None)
     payload.pop("media", None)
     payload.pop("replyTo", None)
     sent = None
@@ -1567,8 +1633,12 @@ def save_outgoing(item: dict, text: str, reply_to: str | None = None, media_file
         "read": True,
         "source": "reply" if reply_to else "chat",
         "status": "Ошибка доставки" if send_error else ("Отправлено" if sent else "В очереди"),
+        "externalId": payload.get("waMessageId"),
         "payload": payload,
     })
+    if provider_id := payload.get("waMessageId"):
+        whatsapp_templates.apply_status(provider_id)
+        saved = store.get(saved["id"])
     return {"item": saved, "sent": bool(sent), "error": send_error}
 
 
@@ -1641,6 +1711,82 @@ def send_to(body: dict):
         "handle": handle,
         "payload": pl,
     }, text)
+
+
+def _wa_approved_templates() -> list[dict]:
+    try:
+        return whatsapp_templates.approved_templates(_env("WHATSAPP_TEMPLATES_JSON"))
+    except ValueError:
+        log.warning("[whatsapp] проверьте формат WHATSAPP_TEMPLATES_JSON")
+        return []
+
+
+@app.get("/api/comms/whatsapp/templates")
+def wa_approved_templates():
+    token, phone_number_id = wa_send_creds()
+    return {"items": _wa_approved_templates() if token and phone_number_id else []}
+
+
+class WhatsAppTemplateIn(BaseModel):
+    phone: str = Field(min_length=8, max_length=32)
+    name: str = Field(min_length=1, max_length=512)
+    language: str = Field(min_length=2, max_length=7)
+    parameters: list[str] = Field(default_factory=list, max_length=30)
+    contact: str | None = Field(None, max_length=120)
+
+
+@app.post("/api/comms/whatsapp/templates/send")
+def wa_send_template(body: WhatsAppTemplateIn):
+    """Отправка по одному получателю из списка шаблонов, одобренных в Meta."""
+    template = next((entry for entry in _wa_approved_templates()
+                     if (entry["name"], entry["language"]) == (body.name, body.language)), None)
+    if not template:
+        raise HTTPException(422, "Шаблон отсутствует в списке разрешённых")
+    phone = body.phone.strip()
+    if not re.fullmatch(r"[+0-9 ()-]+", phone) or not re.fullmatch(r"[1-9][0-9]{7,14}", digits(phone)):
+        raise HTTPException(422, "Укажите номер WhatsApp с кодом страны")
+    phone = "+" + digits(phone)
+    values = [value.strip() for value in body.parameters]
+    if len(values) != len(template["parameters"]) or any(
+            not value or len(value) > 1024 or re.search(r"[\t\r\n]| {5,}", value) for value in values):
+        raise HTTPException(422, "Заполните параметры шаблона, каждый одной строкой")
+    token, phone_number_id = wa_send_creds()
+    if not token or not phone_number_id:
+        raise HTTPException(503, "Отправка WhatsApp не настроена")
+
+    farm_id = auto_link(phone)
+    if not farm_id:
+        with closing(store.connect()) as conn:
+            farm_id = crm.auto_link_tg(conn, None, phone)
+    payload = {"waTemplate": {"name": body.name, "language": body.language}}
+    send_error = None
+    provider_id = None
+    try:
+        result = whatsapp_client.send_template(token, phone_number_id, phone,
+                                               body.name, body.language, values)
+        provider_id = ((result.get("messages") or [{}])[0]).get("id")
+        if not isinstance(provider_id, str) or not provider_id:
+            provider_id = None
+            send_error = "Meta не вернула ID сообщения"
+    except whatsapp_client.WhatsAppError as exc:
+        send_error = str(exc)[:200]
+    if provider_id:
+        payload["waMessageId"] = provider_id
+    if send_error:
+        payload["sendError"] = send_error
+    text = "\n".join([f"Шаблон WhatsApp · {template['label']}", *[
+        f"{label}: {value}" for label, value in zip(template["parameters"], values)
+    ]])
+    saved = store.insert({
+        "id": new_id(), "kind": "whatsapp", "dir": "out", "phone": phone, "contact": body.contact,
+        "farmId": farm_id, "ts": now_iso(), "text": text, "read": True,
+        "source": "chat", "status": "Ошибка доставки" if send_error else "Отправлено",
+        "externalId": provider_id, "payload": payload,
+    })
+    if provider_id:
+        whatsapp_templates.apply_status(provider_id)
+        saved = store.get(saved["id"])
+    return {"item": saved, "sent": bool(provider_id), "error": send_error}
 
 
 @app.get("/api/capabilities")
@@ -1788,11 +1934,11 @@ def check_secret(provided: str | None, expected: str, name: str):
 
 
 def verify_whatsapp_signature(body: bytes, signature: str | None):
-    if not WHATSAPP_TOKEN:
+    if not WHATSAPP_APP_SECRET:
         raise HTTPException(503, "WHATSAPP_APP_SECRET не настроен")
     if not signature or not signature.startswith("sha256="):
         raise HTTPException(401, "Отсутствует подпись X-Hub-Signature-256")
-    digest = hmac.new(WHATSAPP_TOKEN.encode(), body, hashlib.sha256).hexdigest()
+    digest = hmac.new(WHATSAPP_APP_SECRET.encode(), body, hashlib.sha256).hexdigest()
     if not hmac.compare_digest("sha256=" + digest, signature):
         raise HTTPException(401, "Неверная подпись WhatsApp")
 
@@ -1947,16 +2093,25 @@ def auto_link_handle(handle: str | None) -> str | None:
 async def whatsapp_webhook(request: Request, x_hub_signature_256: str | None = Header(None)):
     raw = await request.body()
     verify_whatsapp_signature(raw, x_hub_signature_256)
-    payload = json.loads(raw)
+    try:
+        payload = json.loads(raw)
+    except (ValueError, UnicodeError) as exc:
+        raise HTTPException(400, "Неверный JSON вебхука") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "Ожидается JSON-объект")
 
-    created = []
+    created, statuses = [], 0
     for entry in payload.get("entry", []):
         for change in entry.get("changes", []):
             value = change.get("value", {})
-            business_phone = (value.get("metadata") or {}).get("display_phone_number", "")
-            for msg in value.get("messages", []):
-                if msg.get("status") and not msg.get("text"):
-                    continue  # статусные события (delivered/read) пока пропускаем
+            metadata = value.get("metadata") or {}
+            business_phone = metadata.get("display_phone_number", "")
+            _, expected_phone_id = wa_send_creds()
+            if not expected_phone_id or str(metadata.get("phone_number_id") or "") == expected_phone_id:
+                for event in value.get("statuses") or []:
+                    if isinstance(event, dict) and whatsapp_templates.record_status(event):
+                        statuses += 1
+            for msg in value.get("messages") or []:
                 text = (msg.get("text") or {}).get("body") or \
                     (msg.get("interactive") or {}).get("button_reply", {}).get("title") or ""
                 contacts = value.get("contacts") or [{}]
@@ -1981,7 +2136,7 @@ async def whatsapp_webhook(request: Request, x_hub_signature_256: str | None = H
                 except Exception as e:
                     log.warning("[crm] register_comm skip: %s", e)
                 created.append(saved)
-    return {"created": len(created)}
+    return {"created": len(created), "statuses": statuses}
 
 
 # GET-верификация вебхука при настройке в Meta Developers
@@ -1989,8 +2144,8 @@ async def whatsapp_webhook(request: Request, x_hub_signature_256: str | None = H
 def whatsapp_verify(hub_mode: str = Query("", alias="hub.mode"),
                     hub_token: str = Query("", alias="hub.verify_token"),
                     hub_challenge: str = Query("", alias="hub.challenge")):
-    if hub_mode == "subscribe" and hmac.compare_digest(hub_token, WHATSAPP_TOKEN or "\x00"):
-        return int(hub_challenge) if hub_challenge.isdigit() else hub_challenge
+    if hub_mode == "subscribe" and WHATSAPP_VERIFY_TOKEN and hmac.compare_digest(hub_token, WHATSAPP_VERIFY_TOKEN):
+        return PlainTextResponse(hub_challenge)
     raise HTTPException(403, "Verification failed")
 
 

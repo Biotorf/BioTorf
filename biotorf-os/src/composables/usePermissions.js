@@ -48,7 +48,7 @@ export function usePermissions() {
     : canEdit('crm') || (collection === 'tasks' && canEdit('tasks')) ||
       (CRM_SPECIALTY_COLLECTIONS[ui.role] || []).includes(collection);
   const canApprove = () => ['director', 'agronomist'].includes(ui.role);
-  const canSeeFarm = (farm) =>
-    ui.role === 'sales' ? farm.owner === 'Менеджер А' : true;
+  const canSeeFarm = (farm) => ui.role !== 'sales' || [ui.login, ui.name, 'Менеджер А']
+    .filter(Boolean).includes(farm.owner);
   return { ROLES, canEdit, canEditCollection, canApprove, canSeeFarm };
 }

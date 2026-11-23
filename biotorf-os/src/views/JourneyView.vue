@@ -1,383 +1,486 @@
 <script setup>
-// «Сквозной процесс» — главный сценарий менеджера по руководству v0.9 §3:
-// лид → квалификация → сделка → пилот (если нужен) → КП → заказ → счёт →
-// оплата → доставка → сопровождение.
-import { ref, computed } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import BackendBadge from '@/components/ui/BackendBadge.vue';
+import { useFormatters } from '@/composables/useFormatters';
+import { usePermissions } from '@/composables/usePermissions';
 import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
-import { useFormatters } from '@/composables/useFormatters';
-import StatusPill from '@/components/ui/StatusPill.vue';
-import BackendBadge from '@/components/ui/BackendBadge.vue';
-import ManualLink from '@/components/ui/ManualLink.vue';
 
 const db = useDbStore();
 const ui = useUiStore();
-const { money, day, num } = useFormatters();
+const { day, money } = useFormatters();
+const { canEditCollection } = usePermissions();
+const canWork = computed(() => canEditCollection('journeys'));
+const clientTypes = ['Агропроизводитель', 'Частный покупатель', 'Розничный магазин', 'Оптовая база', 'Дилер', 'Дистрибьютор', 'Другой'];
+const phases = ['Клиент', 'Сделка', 'Предложение', 'Заказ и оплата', 'Доставка', 'Сопровождение'];
 
-const CLIENT_TYPES = ['Агропроизводитель', 'Розничный магазин', 'Оптовая база', 'Дилер', 'Дистрибьютор', 'Частный покупатель', 'Другой'];
-const SOURCES = ['Instagram', 'Telegram', 'WhatsApp', 'Звонок', 'Мероприятие', 'Рекомендация', 'Сайт', 'Другое'];
-const STAGES = ['Квалификация', 'Сделка', 'Пилот или КП', 'КП отправлено', 'Счёт выставлен', 'Оплачено', 'Доставка', 'Сопровождение', 'Завершено'];
-
-const selectedId = ref(ui.activeWork?.kind === 'journey' ? ui.activeWork.id : null);
-const journeys = computed(() => db.journeys);
+const readSelection = () => new URLSearchParams(location.hash.split('?')[1]).get('id');
+const selectedId = ref(readSelection() || (ui.activeWork?.kind === 'journey' && ui.activeWork.id) || null);
+const editor = ref(null);
+const form = ref({});
+const error = ref('');
+const feedback = ref('');
 const journey = computed(() => selectedId.value ? db.journeyById(selectedId.value) : null);
-const lead = computed(() => journey.value ? db.data.leads.find((l) => l.id === journey.value.leadId) : null);
-const farm = computed(() => journey.value?.farmId ? db.farmById(journey.value.farmId) : null);
+const lead = computed(() => journey.value ? db.leadById(journey.value.leadId) : null);
+const client = computed(() => journey.value?.farmId ? db.farmById(journey.value.farmId) : null);
 const deal = computed(() => journey.value?.dealId ? db.dealById(journey.value.dealId) : null);
 const pilot = computed(() => journey.value?.pilotId ? db.pilotById(journey.value.pilotId) : null);
 const quote = computed(() => journey.value?.quoteId ? db.quoteById(journey.value.quoteId) : null);
 const order = computed(() => journey.value?.orderId ? db.orderById(journey.value.orderId) : null);
 const invoice = computed(() => journey.value?.invoiceId ? db.invoiceById(journey.value.invoiceId) : null);
-const shipment = computed(() => journey.value?.shipmentId ? db.shipments.find((s) => s.id === journey.value.shipmentId) : null);
-const isPaid = computed(() => invoice.value && (invoice.value.paid || invoice.value.status === 'Оплачен'));
-const orderPlans = computed(() => order.value ? (db.data.production || []).filter((plan) => plan.orderId === order.value.id) : []);
-const workflowError = ref('');
-function perform(action) {
-  workflowError.value = '';
+const shipment = computed(() => journey.value?.shipmentId ? db.shipments.find((row) => row.id === journey.value.shipmentId) : null);
+const plans = computed(() => order.value ? db.data.production.filter((row) => row.orderId === order.value.id) : []);
+const isAgro = computed(() => journey.value?.qualification?.clientType === 'Агропроизводитель');
+const isRetail = computed(() => journey.value?.qualification?.clientType === 'Частный покупатель');
+const isPaid = computed(() => invoice.value?.paid || invoice.value?.status === 'Оплачен');
+const finished = computed(() => journey.value?.stage === 'Завершено');
+
+const journeys = computed(() => {
+  const term = ui.search.trim().toLowerCase();
+  return db.journeys.map((record) => {
+    const subject = db.leadById(record.leadId);
+    const company = record.farmId ? db.farmById(record.farmId) : null;
+    return { id: record.id, name: subject?.name || company?.name || 'Заявка без темы', company: company?.name, stage: record.stage, owner: record.owner, next: record.next };
+  }).filter((record) => !term || [record.name, record.company, record.owner].some((value) => String(value || '').toLowerCase().includes(term)))
+    .sort((a, b) => Number(a.stage === 'Завершено') - Number(b.stage === 'Завершено') ||
+      String(a.next || '9999').localeCompare(String(b.next || '9999')));
+});
+
+function closeEditor() {
+  editor.value = null;
+  form.value = {};
+  error.value = '';
+}
+
+function pick(id) {
+  closeEditor();
+  feedback.value = '';
+  selectedId.value = id;
+  ui.activeWork = { kind: 'journey', id };
+  const url = '#/journey?' + new URLSearchParams({ id });
+  if (location.hash !== url) history.replaceState(null, '', url);
+}
+
+function syncSelection() {
+  if (!/^#\/?journey(?:\?|$)/.test(location.hash)) return;
+  const id = readSelection() || journeys.value[0]?.id;
+  if (id && id !== selectedId.value) pick(id);
+}
+onMounted(() => window.addEventListener('hashchange', syncSelection));
+onUnmounted(() => window.removeEventListener('hashchange', syncSelection));
+
+watch(() => ui.activeWork?.kind === 'journey' && ui.activeWork.id, (id) => {
+  if (id && id !== selectedId.value) pick(id);
+});
+watch(journeys, (rows) => {
+  if (!selectedId.value && rows.length) pick(rows[0].id);
+}, { immediate: true });
+
+function matchingClient(phone) {
+  const normalize = (value) => String(value || '').replace(/\D/g, '');
+  const key = normalize(phone);
+  if (key.length < 7) return null;
+  const ids = new Set(db.farms.filter((row) => normalize(row.phone) === key).map((row) => row.id));
+  for (const contact of db.data.contacts || []) {
+    if (normalize(contact.phone) === key || normalize(contact.whatsapp) === key) ids.add(contact.farmId);
+  }
+  return ids.size === 1 ? db.farmById([...ids][0]) : null;
+}
+
+function openEditor(key) {
+  error.value = '';
+  editor.value = key;
+  const q = journey.value?.qualification || {};
+  const selectedClient = key === 'qualification' ? client.value || matchingClient(q.phone || lead.value?.phone) : null;
+  const forms = {
+    lead: () => ({ name: '', contactName: '', phone: '', company: '', region: '', source: '', owner: ui.name || ui.login || '', next: '' }),
+    qualification: () => ({
+      clientType: q.clientType || selectedClient?.type || '', farmAction: selectedClient ? 'link' : 'create',
+      farmId: selectedClient?.id || '', newFarmName: lead.value?.company || q.newFarmName || lead.value?.contactName || '',
+      region: q.region || lead.value?.region || '', crop: q.crop || '', area: q.area || '', need: q.need || '',
+      contactName: q.contactName || lead.value?.contactName || '', phone: q.phone || lead.value?.phone || '',
+      telegram: q.telegram || '', email: q.email || '', source: q.source || lead.value?.source || '', note: q.note || '',
+    }),
+    deal: () => ({ volumeL: '', amount: '' }),
+    pilot: () => ({ crop: q.crop || '', area: '', control: '', goal: '', date: '' }),
+    quote: () => ({ date: new Date().toISOString().slice(0, 10), terms: '', items: [{ sku: '', packs: 1, price: '' }] }),
+    shipment: () => ({ planDate: '', carrier: '', vehicle: '', driver: '' }),
+    received: () => ({ nextTask: isAgro.value ? 'Уточнить результат применения' : 'Уточнить, всё ли в порядке с заказом', nextDate: '' }),
+    followup: () => ({ result: '', owner: journey.value?.owner || '', due: journey.value?.next || '' }),
+  };
+  form.value = forms[key]();
+}
+
+function saveLead() {
+  const values = form.value;
+  if (!values.name.trim()) throw new Error('Укажите тему заявки.');
+  const record = { ...values, id: db.uid('L'), name: values.name.trim(), farmId: null, next: values.next || null,
+    date: new Date().toISOString().slice(0, 10), status: 'Новый лид' };
+  db.data.leads.unshift(record);
+  db.save('Создан лид', record.name);
+  const created = db.createJourneyFromLead(record.id);
+  pick(created.id);
+  return created;
+}
+
+function run(action) {
+  error.value = '';
+  feedback.value = '';
   try {
     return action();
-  } catch (error) {
-    workflowError.value = error.message;
+  } catch (e) {
+    error.value = e.message || 'Не удалось сохранить изменения.';
     return null;
   }
 }
-const isAgro = computed(() => journey.value?.qualification?.clientType === 'Агропроизводитель');
-const stageIdx = computed(() => Math.max(0, STAGES.indexOf(journey.value?.stage || 'Квалификация')));
 
-function pick(id) { workflowError.value = ''; selectedId.value = id; ui.activeWork = { kind: 'journey', id }; }
-
-const newLeadOpen = ref(false);
-const newLead = ref({ name: '', contactName: '', phone: '', company: '', region: '', source: 'WhatsApp', owner: 'Менеджер А', next: '' });
-function createLead() {
-  if (!newLead.value.name.trim()) return;
-  const leadRec = {
-    id: db.uid('L'), name: newLead.value.name.trim(), farmId: null,
-    contactName: newLead.value.contactName, phone: newLead.value.phone,
-    company: newLead.value.company, region: newLead.value.region,
-    source: newLead.value.source, owner: newLead.value.owner, next: newLead.value.next || null,
-    date: new Date().toISOString().slice(0, 10), status: 'Новый лид',
+function saveEditor() {
+  const id = journey.value?.id;
+  const value = { ...form.value };
+  const save = {
+    lead: saveLead,
+    qualification: () => {
+      if (!value.clientType) throw new Error('Выберите тип клиента.');
+      if (!isAgroType(value.clientType)) Object.assign(value, { crop: '', area: '', need: '' });
+      if (value.farmAction === 'create' && !value.newFarmName.trim()) {
+        value.newFarmName = value.contactName?.trim() || lead.value?.name || '';
+      }
+      return db.saveQualification(id, value);
+    },
+    deal: () => db.createDealFromJourney(id, value),
+    pilot: () => db.createPilotFromJourney(id, value),
+    quote: () => {
+      if (isRetail.value && !deal.value) {
+        const valid = value.items.every((item) => {
+          const sku = item.sku && db.skuById(item.sku);
+          return sku && Number(sku.pack) > 0 && Number.isSafeInteger(Number(item.packs)) && Number(item.packs) > 0 &&
+            Number.isFinite(Number(item.price)) && Number(item.price) > 0;
+        });
+        if (!valid) throw new Error('Выберите товар с указанной фасовкой и проверьте количество и цену.');
+        db.createDealFromJourney(id, {
+          volumeL: value.items.reduce((sum, item) => sum + Number(item.packs) * Number(db.skuById(item.sku).pack), 0),
+          amount: quoteTotal.value,
+        });
+      }
+      return db.createQuoteFromJourney(id, value);
+    },
+    shipment: () => db.createShipmentFromJourney(id, value),
+    received: () => db.confirmShipmentReceived(shipment.value.id, value),
+    followup: () => db.setJourneyNext(id, value),
   };
-  db.data.leads.unshift(leadRec);
-  db.save('Создан лид', leadRec.name);
-  const j = db.createJourneyFromLead(leadRec.id);
-  newLeadOpen.value = false;
-  newLead.value = { name: '', contactName: '', phone: '', company: '', region: '', source: 'WhatsApp', owner: 'Менеджер А', next: '' };
-  if (j) pick(j.id);
+  if (run(save[editor.value])) closeEditor();
+}
+function isAgroType(type) { return type === 'Агропроизводитель'; }
+
+function completeSale() {
+  if (!shipment.value?.received) return;
+  run(() => {
+    db.setJourneyStage(journey.value.id, 'Завершено');
+    if (deal.value && deal.value.stage !== 'Завершена') db.editEntity('deal', deal.value.id, { stage: 'Завершена' });
+  });
 }
 
-const qual = ref(null);
-function openQual() {
-  const q = journey.value?.qualification || {};
-  qual.value = {
-    clientType: q.clientType || 'Агропроизводитель', farmAction: journey.value?.farmId ? 'link' : 'none',
-    farmId: journey.value?.farmId || '', newFarmName: q.newFarmName || '', region: q.region || '',
-    crop: q.crop || '', area: q.area || '', need: q.need || '', contactName: q.contactName || '',
-    phone: q.phone || lead.value?.phone || '', telegram: q.telegram || '', email: q.email || '',
-    source: q.source || lead.value?.source || '', note: q.note || '',
-  };
-}
-function saveQual() {
-  if (perform(() => db.saveQualification(journey.value.id, { ...qual.value }))) qual.value = null;
+async function copyQuote() {
+  const offer = quote.value;
+  if (!offer) return;
+  const lines = (offer.items || []).map((item) => `${item.name || item.sku} — ${item.packs} уп. × ${money(item.price)}`);
+  const text = [`Предложение ${offer.number || ''}`.trim(), ...lines, `Итого ${money(offer.total)}`, offer.terms].filter(Boolean).join('\n');
+  try {
+    await navigator.clipboard.writeText(text);
+    feedback.value = 'Предложение скопировано.';
+  } catch {
+    error.value = 'Не удалось скопировать предложение. Его можно открыть в связанных документах.';
+  }
 }
 
-const dealForm = ref(null);
-const saveDeal = async () => { await db.createDealFromJourney(journey.value.id, dealForm.value); dealForm.value = null; };
-
-const pilotForm = ref(null);
-const savePilot = async () => { await db.createPilotFromJourney(journey.value.id, pilotForm.value); pilotForm.value = null; };
-
-const quoteForm = ref(null);
-function openQuote() {
-  quoteForm.value = { date: new Date().toISOString().slice(0, 10), terms: 'Условия: отгрузка со склада г. Бишкек, цена за упаковку.', items: [{ sku: '', packs: 1, price: 0 }] };
-}
-const addQItem = () => quoteForm.value.items.push({ sku: '', packs: 1, price: 0 });
-const removeQItem = (i) => quoteForm.value.items.splice(i, 1);
-const qLineSum = (it) => (Number(it.packs) || 0) * (Number(it.price) || 0);
-const qTotal = computed(() => quoteForm.value ? quoteForm.value.items.reduce((s, it) => s + qLineSum(it), 0) : 0);
-const saveQuote = () => { if (perform(() => db.createQuoteFromJourney(journey.value.id, quoteForm.value))) quoteForm.value = null; };
-
-const markSent = () => perform(() => db.markQuoteSent(journey.value.id));
-const confirmOrder = () => perform(() => db.confirmOrderFromQuote(journey.value.id));
-const payInvoice = () => {
+function payInvoice() {
   const balance = db.invoiceBalance(invoice.value);
   const question = balance > 0
     ? `Подтвердить поступление ${money(balance)} по счёту ${invoice.value.number}?`
-    : `Сверить зарегистрированные платежи и закрыть счёт ${invoice.value.number}?`;
-  if (window.confirm(question)) {
-    perform(() => db.markInvoicePaid(invoice.value.id));
-  }
-};
-const shipForm = ref(null);
-const openShip = () => { shipForm.value = { planDate: '', carrier: '', vehicle: '', driver: '' }; };
-const saveShip = () => { if (perform(() => db.createShipmentFromJourney(journey.value.id, shipForm.value))) shipForm.value = null; };
-const recForm = ref(null);
-const openRec = () => { recForm.value = { nextTask: isAgro.value ? 'Контрольный звонок после применения' : 'Уточнить, всё ли в порядке с заказом', nextDate: '' }; };
-const saveRec = async () => { await db.confirmShipmentReceived(shipment.value.id, recForm.value); recForm.value = null; };
+    : `Подтвердить сверку платежей по счёту ${invoice.value.number}?`;
+  if (window.confirm(question)) run(() => db.markInvoicePaid(invoice.value.id));
+}
 
-const nextForm = ref(null);
-const openNext = () => { nextForm.value = { result: '', owner: journey.value?.owner || '', due: journey.value?.next || '' }; };
-const saveNext = async () => { await db.setJourneyNext(journey.value.id, nextForm.value); nextForm.value = null; };
-const setStage = async (e) => { await db.setJourneyStage(journey.value.id, e.target.value); };
+const next = computed(() => {
+  if (finished.value) return { phase: 5, title: 'Сделка завершена', text: 'Документы и история доступны в карточке.' };
+  if (shipment.value?.received) return { phase: 5, title: 'Сопроводите клиента', text: 'Запланируйте следующий контакт после доставки.', button: 'Запланировать контакт', action: () => openEditor('followup') };
+  if (shipment.value) return { phase: 4, title: 'Подтвердите доставку', text: 'Когда покупатель получит товар, отметьте доставку и запланируйте следующий контакт.', button: 'Подтвердить получение', action: () => openEditor('received') };
+  if (isPaid.value) return { phase: 4, title: 'Организуйте доставку', text: 'Согласуйте с клиентом дату и способ передачи заказа.', button: 'Оформить отгрузку', action: () => openEditor('shipment') };
+  if (invoice.value) return { phase: 3, title: 'Сверьте оплату', text: `${invoice.value.number || 'Счёт'} · К оплате ${money(db.invoiceBalance(invoice.value))}`, button: 'Подтвердить оплату', action: payInvoice };
+  if (order.value) return { phase: 3, title: 'Проверьте счёт', text: 'У заказа нет связанного счёта. Откройте заказ, чтобы проверить документы.', button: 'Открыть заказ', action: () => ui.openRecord('order', order.value.id) };
+  if (quote.value?.status === 'Черновик') return { phase: 2, title: 'Передайте предложение клиенту', text: 'После отправки в согласованном канале отметьте это в сделке.', button: 'Отметить отправку', action: () => run(() => db.markQuoteSent(journey.value.id)) };
+  if (['Отправлено', 'Принят'].includes(quote.value?.status)) return { phase: 3, title: 'Подтвердите согласие клиента', text: 'После подтверждения появятся заказ, счёт и потребность производства по каждому артикулу.', button: 'Оформить заказ', action: () => run(() => db.confirmOrderFromQuote(journey.value.id)) };
+  if (deal.value || isRetail.value) return { phase: deal.value ? 2 : 1, title: 'Подготовьте предложение',
+    text: isRetail.value && !deal.value ? 'Укажите товары, упаковки и цены. Сделка создастся вместе с черновиком предложения.'
+      : 'Укажите товары, упаковки и цены. Предложение сохранится черновиком.', button: 'Подготовить КП', action: () => openEditor('quote') };
+  if (journey.value?.qualification) return { phase: 1, title: 'Откройте сделку', text: 'Можно указать ожидаемые объём и сумму. Точный состав заказа появится позже.', button: 'Создать сделку', action: () => openEditor('deal') };
+  return { phase: 0, title: 'Уточните, кто клиент', text: 'Привяжите заявку к существующей карточке или создайте нового клиента.', button: 'Уточнить клиента', action: () => openEditor('qualification') };
+});
 
-function fmtTs(iso) { return new Date(iso).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }); }
+const documents = computed(() => [
+  ['deal', 'Сделка', deal.value, deal.value?.title],
+  ['pilot', 'Пилот', pilot.value, pilot.value?.crop],
+  ['quote', 'Предложение', quote.value, quote.value?.number],
+  ['order', 'Заказ', order.value, order.value?.number || order.value?.num],
+  ['invoice', 'Счёт', invoice.value, invoice.value?.number],
+  ['shipment', 'Отгрузка', shipment.value, shipment.value?.number],
+].filter(([, , record]) => record));
+const quoteTotal = computed(() => editor.value === 'quote'
+  ? form.value.items.reduce((sum, line) => sum + Number(line.packs || 0) * Number(line.price || 0), 0) : 0);
+const formTitles = { lead: 'Новая заявка', qualification: 'Данные клиента', deal: 'Новая сделка', pilot: 'Новый пилот',
+  quote: 'Предложение клиенту', shipment: 'Новая отгрузка', received: 'Подтверждение доставки', followup: 'Следующий контакт' };
+
+function skuChanged(line) {
+  const sku = line.sku ? db.skuById(line.sku) : null;
+  if (sku?.price > 0) line.price = sku.price;
+}
 </script>
 
 <template>
-  <div>
-    <div class="pagehead">
+  <section class="sales-page">
+    <header class="pagehead sales-head">
       <div>
         <h1>Сквозной процесс</h1>
-        <ManualLink />
-        <div class="subtitle">Лид → квалификация → сделка → пилот (если нужен) → КП → заказ → счёт → оплата → доставка</div>
-      <BackendBadge collection="journeys" />
+        <p class="subtitle">Продажи Agro и Home от заявки до доставки.</p>
       </div>
-        <div class="actionbar" style="margin-top:10px">
-          <button class="btn primary slim" @click="newLeadOpen = !newLeadOpen">＋ Создать лид</button>
-        </div></div>
+      <div class="actionbar">
+        <BackendBadge collection="journeys" />
+        <button v-if="canWork" type="button" class="btn primary" @click="openEditor('lead')">＋ Новая заявка</button>
+      </div>
+    </header>
 
-    <div v-if="newLeadOpen" class="muted-block" style="margin-bottom:14px">
-      <b class="mini">ШАГ 1 · НОВОЕ ВХОДЯЩЕЕ ОБРАЩЕНИЕ</b>
-      <div class="field"><label>Тема обращения *</label><input v-model="newLead.name" class="input" placeholder="Напр.: Магазин удобрений — запрос оптового прайса" /></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <div class="field" style="flex:1;min-width:140px"><label>Имя контакта</label><input v-model="newLead.contactName" class="input" /></div>
-        <div class="field" style="flex:1;min-width:140px"><label>Телефон / WhatsApp</label><input v-model="newLead.phone" class="input" /></div>
-        <div class="field" style="flex:1;min-width:140px"><label>Компания</label><input v-model="newLead.company" class="input" /></div>
-        <div class="field" style="flex:1;min-width:140px"><label>Регион</label><input v-model="newLead.region" class="input" /></div>
-      </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <div class="field" style="flex:1"><label>Источник</label>
-          <select v-model="newLead.source" class="select"><option v-for="s in SOURCES" :key="s">{{ s }}</option></select>
+    <div class="sales-grid">
+      <aside class="panel sales-inbox" aria-label="Заявки">
+        <div class="rail-title"><h2>Заявки</h2><span class="mini">{{ journeys.length }}</span></div>
+        <input v-model="ui.search" class="input" type="search" placeholder="Имя или компания" aria-label="Поиск по заявкам" />
+        <div v-if="journeys.length" class="request-list">
+          <button v-for="entry in journeys" :key="entry.id" type="button" class="request"
+            :aria-current="entry.id === selectedId ? 'true' : undefined" @click="pick(entry.id)">
+            <strong>{{ entry.name }}</strong>
+            <span v-if="entry.company && entry.company !== entry.name" class="request-meta">{{ entry.company }}</span>
+            <span class="request-meta">{{ entry.stage }}<template v-if="entry.next"> · {{ day(entry.next) }}</template></span>
+          </button>
         </div>
-        <div class="field" style="flex:1"><label>Ответственный</label><input v-model="newLead.owner" class="input" /></div>
-        <div class="field" style="flex:1"><label>Следующий контакт</label><input v-model="newLead.next" type="date" class="input" /></div>
+        <p v-else class="mini rail-empty">{{ ui.search ? 'Заявки не найдены.' : 'Заявок пока нет.' }}</p>
+      </aside>
+
+      <div class="sales-detail">
+        <section v-if="journey && editor !== 'lead'" class="panel sale-summary">
+          <div class="summary-title">
+            <div>
+              <h2>{{ lead?.name || client?.name || 'Заявка' }}</h2>
+              <p class="subtitle">
+                <button v-if="client" type="button" class="link-button" @click="ui.openClient(client.id)">{{ client.name }}</button>
+                <template v-else>Клиент ещё не привязан</template>
+                <template v-if="journey.owner"> · {{ journey.owner }}</template>
+              </p>
+            </div>
+            <span v-if="journey.qualification?.clientType" class="pill">{{ journey.qualification.clientType }}</span>
+          </div>
+
+          <ol class="sale-steps" aria-label="Этапы продажи">
+            <li v-for="(phase, index) in phases" :key="phase" :aria-current="index === next.phase && !finished ? 'step' : undefined" :class="{ done: finished || index < next.phase }">
+              <span class="step-mark" aria-hidden="true">{{ finished || index < next.phase ? '✓' : index + 1 }}</span>{{ phase }}
+            </li>
+          </ol>
+
+          <section v-if="!editor" class="next-panel" aria-label="Следующий шаг">
+            <div>
+              <h3>{{ next.title }}</h3>
+              <p>{{ next.text }}</p>
+              <p v-if="journey.next" class="mini next-date">Следующий контакт {{ day(journey.next) }}</p>
+            </div>
+            <button v-if="next.button && canWork" type="button" class="btn primary" @click="next.action()">{{ next.button }}</button>
+          </section>
+        </section>
+
+        <p v-if="error && !editor" class="form-error" role="alert">{{ error }}</p>
+        <p v-if="feedback && !editor" class="form-feedback" role="status">{{ feedback }}</p>
+        <form v-if="editor" class="panel sale-form" @submit.prevent="saveEditor">
+          <h2>{{ formTitles[editor] }}</h2>
+          <div v-if="editor === 'lead'" class="formgrid">
+            <label class="field full">Тема заявки<input v-model.trim="form.name" class="input" required placeholder="Например, магазин запрашивает прайс BioTorf Home" /></label>
+            <label class="field">Контакт<input v-model="form.contactName" class="input" autocomplete="name" /></label>
+            <label class="field">Телефон<input v-model="form.phone" class="input" type="tel" /></label>
+            <details class="full form-details">
+              <summary>Дополнительные данные</summary>
+              <div class="formgrid">
+                <label class="field">Компания<input v-model="form.company" class="input" /></label>
+                <label class="field">Регион<input v-model="form.region" class="input" /></label>
+                <label class="field">Источник<input v-model="form.source" class="input" placeholder="WhatsApp, звонок, сайт" /></label>
+                <label class="field">Ответственный<input v-model="form.owner" class="input" /></label>
+                <label class="field">Дата следующего контакта<input v-model="form.next" class="input" type="date" /></label>
+              </div>
+            </details>
+          </div>
+          <div v-else-if="editor === 'qualification'" class="formgrid">
+            <label class="field">Тип клиента<select v-model="form.clientType" class="select" aria-label="Тип клиента" required>
+              <option value="">Выберите тип клиента</option><option v-for="type in clientTypes" :key="type">{{ type }}</option>
+              <option v-if="form.clientType && !clientTypes.includes(form.clientType)">{{ form.clientType }}</option>
+            </select></label>
+            <label class="field">Карточка клиента<select v-model="form.farmAction" class="select" aria-label="Карточка клиента">
+              <option value="create">Создать карточку</option><option value="link">Выбрать существующую</option><option value="none">Уточнить позже</option>
+            </select></label>
+            <label v-if="form.farmAction === 'link'" class="field full">Существующий клиент<select v-model="form.farmId" class="select" aria-label="Существующий клиент" required>
+              <option value="">Выберите клиента</option><option v-for="entry in db.farms" :key="entry.id" :value="entry.id">{{ entry.name }}</option>
+            </select></label>
+            <label v-if="form.farmAction === 'create'" class="field full">Имя или название<input v-model="form.newFarmName" class="input" :placeholder="lead?.name || ''" /></label>
+            <label class="field">Контактное лицо<input v-model="form.contactName" class="input" /></label>
+            <label class="field">Телефон<input v-model="form.phone" class="input" type="tel" /></label>
+            <template v-if="isAgroType(form.clientType)">
+              <label class="field">Культура<input v-model="form.crop" class="input" /></label>
+              <label class="field">Площадь, га<input v-model="form.area" class="input" type="number" min="0" step="any" /></label>
+              <label class="field full">Потребность<input v-model="form.need" class="input" /></label>
+            </template>
+            <details class="full form-details">
+              <summary>Дополнительные данные</summary>
+              <div class="formgrid">
+                <label class="field">Регион<input v-model="form.region" class="input" /></label>
+                <label class="field">Telegram<input v-model="form.telegram" class="input" /></label>
+                <label class="field">Почта<input v-model="form.email" class="input" type="email" /></label>
+                <label class="field">Источник<input v-model="form.source" class="input" /></label>
+                <label class="field full">Примечание<textarea v-model="form.note" class="textarea" rows="2" /></label>
+              </div>
+            </details>
+          </div>
+          <div v-else-if="editor === 'deal'" class="formgrid">
+            <label class="field">Ожидаемый объём, л<input v-model="form.volumeL" class="input" type="number" min="0" step="any" /></label>
+            <label class="field">Ожидаемая сумма, сом<input v-model="form.amount" class="input" type="number" min="0" step="0.01" /></label>
+          </div>
+          <div v-else-if="editor === 'pilot'" class="formgrid">
+            <label class="field">Культура<input v-model="form.crop" class="input" /></label>
+            <label class="field">Площадь, га<input v-model="form.area" class="input" type="number" min="0" step="any" /></label>
+            <label class="field">Контрольный участок<input v-model="form.control" class="input" /></label>
+            <label class="field">Дата старта<input v-model="form.date" class="input" type="date" /></label>
+            <label class="field full">Цель пилота<input v-model="form.goal" class="input" /></label>
+          </div>
+          <div v-else-if="editor === 'quote'" class="quote-form">
+            <div v-for="(line, index) in form.items" :key="index" class="quote-line">
+              <label class="field">Товар<select v-model="line.sku" class="select" aria-label="Товар" required @change="skuChanged(line)">
+                <option value="">Выберите товар</option><option v-for="sku in db.skus" :key="sku.id" :value="sku.id">{{ sku.name }} · {{ sku.pack }} л</option>
+              </select></label>
+              <label class="field">Упаковки<input v-model="line.packs" class="input" type="number" min="1" required /></label>
+              <label class="field">Цена упаковки, сом<input v-model="line.price" class="input" type="number" min="0.01" step="0.01" required /></label>
+              <button v-if="form.items.length > 1" type="button" class="btn slim ghost" :aria-label="`Убрать позицию ${index + 1}`" @click="form.items.splice(index, 1)">Убрать</button>
+            </div>
+            <div class="actionbar quote-total">
+              <button type="button" class="btn slim ghost" @click="form.items.push({ sku: '', packs: 1, price: '' })">＋ Товар</button>
+              <strong>{{ money(quoteTotal) }}</strong>
+            </div>
+            <div class="formgrid">
+              <label class="field">Дата предложения<input v-model="form.date" class="input" type="date" /></label>
+              <label class="field full">Условия<textarea v-model="form.terms" class="textarea" rows="2" /></label>
+            </div>
+          </div>
+          <div v-else-if="editor === 'shipment'" class="formgrid">
+            <label class="field">Плановая дата<input v-model="form.planDate" class="input" type="date" /></label>
+            <label class="field">Перевозчик<input v-model="form.carrier" class="input" /></label>
+            <label class="field">Транспорт<input v-model="form.vehicle" class="input" /></label>
+            <label class="field">Водитель<input v-model="form.driver" class="input" /></label>
+          </div>
+          <div v-else-if="editor === 'received'" class="formgrid">
+            <label class="field full">Задача после доставки<input v-model="form.nextTask" class="input" /></label>
+            <label class="field">Дата следующего контакта<input v-model="form.nextDate" class="input" type="date" /></label>
+          </div>
+          <div v-else-if="editor === 'followup'" class="formgrid">
+            <label class="field full">Что нужно сделать<input v-model.trim="form.result" class="input" required /></label>
+            <label class="field">Ответственный<input v-model="form.owner" class="input" /></label>
+            <label class="field">Срок<input v-model="form.due" class="input" type="date" /></label>
+          </div>
+          <p v-if="error" class="form-error" role="alert">{{ error }}</p>
+          <div class="actionbar form-actions">
+            <button type="submit" class="btn primary">{{ editor === 'quote' ? 'Сохранить черновик' : 'Сохранить' }}</button>
+            <button type="button" class="btn ghost" @click="closeEditor">Отмена</button>
+          </div>
+        </form>
+
+        <section v-if="journey && !editor" class="panel supporting">
+          <div v-if="canWork || quote" class="actionbar supporting-actions">
+            <button v-if="quote && !order" type="button" class="btn slim ghost" @click="copyQuote">Скопировать КП</button>
+            <button v-if="canWork" type="button" class="btn slim ghost" @click="openEditor('qualification')">Данные клиента</button>
+            <button v-if="canWork && isAgro && deal && !pilot && !finished" type="button" class="btn slim ghost" @click="openEditor('pilot')">Добавить пилот</button>
+            <button v-if="canWork && next.phase !== 5 && !finished" type="button" class="btn slim ghost" @click="openEditor('followup')">Поставить задачу</button>
+            <button v-if="canWork && shipment?.received && !finished" type="button" class="btn slim ghost" @click="completeSale">Завершить сделку</button>
+          </div>
+          <details v-if="documents.length || plans.length" class="support-item">
+            <summary>Связанные документы</summary>
+            <ul>
+              <li v-for="[kind, label, record, name] in documents" :key="record.id">
+                <button type="button" class="link-button" @click="ui.openRecord(kind, record.id)">{{ label }}<template v-if="name"> · {{ name }}</template></button>
+              </li>
+              <li v-for="plan in plans" :key="plan.id"><a :href="'#/registry?table=production&id=' + encodeURIComponent(plan.id)">План производства · {{ plan.product }}</a></li>
+            </ul>
+          </details>
+          <details v-if="journey.history?.length" class="support-item">
+            <summary>История</summary>
+            <ul>
+              <li v-for="entry in journey.history" :key="entry.ts + entry.text">{{ entry.text }} <span class="mini">{{ day(entry.ts) }}</span></li>
+            </ul>
+          </details>
+        </section>
+
+        <section v-if="!journey && !editor" class="panel sales-empty">
+          <h2>{{ selectedId ? 'Заявка не найдена' : 'Начните с заявки' }}</h2>
+          <p class="subtitle">{{ selectedId ? 'Выберите доступную заявку в списке.' : 'Выберите обращение или создайте заявку, чтобы пройти сделку по шагам.' }}</p>
+          <button v-if="!selectedId && canWork" type="button" class="btn primary" @click="openEditor('lead')">Создать заявку</button>
+        </section>
       </div>
-      <div class="mini" style="margin-bottom:8px">Хозяйство можно оставить неизвестным — определим при квалификации.</div>
-      <button class="btn primary slim" :disabled="!newLead.name.trim()" @click="createLead">Сохранить лид и открыть маршрут</button>
     </div>
-
-    <div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap">
-      <div style="width:280px;flex-shrink:0">
-        <div class="table-wrap">
-          <table class="table">
-            <thead><tr><th>Маршруты</th><th>Стадия</th></tr></thead>
-            <tbody>
-              <tr v-for="j in journeys" :key="j.id" class="clickrow" :class="{ selected: j.id === selectedId }" @click="pick(j.id)">
-                <td>
-                  <span class="txt-link">{{ db.data.leads.find(l => l.id === j.leadId)?.name || j.id }}</span>
-                  <div class="mini">{{ j.id }} · {{ j.owner }}</div>
-                </td>
-                <td><StatusPill :status="j.stage" /></td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <div v-if="!journeys.length" class="empty">Нет активных маршрутов. Создайте лид — маршрут появится автоматически.</div>
-      </div>
-
-      <div v-if="journey" style="flex:1;min-width:320px">
-        <p v-if="workflowError" class="danger-text" role="alert">{{ workflowError }}</p>
-        <div class="client-hero">
-          <div>
-            <div class="mini">СКВОЗНОЙ ПРОЦЕСС · {{ journey.id }} · лид {{ journey.leadId }}</div>
-            <h3>{{ lead?.name || 'Лид' }}</h3>
-            <div class="mini">{{ farm ? farm.name : 'Хозяйство не определено' }} · ответственный {{ journey.owner }} · след. шаг {{ day(journey.next) }}</div>
-          </div>
-          <div style="display:flex;gap:8px;align-items:center">
-            <select class="select" :value="journey.stage" @change="setStage"><option v-for="s in STAGES" :key="s">{{ s }}</option></select>
-            <button class="btn ghost slim" @click="ui.go('crm')">К списку</button>
-          </div>
-        </div>
-
-        <div style="display:flex;gap:4px;flex-wrap:wrap;margin:12px 0">
-          <span v-for="(s, i) in STAGES.slice(0, 8)" :key="s" class="pill" :class="i <= stageIdx ? '' : 'gray'" style="font-size:11px">{{ s }}</span>
-        </div>
-
-        <!-- Шаг 3: квалификация -->
-        <div class="insight"><div style="width:100%">
-          <b>Шаг 3 · Квалификация контрагента</b>
-          <div v-if="journey.qualification" class="mini">
-            Тип: {{ journey.qualification.clientType }}<template v-if="isAgro"> · культура: {{ journey.qualification.crop || '—' }} · площадь: {{ journey.qualification.area || '—' }} га · потребность: {{ journey.qualification.need || '—' }}</template>
-            · хозяйство: {{ farm ? farm.name + ' (' + farm.id + ')' : 'не привязано' }}
-          </div>
-          <button class="btn slim ghost" style="margin-top:6px" @click="openQual">{{ journey.qualification ? 'Изменить квалификацию' : 'Начать квалификацию' }}</button>
-        </div></div>
-        <div v-if="qual" class="muted-block">
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <div class="field" style="flex:1;min-width:180px"><label>Тип клиента *</label>
-              <select v-model="qual.clientType" class="select"><option v-for="t in CLIENT_TYPES" :key="t">{{ t }}</option></select>
-            </div>
-            <div class="field" style="flex:1;min-width:180px"><label>Хозяйство</label>
-              <select v-model="qual.farmAction" class="select">
-                <option value="none">Не известно / создадим сейчас</option>
-                <option value="link">Привязать существующее (без дублей)</option>
-                <option value="create">Создать новое хозяйство</option>
-              </select>
-            </div>
-          </div>
-          <div v-if="qual.farmAction === 'link'" class="field"><label>Существующее хозяйство</label>
-            <select v-model="qual.farmId" class="select">
-              <option value="">— выберите —</option>
-              <option v-for="f in db.farms" :key="f.id" :value="f.id">{{ f.name }} ({{ f.region }})</option>
-            </select>
-          </div>
-          <div v-if="qual.farmAction === 'create'" class="field"><label>Название нового хозяйства *</label><input v-model="qual.newFarmName" class="input" placeholder="Проверьте написание и контакты — избегайте дублей" /></div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <div class="field" style="flex:1"><label>Регион</label><input v-model="qual.region" class="input" /></div>
-            <div class="field" style="flex:1"><label>Контактное лицо</label><input v-model="qual.contactName" class="input" /></div>
-            <div class="field" style="flex:1"><label>Телефон / WhatsApp</label><input v-model="qual.phone" class="input" /></div>
-          </div>
-          <div v-if="qual.clientType === 'Агропроизводитель'" style="display:flex;gap:8px;flex-wrap:wrap">
-            <div class="field" style="flex:1"><label>Культура</label><input v-model="qual.crop" class="input" /></div>
-            <div class="field" style="flex:1"><label>Площадь, га</label><input v-model="qual.area" class="input" /></div>
-            <div class="field" style="flex:1"><label>Потребность</label><input v-model="qual.need" class="input" placeholder="Например, 200 л Agro на сезон" /></div>
-          </div>
-          <div v-else class="mini" style="margin-bottom:8px">Для магазина / оптовой базы / дилера агрономические поля необязательны, пилот не требуется.</div>
-          <div style="display:flex;gap:8px">
-            <button class="btn primary slim" @click="saveQual">Сохранить квалификацию</button>
-            <button class="btn ghost slim" @click="qual = null">Отмена</button>
-          </div>
-        </div>
-
-        <!-- Шаг 4: сделка -->
-        <div class="insight"><div style="width:100%">
-          <b>Шаг 4 · Сделка</b>
-          <div v-if="deal" class="mini">{{ deal.title }} · {{ num(deal.volumeL) }} л · {{ money(deal.amount) }} · стадия «{{ deal.stage }}»</div>
-          <div v-else class="mini">Ожидаемый объем в литрах и потенциальная сумма в сомах.</div>
-          <div style="display:flex;gap:8px;margin-top:6px">
-            <button v-if="!deal" class="btn slim ghost" :disabled="!journey.qualification" @click="dealForm = { volumeL: '', amount: '' }">Создать сделку</button>
-            <button v-else class="btn slim ghost" @click="ui.openRecord('deal', deal.id)">Открыть сделку</button>
-            <button v-if="deal" class="btn slim ghost" @click="ui.go('pipeline')">В воронке →</button>
-          </div>
-        </div></div>
-        <div v-if="dealForm" class="muted-block">
-          <div style="display:flex;gap:8px">
-            <div class="field" style="flex:1"><label>Объем, л</label><input v-model="dealForm.volumeL" type="number" class="input" /></div>
-            <div class="field" style="flex:1"><label>Сумма, сом</label><input v-model="dealForm.amount" type="number" class="input" /></div>
-          </div>
-          <div style="display:flex;gap:8px">
-            <button class="btn primary slim" @click="saveDeal">Сохранить сделку</button>
-            <button class="btn ghost slim" @click="dealForm = null">Отмена</button>
-          </div>
-        </div>
-
-        <!-- Шаг 5: пилот (только агропроизводитель) -->
-        <div v-if="isAgro" class="insight"><div style="width:100%">
-          <b>Шаг 5 · Пилот (если действительно нужен)</b>
-          <div v-if="pilot" class="mini">{{ pilot.id }} · {{ pilot.crop }} · {{ num(pilot.area) }} га · «{{ pilot.status }}» · контроль: {{ pilot.control || '—' }}</div>
-          <div v-else class="mini">Площадь, контрольный участок, цель эксперимента. Обработки и результаты — в разделе «Агрономия».</div>
-          <div style="display:flex;gap:8px;margin-top:6px">
-            <button v-if="!pilot" class="btn slim ghost" :disabled="!deal" @click="pilotForm = { crop: journey.qualification?.crop || '', area: '', control: '', goal: '', date: '' }">Создать пилот</button>
-            <button v-else class="btn slim ghost" @click="ui.openRecord('pilot', pilot.id)">Открыть пилот</button>
-            <button v-if="pilot" class="btn slim ghost" @click="ui.go('pilots')">В агрономию →</button>
-          </div>
-        </div></div>
-        <div v-if="pilotForm" class="muted-block">
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <div class="field" style="flex:1"><label>Культура</label><input v-model="pilotForm.crop" class="input" /></div>
-            <div class="field" style="flex:1"><label>Площадь, га</label><input v-model="pilotForm.area" type="number" class="input" /></div>
-            <div class="field" style="flex:1"><label>Дата старта</label><input v-model="pilotForm.date" type="date" class="input" /></div>
-          </div>
-          <div class="field"><label>Контрольный участок</label><input v-model="pilotForm.control" class="input" /></div>
-          <div class="field"><label>Цель пилота</label><input v-model="pilotForm.goal" class="input" placeholder="напр. +15% к урожайности картофеля" /></div>
-          <div style="display:flex;gap:8px">
-            <button class="btn primary slim" @click="savePilot">Создать пилот</button>
-            <button class="btn ghost slim" @click="pilotForm = null">Отмена</button>
-          </div>
-        </div>
-
-        <!-- Шаг 6: КП → заказ → счёт → оплата → отгрузка -->
-        <div class="insight"><div style="width:100%">
-          <b>Шаг 6 · КП → заказ → счёт → оплата → отгрузка</b>
-          <div v-if="quote" class="mini">{{ quote.number }} от {{ day(quote.date) }} · {{ (quote.items || []).length }} поз. · {{ money(quote.total) }} · «{{ quote.status }}»</div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
-            <button v-if="!quote" class="btn slim ghost" :disabled="!deal" @click="openQuote">Создать КП</button>
-            <button v-if="quote && !order && ['Отправлено', 'Принят'].includes(quote.status)" class="btn slim ghost" @click="confirmOrder">Подтвердить заказ (перенос из КП)</button>
-            <button v-if="quote?.status === 'Черновик'" class="btn slim ghost" @click="markSent">Отметить КП отправленным</button>
-            <button v-if="invoice && !isPaid" class="btn slim ghost" @click="payInvoice">Подтвердить оплату вручную</button>
-            <button v-if="isPaid && !shipment" class="btn slim ghost" @click="openShip">Создать отгрузку</button>
-            <button v-if="shipment && !shipment.received" class="btn slim ghost" @click="openRec">Подтвердить получение</button>
-            <span v-if="shipment?.received" class="pill">Доставлено · маршрут в сопровождении</span>
-          </div>
-          <div v-if="order" class="mini" style="margin-top:6px">Заказ {{ order.id }} ({{ order.number || order.num }}) · счёт {{ invoice?.number }} — {{ isPaid ? 'оплачен ' + day(invoice.paidAt) : 'не оплачен' }}</div>
-          <div v-if="orderPlans.length" class="mini">
-            Потребность производства:
-            <a :href="'#/registry?table=production&id=' + encodeURIComponent(orderPlans[0].id)">{{ orderPlans.length }} поз.</a>
-          </div>
-          <div v-if="shipment" class="mini">Отгрузка {{ shipment.number }} · план {{ day(shipment.planDate) }} · перевозчик {{ shipment.carrier || '—' }} · {{ shipment.status }}</div>
-        </div></div>
-        <div v-if="quoteForm" class="muted-block">
-          <div class="field" style="max-width:220px"><label>Дата КП</label><input v-model="quoteForm.date" type="date" class="input" /></div>
-          <div class="mini">Позиции: продукт (SKU), упаковки, цена за упаковку</div>
-          <div v-for="(it, i) in quoteForm.items" :key="i" style="display:flex;gap:6px;margin-bottom:6px;align-items:end">
-            <div class="field" style="flex:2"><label v-if="i === 0">SKU</label>
-              <select v-model="it.sku" class="select">
-                <option value="">— выберите —</option>
-                <option v-for="s in db.skus" :key="s.id" :value="s.id">{{ s.name }} ({{ s.pack }} л/уп)</option>
-              </select>
-            </div>
-            <div class="field" style="flex:1"><label v-if="i === 0">Упаковки</label><input v-model="it.packs" type="number" class="input" /></div>
-            <div class="field" style="flex:1"><label v-if="i === 0">Цена/уп, сом</label><input v-model="it.price" type="number" class="input" /></div>
-            <div class="field" style="flex:1"><label v-if="i === 0">Сумма</label><div class="input" style="background:#f4f6f5">{{ money(qLineSum(it)) }}</div></div>
-            <button v-if="quoteForm.items.length > 1" class="btn ghost slim" @click="removeQItem(i)">✕</button>
-          </div>
-          <div class="field"><label>Условия</label><textarea v-model="quoteForm.terms" class="textarea" rows="2"></textarea></div>
-          <div style="display:flex;gap:8px;align-items:center">
-            <button class="btn ghost slim" @click="addQItem">＋ позиция</button>
-            <b style="margin-left:auto">Итого: {{ money(qTotal) }}</b>
-            <button class="btn primary slim" :disabled="qTotal <= 0" @click="saveQuote">Сохранить КП</button>
-            <button class="btn ghost slim" @click="quoteForm = null">Отмена</button>
-          </div>
-        </div>
-        <div v-if="shipForm" class="muted-block">
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <div class="field" style="flex:1"><label>Плановая дата</label><input v-model="shipForm.planDate" type="date" class="input" /></div>
-            <div class="field" style="flex:1"><label>Перевозчик</label><input v-model="shipForm.carrier" class="input" /></div>
-            <div class="field" style="flex:1"><label>Транспорт</label><input v-model="shipForm.vehicle" class="input" placeholder="марка, гос. номер" /></div>
-            <div class="field" style="flex:1"><label>Водитель</label><input v-model="shipForm.driver" class="input" /></div>
-          </div>
-          <div style="display:flex;gap:8px">
-            <button class="btn primary slim" @click="saveShip">Создать отгрузку</button>
-            <button class="btn ghost slim" @click="shipForm = null">Отмена</button>
-          </div>
-        </div>
-        <div v-if="recForm" class="muted-block">
-          <div class="field"><label>Следующая задача после доставки</label><input v-model="recForm.nextTask" class="input" /></div>
-          <div class="field"><label>Дата повторного контакта</label><input v-model="recForm.nextDate" type="date" class="input" /></div>
-          <div style="display:flex;gap:8px">
-            <button class="btn primary slim" @click="saveRec">Подтвердить получение</button>
-            <button class="btn ghost slim" @click="recForm = null">Отмена</button>
-          </div>
-        </div>
-
-        <!-- Следующее действие и история -->
-        <div class="insight"><div style="width:100%">
-          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
-            <b>Следующее действие</b>
-            <button class="btn slim ghost" @click="openNext">Задать следующее действие</button>
-          </div>
-          <div class="mini">Результат, исполнитель и срок — появится связанная задача.</div>
-        </div></div>
-        <div v-if="nextForm" class="muted-block">
-          <div class="field"><label>Результат *</label><input v-model="nextForm.result" class="input" /></div>
-          <div style="display:flex;gap:8px">
-            <div class="field" style="flex:1"><label>Исполнитель</label><input v-model="nextForm.owner" class="input" /></div>
-            <div class="field" style="flex:1"><label>Срок</label><input v-model="nextForm.due" type="date" class="input" /></div>
-          </div>
-          <div style="display:flex;gap:8px">
-            <button class="btn primary slim" :disabled="!nextForm.result.trim()" @click="saveNext">Сохранить</button>
-            <button class="btn ghost slim" @click="nextForm = null">Отмена</button>
-          </div>
-        </div>
-
-        <div style="margin-top:14px">
-          <b class="mini">ИСТОРИЯ МАРШРУТА</b>
-          <div v-for="(h, i) in journey.history" :key="i" class="insight" style="padding:8px 12px">
-            <div><div>{{ h.text }}</div><div class="mini">{{ fmtTs(h.ts) }}</div></div>
-          </div>
-        </div>
-      </div>
-
-      <div v-else class="empty" style="flex:1">Выберите маршрут слева или создайте новый лид — рабочий сценарий проведёт по всем шагам.</div>
-    </div>
-  </div>
+  </section>
 </template>
+
+<style scoped>
+.sales-head { margin-bottom: 16px; align-items: center; }
+.sales-head p, .summary-title p { margin-bottom: 0; }
+.sales-grid { display: grid; grid-template-columns: minmax(180px, 250px) minmax(0, 1fr); gap: 16px; align-items: start; }
+.sales-detail { display: grid; gap: 12px; min-width: 0; }
+.sales-inbox { padding: 14px; min-width: 0; }
+.rail-title, .summary-title { display: flex; justify-content: space-between; align-items: start; gap: 10px; }
+.rail-title { margin-bottom: 10px; align-items: center; }
+.request-list { display: grid; gap: 5px; max-height: 62vh; overflow: auto; margin-top: 10px; }
+.request { display: grid; gap: 3px; text-align: left; padding: 9px 10px; background: #fff; color: var(--ink);
+  border: 1px solid var(--border); border-radius: 8px; overflow-wrap: anywhere; }
+.request:hover, .request[aria-current] { border-color: #8fc8aa; background: #edf7f0; }
+.request-meta { color: var(--muted); font-size: 12px; }
+.rail-empty { margin: 12px 0 0; }
+.sale-steps { list-style: none; margin: 18px 0; padding: 0; display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; }
+.sale-steps li { display: grid; justify-items: center; align-content: start; gap: 4px; text-align: center; font-size: 11px; color: #64796d; }
+.step-mark { display: grid; place-items: center; height: 25px; width: 25px; border-radius: 50%; background: #edf3ef; font-weight: 700; }
+.sale-steps .done .step-mark { background: #e0f1e6; color: #1f744a; }
+.sale-steps [aria-current] { color: #1f744a; font-weight: 700; }
+.sale-steps [aria-current] .step-mark { background: var(--green); color: #fff; }
+.next-panel { padding: 15px; border: 1px solid #cce5d4; border-radius: 11px; background: #eff8f2; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.next-panel h3 { margin-bottom: 3px; }
+.next-panel p { margin-bottom: 0; }
+.next-panel .btn { flex-shrink: 0; }
+.next-date { margin-top: 6px; }
+.link-button { border: 0; background: none; color: var(--green); padding: 0; text-align: left; font-weight: 650; }
+.link-button:hover { text-decoration: underline; }
+.supporting { padding: 14px 20px; }
+.supporting-actions { margin-bottom: 4px; }
+.support-item, .form-details { padding: 8px 0; }
+.support-item + .support-item { border-top: 1px solid var(--border); }
+.support-item summary, .form-details summary { font-weight: 650; cursor: pointer; }
+.support-item ul { margin: 8px 0 0; padding-left: 20px; display: grid; gap: 4px; }
+.sale-form h2 { margin-bottom: 12px; }
+.form-details .formgrid { margin-top: 8px; }
+.full { grid-column: 1 / -1; }
+.form-actions { margin-top: 14px; }
+.quote-line { display: grid; grid-template-columns: minmax(120px, 2fr) minmax(64px, 1fr) minmax(100px, 1fr) auto; align-items: end; gap: 8px; margin-bottom: 9px; }
+.quote-total { justify-content: space-between; margin-bottom: 12px; }
+.form-error, .form-feedback { margin: 10px 0 0; }
+.form-error { color: #a12924; }
+.form-feedback { color: var(--green); }
+.sales-empty { display: grid; justify-items: start; gap: 8px; }
+@media (max-width: 850px) {
+  .sales-grid { grid-template-columns: 1fr; }
+  .request-list { max-height: 180px; }
+}
+@media (max-width: 580px) {
+  .sale-steps { grid-template-columns: repeat(3, 1fr); row-gap: 9px; }
+  .next-panel { align-items: flex-start; flex-direction: column; }
+  .next-panel .btn { max-width: 100%; }
+  .quote-line { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .quote-line .field:first-child { grid-column: 1 / -1; }
+}
+</style>

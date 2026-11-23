@@ -48,7 +48,11 @@ onMounted(() => window.addEventListener('unhandledrejection', (ev) => {
 // навигация кнопкой «назад/вперёд» браузера тоже меняет раздел
 function onHashChange() {
   const v = (location.hash || '').replace(/^#\/?/, '').split('?')[0];
-  if (v && views[v]) ui.view = v;
+  if (v && views[v] && ui.view !== v) {
+    ui.view = v;
+    ui.search = '';
+    ui.filter = 'Все';
+  }
 }
 onMounted(() => window.addEventListener('hashchange', onHashChange));
 onBeforeUnmount(() => window.removeEventListener('hashchange', onHashChange));
@@ -78,11 +82,6 @@ const views = {
   channels: markRaw(defineAsyncComponent(() => import('@/views/ChannelsView.vue'))),
 };
 
-const registryTables = {
-  crm: 'farms', pipeline: 'deals', journey: 'journeys', pilots: 'pilots', knowledge: 'knowledge',
-  social: 'social', products: 'skus', orders: 'orders', production: 'production',
-  warehouse: 'warehouse', shipments: 'logistics', finance: 'invoices', tasks: 'tasks', media: 'media',
-};
 const currentView = computed(() => views[ui.view] || views.dashboard);
 </script>
 
@@ -104,7 +103,6 @@ const currentView = computed(() => views[ui.view] || views.dashboard);
     <main class="main">
       <AppTopbar />
       <div class="content">
-        <a v-if="registryTables[ui.view]" class="btn slim ghost" :href="'#/registry?table=' + registryTables[ui.view]">Все поля и записи</a>
         <Suspense>
           <component :is="currentView" />
           <template #fallback>
@@ -112,9 +110,6 @@ const currentView = computed(() => views[ui.view] || views.dashboard);
           </template>
 
         </Suspense>
-        <footer class="app-footer">
-          BIOTORF Business OS · рабочая система
-        </footer>
       </div>
     </main>
     <AppModal />
