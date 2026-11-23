@@ -131,24 +131,24 @@ async function wipe() {
 <style scoped>
 .overlay { position: fixed; inset: 0; background: rgba(15, 23, 18, .45); display: flex; align-items: center; justify-content: center; z-index: 60; }
 /* непрозрачное окно — контент страницы не просвечивает */
-.modal { width: min(720px, 92vw); max-height: 84vh; overflow: auto; background: #ffffff; color: #1c2b21; border-radius: 14px; padding: 18px 20px; box-shadow: 0 18px 48px rgba(0,0,0,.28); }
+.modal { width: min(720px, 92vw); max-height: 84vh; overflow: auto; background: var(--panel); color: var(--ink); border-radius: 14px; padding: 18px 20px; box-shadow: var(--elevation); }
 header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
 h3 { margin: 0; font-size: 16px; }
 .x { border: 0; background: none; font-size: 16px; cursor: pointer; color: #667; }
 .row { margin: 8px 0; }
-.hint { font-size: 12px; color: #5a6a5e; }
+.hint { font-size: 12px; color: var(--muted); }
 .table-wrap { overflow-x: auto; border: 1px solid #dfe7df; border-radius: 10px; margin: 8px 0; }
 table.preview { border-collapse: collapse; width: 100%; font-size: 12px; }
 table.preview th, table.preview td { border-bottom: 1px solid #e6ece6; padding: 5px 8px; text-align: left; white-space: nowrap; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
 table.preview th { background: #f2f6f2; }
 .modes label { margin-right: 16px; font-size: 13px; }
-.err { color: #b3261e; font-size: 13px; }
-.ok { color: #1d7a3e; font-size: 13px; }
+.err { color: var(--danger-ink); font-size: 13px; }
+.ok { color: var(--accent-ink); font-size: 13px; }
 footer { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
 .spacer { flex: 1; }
 button { border-radius: 9px; padding: 8px 14px; font-size: 13px; cursor: pointer; border: 1px solid transparent; }
 button:disabled { opacity: .55; cursor: default; }
-.primary { background: #1d7a3e; color: #fff; }
-.ghost { background: #fff; border-color: #cfd8cf; color: #2a3a2e; }
-.ghost.danger { color: #b3261e; border-color: #ecc9c6; }
+.primary { background: var(--primary); color: var(--primary-ink); }
+.ghost { background: var(--panel); border-color: var(--control-border); color: var(--ink); }
+.ghost.danger { color: var(--danger-ink); border-color: var(--danger-border); }
 </style>

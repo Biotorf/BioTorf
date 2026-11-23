@@ -55,6 +55,7 @@ import channels
 import chat_inbox
 import crm
 import crm_automation
+import record_photos
 import users
 import whatsapp_client
 import whatsapp_templates
@@ -142,6 +143,7 @@ def media_path(media_id: str) -> Path | None:
     return None
 
 app = FastAPI(title="BIOTORF Business OS · Comms API", version="0.2.0")
+app.include_router(record_photos.router)
 
 
 def _ensure_channels_schema():
@@ -172,6 +174,7 @@ def _ensure_schema():
         with store.connect() as conn:
             logistics.init_tables(conn)
             crm.init_tables(conn)
+            record_photos.init_tables(conn)
             users.init_tables(conn)
         _ensure_channels_schema()
         if store.IS_POSTGRES:
@@ -190,7 +193,7 @@ def _ensure_schema():
 
 # таблицы, которые ОБЯЗАНЫ существовать после успешной инициализации схемы
 _PG_SCHEMA_TABLES = ("comms", "chat_drafts", "comms_work", "comms_client_links", "channels", "channel_accounts",
-                     "crm_records", "logistics_docs", "users", "whatsapp_receipts")
+                     "crm_records", "crm_photos", "logistics_docs", "users", "whatsapp_receipts")
 
 
 def _missing_pg_tables() -> list[str]:
@@ -366,6 +369,7 @@ async def _auth_middleware_inner(request: Request, call_next, path: str):
             if payload["role"] != live["role"] or int(payload.get("tv", 0)) != int(live.get("token_version", 0)):
                 return JSONResponse(status_code=401, content={
                     "detail": "Ваша роль изменена администратором — войдите заново"})
+            request.state.user_name = live.get("name")
     request.state.role = payload["role"]
     # Свой профиль доступен ожидающему сотруднику после сверки с реестром.
     if path.startswith("/api/me/"):
@@ -1990,7 +1994,7 @@ def health():
     return JSONResponse(status_code=status, content={
         "ok": db_ok, "service": "biotorf-comms", "version": app.version,
         "revision": os.environ.get("RENDER_GIT_COMMIT") or None,
-        "features": {"inventory": True, "chatClientCapture": True, "automationRules": True},
+        "features": {"inventory": True, "chatClientCapture": True, "automationRules": True, "recordPhotos": True},
         "db": ("postgres: " + ("up" if db_ok else "DOWN — " + db_msg))
               if store.IS_POSTGRES else "sqlite",
         "ts": now_iso(),

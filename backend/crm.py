@@ -374,12 +374,16 @@ def import_collection(conn, coll: str, records: list, mode: str = "merge", *,
         if mode == "replace":
             if coll == "invoices":
                 replaced_invoices = {row["id"]: row for row in list_records(tx, coll)}
+            previous_ids = [row[0] for row in tx.execute("SELECT id FROM crm_records WHERE coll=?", (coll,)).fetchall()]
             _remember_deletions(tx, coll)
-            removed = tx.execute("DELETE FROM crm_records WHERE coll=?", (coll,)).rowcount
+            # Сохраняем вложения карточки, если её ID остаётся в новой таблице.
+            tx.executemany("DELETE FROM crm_records WHERE coll=? AND id=?",
+                           [(coll, rid) for rid in previous_ids if rid not in seen])
+            removed = len(previous_ids)
         created = updated = 0
         affected = []
         for rid, rec in validated:
-            current = get_record(tx, coll, rid)
+            current = get_record(tx, coll, rid) if mode == "merge" else None
             expected = rec.get("_expectedRev", _NO_REVISION)
             if expected is not _NO_REVISION and expected != (current or {}).get("_updatedAt"):
                 raise ConflictError(coll, rid)

@@ -3,6 +3,7 @@ import CrmDataTable from '@/components/CrmDataTable.vue';
 // «Медиатека» (демо v0.9 §8): фото/видео ДО-ПОСЛЕ по пилотам и кейсам.
 import { computed, ref } from 'vue';
 import { useDbStore } from '@/stores/db';
+import { crmPhotoLink } from '@/utils/crmPhotoLink';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 
 import CrmRowModal from '@/components/CrmRowModal.vue';
@@ -47,6 +48,7 @@ const rows = computed(() =>
     <section class="panel">
       <CrmDataTable coll="media" :rows="rows" empty="Материалов нет.">
         <template #actions="{ row: m }">
+          <a class="btn slim ghost" :href="crmPhotoLink('media', m.id)">Фото</a>
           <button class="btn slim ghost" @click="openEditor(m)">Изменить</button>
         </template>
       </CrmDataTable>

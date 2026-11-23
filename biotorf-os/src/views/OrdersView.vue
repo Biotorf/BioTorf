@@ -1,5 +1,6 @@
 <script setup>
 import { inventoryLink } from '@/utils/inventoryLink';
+import { crmPhotoLink } from '@/utils/crmPhotoLink';
 import { usePermissions } from '@/composables/usePermissions';
 import CrmDataTable from '@/components/CrmDataTable.vue';
 // «Заказы» (§3 шаги 18–20): реестр заказов с переходом в карточку (§5).
@@ -65,6 +66,7 @@ const rows = computed(() =>
         <template #actions="{ row: o }">
           <a v-if="canEdit('warehouse')" class="btn slim ghost" :href="inventoryLink('reserve', 'orders', o.id, o.id)">Резерв</a>
           <button class="btn slim ghost" @click="ui.openRecord('order', o.id)">Открыть</button>
+          <a class="btn slim ghost" :href="crmPhotoLink('orders', o.id)">Фото</a>
           <button v-if="o.journeyId" class="btn slim ghost" @click="ui.openJourney(o.journeyId)">Процесс</button>
           <button class="btn slim ghost" @click="rowModal = { coll: 'orders', record: o }">Изменить</button>
         </template>

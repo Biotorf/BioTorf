@@ -98,12 +98,11 @@ async function changePass() {
 .profile{display:flex;flex-direction:column;gap:10px;min-width:300px}
 .head{display:flex;align-items:center;gap:12px;margin-bottom:4px}
 .avatar{width:44px;height:44px;border-radius:50%;background:#214f37;color:#fff;display:grid;place-items:center;font-size:19px;font-weight:700}
-.fl{display:flex;flex-direction:column;gap:4px;font-size:12px;color:#5b6b62}
-.muted{color:#8aa398;font-size:12px}
-.msg{font-size:12px;margin:0;padding:7px 10px;border-radius:8px;background:#fffbec;border:1px solid #e7ddbf;color:#7a6840}
-.msg.err{background:#ffedea;border-color:#f0cfc9;color:#b94337}
-.msg.ok{background:#e5f5ee;border-color:#cfe9db;color:#218468}
-.msg.wait{background:#fff7e0;border-color:#ead9a8;color:#8a6d1b}
+.fl{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)}
+.muted{color:var(--muted);font-size:12px}
+.msg{font-size:12px;margin:0;padding:7px 10px;border-radius:8px;background:var(--warning-soft);border:1px solid var(--warning-border);color:var(--warning-ink)}
+.msg.err{background:var(--danger-soft);border-color:var(--danger-border);color:var(--danger-ink)}
+.msg.ok{background:var(--accent-soft);border-color:var(--accent-border);color:var(--accent-ink)}
 .row{display:flex;gap:8px;align-items:center;margin-top:4px}
 .passbox{display:flex;flex-direction:column;gap:8px;border-top:1px dashed #d8e2dc;padding-top:10px}
 </style>

@@ -102,7 +102,7 @@ function openEvent(e) {
           <span v-for="w in WEEKDAYS" :key="w">{{ w }}</span>
         </div>
       </div>
-      <div :style="{ display:'grid', gridTemplateColumns: mode==='День' ? '1fr' : 'repeat(7,1fr)', gap:'1px', background:'#e5e7eb' }">
+      <div :style="{ display:'grid', gridTemplateColumns: mode==='День' ? '1fr' : 'repeat(7,1fr)', gap:'1px', background:'var(--border)' }">
         <div v-for="c in cells" :key="c.toISOString()" class="cal-cell" :class="{ other: c.getMonth() !== anchor.getMonth() && mode==='Месяц', today: sameDay(c, new Date()) }">
           <div class="mini" style="font-weight:600">{{ c.getDate() }}</div>
           <div

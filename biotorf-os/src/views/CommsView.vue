@@ -584,15 +584,12 @@ onBeforeUnmount(() => {
           </div>
           <div class="chat-kind-filter">
             <button class="chip mini-chip" :class="{ selected: chatKindFilter === 'all' }"
-                    :style="chatKindFilter === 'all' ? 'background:#27b95a;color:#fff' : ''"
                     @click="setChatKind('all')">Все</button>
             <button v-for="[key, label] in BASE_FILTERS.filter(([k]) => k !== 'all')" :key="key"
                     class="chip mini-chip" :class="{ selected: chatKindFilter === key }"
-                    :style="chatKindFilter === key ? 'background:#27b95a;color:#fff' : ''"
                     @click="setChatKind(key)">{{ label }}</button>
             <button v-for="ch in dynChannels" :key="ch.id"
                     class="chip mini-chip" :class="{ selected: chatKindFilter === ch.id }"
-                    :style="chatKindFilter === ch.id ? 'background:#27b95a;color:#fff' : ''"
                     @click="setChatKind(ch.id)">{{ ch.icon }} {{ ch.label }}</button>
           </div>
           <div v-if="online && newChatOpen" class="newchat">
@@ -739,7 +736,7 @@ onBeforeUnmount(() => {
 .chat-side-head { display:flex; align-items:center; justify-content:space-between; padding:12px 14px; border-bottom:1px solid #e7ece8; }
 .chat-kind-filter { display:flex; flex-wrap:wrap; gap:6px; padding:10px 12px; border-bottom:1px solid #e7ece8; background:#fff; }
 .mini-chip { font-size:11.5px; padding:3px 9px; border-radius:9px; border:1px solid #dfe7df; background:#f6f9f6; cursor:pointer; }
-.mini-chip.selected { border-color:#27b95a; }
+.mini-chip.selected { background: var(--primary); color: var(--primary-ink); border-color: var(--primary); }
 .kind-select { width:auto; min-width:150px; font-size:12.5px; padding:6px 8px; }
 .send-kind { flex-shrink:0; align-self:flex-end; }
 .newchat { display:flex; flex-direction:column; gap:8px; padding:12px 14px; border-bottom:1px solid #e7ece8; background:#f4faf5; }

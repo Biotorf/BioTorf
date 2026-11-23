@@ -6,6 +6,7 @@ import CrmDataTable from '@/components/CrmDataTable.vue';
 import { computed, ref } from 'vue';
 import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
+import { crmPhotoLink } from '@/utils/crmPhotoLink';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 
 import CrmRowModal from '@/components/CrmRowModal.vue';
@@ -63,6 +64,7 @@ const pilots = computed(() =>
       <CrmDataTable coll="pilots" :rows="pilots" empty="Пилотов нет.">
         <template #actions="{ row: p }">
           <button class="btn slim ghost" @click="ui.openRecord('pilot', p.id)">Открыть</button>
+          <a class="btn slim ghost" :href="crmPhotoLink('pilots', p.id)">Фото</a>
           <button v-if="p.journeyId" class="btn slim ghost" @click="ui.openJourney(p.journeyId)">Процесс</button>
           <button class="btn slim ghost" @click="openEditor(p)">Изменить</button>
         </template>

@@ -7,6 +7,8 @@ import { COLL_RU, crmFieldLabel, crmDisplayValue, REF_FIELD, REF_KINDS, crmField
 import CrmDataTable from '@/components/CrmDataTable.vue';
 import CrmRowModal from '@/components/CrmRowModal.vue';
 import LogisticsDocEditor from '@/components/forms/LogisticsDocEditor.vue';
+import CrmPhotoGallery from '@/components/photos/CrmPhotoGallery.vue';
+import { CRM_PHOTO_COLLECTIONS, crmPhotoLink } from '@/utils/crmPhotoLink';
 
 const db = useDbStore();
 const ui = useUiStore();
@@ -43,6 +45,13 @@ const pageSize = 50;
 const pageCount = computed(() => Math.max(1, Math.ceil(matches.value.length / pageSize)));
 const visibleRows = computed(() => matches.value.slice((page.value - 1) * pageSize, page.value * pageSize));
 const record = computed(() => recordIndex.value[coll.value].get(selected.value));
+const supportsPhotos = computed(() => CRM_PHOTO_COLLECTIONS.has(coll.value));
+const showPhotos = computed(() => supportsPhotos.value && route.value.get('section') === 'photos');
+const photosPanel = ref(null);
+watch(photosPanel, (panel) => {
+  panel?.focus({ preventScroll: true });
+  panel?.scrollIntoView({ block: 'nearest' });
+});
 const canWrite = computed(() => canEditCollection(coll.value));
 const editing = ref(null);
 const status = ref('');
@@ -188,9 +197,15 @@ async function remove(row) {
           <button v-if="coll === 'leads'" class="btn slim" @click="ui.openLeadCard(record.id)">Квалификация и процесс</button>
           <button v-else-if="coll === 'journeys' || record.journeyId" class="btn slim" @click="ui.openJourney(record.journeyId || record.id)">Сквозной процесс</button>
           <button v-if="canWrite" class="btn slim" @click="openEditor(coll, record)">Изменить</button>
+          <a v-if="supportsPhotos" class="btn slim" :href="showPhotos ? href(coll, record.id) : crmPhotoLink(coll, record.id)">
+            {{ showPhotos ? 'Закрыть фото' : 'Фото' }}
+          </a>
           <button class="btn slim" @click="share">Скопировать ссылку</button>
           <a class="btn slim ghost" :href="href(coll)">Закрыть</a>
         </div>
+      </div>
+      <div v-if="showPhotos" :key="`${coll}:${record.id}`" ref="photosPanel" tabindex="-1" class="registry-photos">
+        <CrmPhotoGallery :collection="coll" :record-id="String(record.id)" :record-name="crmTitle(record)" :editable="canWrite" />
       </div>
       <input v-if="shareUrl" class="input" :value="shareUrl" readonly aria-label="Ссылка на запись" @focus="$event.target.select()" />
       <dl class="details">
@@ -256,6 +271,7 @@ async function remove(row) {
 .row-actions { flex-wrap: nowrap; }
 .record { padding: 16px; margin-bottom: 14px; }
 .record-head { justify-content: space-between; }
+.registry-photos { margin-block: 12px; }
 .details { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(0, 4fr); gap: 6px 12px; }
 dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 .related { padding-inline-start: 20px; }

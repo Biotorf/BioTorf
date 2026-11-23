@@ -87,14 +87,14 @@ onBeforeUnmount(() => window.removeEventListener('hashchange', readTaskRoute));
   <div>
     <div class="pagehead">
       <div>
-        <h1>Задачи</h1>
+        <h1 data-tour="tasks-view">Задачи</h1>
         <ManualLink />
-        <div class="subtitle">Поручения с исполнителем, сроком и статусом · просрочено: <b :style="lateCount ? 'color:#c62828' : ''">{{ lateCount }}</b></div>
+        <div class="subtitle">Поручения с исполнителем, сроком и статусом · просрочено: <b :class="{ 'danger-text': lateCount }">{{ lateCount }}</b></div>
       <BackendBadge collection="tasks" />
       </div>
         <div class="actionbar" style="margin-top:10px">
           <button class="btn slim" @click="importColl = 'tasks'" title="Загрузить задачи из CSV/JSON">⇪ Импорт</button>
-          <button v-if="canEditCollection('tasks')" class="btn primary slim" @click="newTask()">＋ Создать задачу</button>
+          <button v-if="canEditCollection('tasks')" class="btn primary slim" data-tour="tasks-create" @click="newTask()">＋ Создать задачу</button>
         </div></div>
 
     <CrmRowModal

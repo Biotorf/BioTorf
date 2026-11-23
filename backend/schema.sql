@@ -96,6 +96,24 @@ CREATE TABLE IF NOT EXISTS crm_records (
 );
 CREATE INDEX IF NOT EXISTS idx_crm_coll ON crm_records (coll);
 
+CREATE TABLE IF NOT EXISTS crm_photos (
+    id          TEXT PRIMARY KEY,
+    coll        TEXT NOT NULL,
+    record_id   TEXT NOT NULL,
+    digest      TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    size        INTEGER NOT NULL,
+    width       INTEGER NOT NULL,
+    height      INTEGER NOT NULL,
+    is_cover    INTEGER NOT NULL CHECK (is_cover IN (0, 1)),
+    created_at  TEXT NOT NULL,
+    content     BYTEA NOT NULL,
+    thumbnail   BYTEA NOT NULL,
+    UNIQUE (coll, record_id, digest),
+    FOREIGN KEY (coll, record_id) REFERENCES crm_records (coll, id) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_crm_photos_cover ON crm_photos (coll, record_id) WHERE is_cover=1;
+
 CREATE TABLE IF NOT EXISTS logistics_docs (
     id      TEXT PRIMARY KEY,
     kind    TEXT NOT NULL CHECK (kind IN ('supply','dispatch')),

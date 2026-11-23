@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
 import { usePermissions } from '@/composables/usePermissions';
+import { useCrmPhotoCovers } from '@/composables/useCrmPhotoCovers';
 import { clientInitials, isPerson, phoneDigits, primaryContact } from '@/data/clientDesk';
 import { statusOptions } from '@/data/crmFields';
 import { useFormatters } from '@/composables/useFormatters';
@@ -10,6 +11,7 @@ import BackendBadge from '@/components/ui/BackendBadge.vue';
 import CrmDataTable from '@/components/CrmDataTable.vue';
 import CrmImportModal from '@/components/CrmImportModal.vue';
 import CrmSelectField from '@/components/CrmSelectField.vue';
+import CrmPhotoThumbnail from '@/components/photos/CrmPhotoThumbnail.vue';
 import StatusPill from '@/components/ui/StatusPill.vue';
 import ClientCardModal from '@/views/ClientCardModal.vue';
 
@@ -86,6 +88,7 @@ const pageSize = 36;
 const clientColumns = ['name', 'type', 'region', 'phone', 'email', 'owner', 'next', 'status'];
 const pageCount = computed(() => Math.ceil(customers.value.length / pageSize));
 const shownCustomers = computed(() => customers.value.slice((page.value - 1) * pageSize, page.value * pageSize));
+const { covers } = useCrmPhotoCovers('farms', () => selected.value ? [] : shownCustomers.value.map((client) => client.id));
 watch([category, owner, status, sortBy, () => ui.search], () => { page.value = 1; });
 watch(pageCount, (value) => { if (page.value > value) page.value = Math.max(1, value); });
 
@@ -235,9 +238,13 @@ async function createClient() {
 
       <ul v-if="customers.length && mode === 'cards'" class="customer-grid" aria-label="Карточки клиентов">
         <li v-for="client in shownCustomers" :key="client.id">
-          <a :href="clientLink(client.id)" class="customer-tile">
+          <a :href="clientLink(client.id)" class="customer-tile" data-tour="client-card-link">
             <div class="customer-tile-head">
-              <span class="customer-avatar" aria-hidden="true">{{ clientInitials(client.name) }}</span>
+              <span class="customer-avatar" aria-hidden="true">
+                <CrmPhotoThumbnail collection="farms" :record-id="String(client.id)" :cover-id="covers.get(String(client.id))?.id ?? ''">
+                  <template #fallback>{{ clientInitials(client.name) }}</template>
+                </CrmPhotoThumbnail>
+              </span>
               <div>
                 <h2>{{ client.name || client.id }}</h2>
                 <p v-if="client.type || client.region">{{ [client.type, client.region].filter(Boolean).join(' · ') }}</p>
@@ -259,7 +266,14 @@ async function createClient() {
       </ul>
       <CrmDataTable v-else-if="customers.length" coll="farms" :rows="shownCustomers" :columns="clientColumns">
         <template #name="{ row: client }">
-          <a :href="clientLink(client.id)" class="client-name">{{ client.name || client.id }}</a>
+          <a :href="clientLink(client.id)" class="client-name client-name-with-photo" data-tour="client-card-link">
+            <span class="customer-avatar list-avatar" aria-hidden="true">
+              <CrmPhotoThumbnail collection="farms" :record-id="String(client.id)" :cover-id="covers.get(String(client.id))?.id ?? ''">
+                <template #fallback>{{ clientInitials(client.name) }}</template>
+              </CrmPhotoThumbnail>
+            </span>
+            {{ client.name || client.id }}
+          </a>
         </template>
         <template #phone="{ row: client }">
           <a v-if="clientInfo.get(client.id).phone" :href="'tel:' + clientInfo.get(client.id).phone">{{ clientInfo.get(client.id).phone }}</a>
@@ -325,7 +339,9 @@ async function createClient() {
 .customer-tile-head p { margin: 3px 0 0; font-size: 12px; color: #52665b; }
 .customer-tile-foot { margin-top: auto; font-size: 12px; }
 .customer-tile-foot > span:last-child { margin-left: auto; font-weight: 650; color: #226f40; }
-.customer-avatar { flex: 0 0 38px; min-height: 38px; display: grid; place-items: center; border-radius: 10px; background: #e8f5eb; color: #24703e; font-weight: 750; }
+.customer-avatar { flex: 0 0 38px; min-height: 38px; display: grid; place-items: center; border-radius: 10px; overflow: hidden; background: var(--accent-soft, #e8f5eb); color: var(--accent-ink, #24703e); font-weight: 750; }
+.client-name-with-photo { display: inline-flex; align-items: center; gap: 8px; }
+.list-avatar { flex-basis: 28px; min-height: 28px; inline-size: 28px; border-radius: 7px; font-size: 12px; }
 .customer-info { display: grid; gap: 6px; margin: 0; font-size: 13px; }
 .customer-info div { display: flex; flex-wrap: wrap; gap: 4px 8px; justify-content: space-between; }
 .customer-info dt { color: #52665b; }

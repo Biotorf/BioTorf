@@ -1,0 +1,157 @@
+:root {
+  color-scheme: light;
+  --surface-soft: #f5faf6;
+  --surface-hover: #edf6ef;
+  --control-border: #ccdcd1;
+  --accent-ink: #185d43;
+  --accent-soft: #e4f4eb;
+  --accent-border: #b9d9c7;
+  --primary: #117555;
+  --primary-hover: #095d42;
+  --primary-ink: #fff;
+  --warning-ink: #785119;
+  --warning-soft: #fff6e4;
+  --warning-border: #e9d7b2;
+  --danger-ink: #a42729;
+  --danger-soft: #fff1ed;
+  --danger-border: #edcdc8;
+  --elevation: 0 14px 45px #14301e26;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #111b17;
+  --panel: #1a2822;
+  --ink: #ecf5ef;
+  --muted: #acc1b5;
+  --border: #354b40;
+  --green: #86d5ae;
+  --mint: #233e31;
+  --focus-ring: #8be2b5;
+  --surface-soft: #20322a;
+  --surface-hover: #2b4135;
+  --control-border: #4a6557;
+  --accent-ink: #a3e4bd;
+  --accent-soft: #244638;
+  --accent-border: #4c795f;
+  --primary: #86d5ae;
+  --primary-hover: #a4e7c4;
+  --primary-ink: #102a1d;
+  --warning-ink: #f4ce90;
+  --warning-soft: #3c3022;
+  --warning-border: #72593e;
+  --danger-ink: #ffb4ac;
+  --danger-soft: #442823;
+  --danger-border: #805047;
+  --info-ink: #b0d7f0;
+  --info-soft: #243a4a;
+  --lilac-soft: #342b44;
+  --shadow: 0 5px 20px rgba(0, 0, 0, .25);
+  --shadow-soft: 0 3px 12px rgba(0, 0, 0, .22);
+  --shadow-lift: 0 8px 24px rgba(0, 0, 0, .28);
+  --elevation: 0 16px 52px rgba(0, 0, 0, .47);
+}
+
+/* Shared surfaces and controls still used by the app's existing stylesheets. */
+html[data-theme="dark"] ::selection { background: var(--primary); color: var(--primary-ink); }
+html[data-theme="dark"] ::-webkit-scrollbar-thumb { background-color: var(--control-border); }
+html[data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background-color: var(--muted); }
+html[data-theme="dark"] :is(input[type="checkbox"], input[type="radio"]) { accent-color: var(--primary); }
+html[data-theme="dark"] :is(.panel, .stat, .table-wrap, .topbar, .modal, .role, .hero-card, .deal-card,
+  .toolbar-icon, .customer-directory, .customer-tile, .account-metrics > div, .finance-totals > div,
+  .display-choice button, .request, .kcard, .cal-cell, .messenger, .chat-kind-filter, .chat-head,
+  .chat-input, .inbox-work, .msg-row.theirs .bubble) {
+  background: var(--panel);
+  border-color: var(--border);
+}
+html[data-theme="dark"] :is(.sidebar, .modal .modal-title) {
+  background: linear-gradient(175deg, var(--panel), var(--surface-soft));
+  border-color: var(--border);
+}
+html[data-theme="dark"] :is(.sidebar .brand, .side-bottom, .customer-tabs, .directory-tools, .display-choice,
+  .profile-fields > div, .related-list li, .work-row, .task-row, .insight, .client-tabs, .calendar-item,
+  .chat-side, .newchat, .inline-editor .head, .inline-editor .foot, .inline-editor .items,
+  table.preview th, table.preview td) { border-color: var(--border); }
+html[data-theme="dark"] :is(.sidebar .brand strong, .brand-mark, .txt-link, .client-tab.selected, .manual-link) { color: var(--accent-ink); }
+html[data-theme="dark"] :is(.sidebar .nav button, .brand small, .nav-label, .side-bottom,
+  footer, .field label, .field .fname, .deal-card .bottom, .bar-line .name, .client-tab, .kb-text) { color: var(--muted); }
+html[data-theme="dark"] .sidebar .nav button:hover { background: var(--surface-hover); color: var(--ink); }
+html[data-theme="dark"] .sidebar .nav button.active { background: var(--accent-soft); color: var(--accent-ink); box-shadow: inset 0 0 0 1px var(--accent-border); }
+html[data-theme="dark"] .sidebar .nav button.active::after,
+html[data-theme="dark"] .event::before { background: var(--green); }
+html[data-theme="dark"] .sidebar .brand-mark { background: var(--accent-soft); color: var(--accent-ink); }
+html[data-theme="dark"] .topbar .section-nav [aria-current="page"] { box-shadow: inset 0 -2px 0 var(--green); }
+html[data-theme="dark"] :is(.topbar .training-trigger, .manual-link) { background: var(--accent-soft); color: var(--accent-ink); border-color: var(--accent-border); }
+html[data-theme="dark"] :is(.topbar .training-trigger:hover, .manual-link:hover) { background: var(--surface-hover); border-color: var(--focus-ring); }
+
+html[data-theme="dark"] :is(.input, .select, .textarea, .search input, .inline-editor .field input, .inline-editor .field textarea) {
+  background: var(--bg);
+  border-color: var(--control-border);
+  color: var(--ink);
+}
+html[data-theme="dark"] :is(input, textarea)::placeholder { color: var(--muted); opacity: .83; }
+html[data-theme="dark"] :is(.input, .select, .textarea, .search input, .inline-editor .field input, .inline-editor .field textarea):focus {
+  border-color: var(--focus-ring);
+  box-shadow: 0 0 0 3px #8be2b533;
+}
+html[data-theme="dark"] .field:focus-within label { color: var(--accent-ink); }
+html[data-theme="dark"] :is(.btn, .toolbar-icon) { background: var(--panel); border-color: var(--control-border); color: var(--ink); }
+html[data-theme="dark"] :is(.btn.ghost, .table .btn.ghost) { background: var(--surface-soft); border-color: var(--border); color: var(--ink); }
+html[data-theme="dark"] :is(.btn:not(:disabled), .toolbar-icon):hover { background: var(--surface-hover); border-color: var(--accent-border); color: var(--ink); }
+html[data-theme="dark"] .btn.primary { background: var(--primary); border-color: var(--primary); color: var(--primary-ink); box-shadow: none; }
+html[data-theme="dark"] .btn.primary:not(:disabled):hover { background: var(--primary-hover); border-color: var(--primary-hover); color: var(--primary-ink); }
+html[data-theme="dark"] :is(.btn.danger-text, .btn.danger, .btn.del) { background: var(--danger-soft); border-color: var(--danger-border); color: var(--danger-ink); }
+html[data-theme="dark"] :is(.btn.danger-text, .btn.danger, .btn.del):not(:disabled):hover { background: var(--danger-border); border-color: var(--danger-ink); color: var(--ink); }
+html[data-theme="dark"] :is(.modal .x, button.x, .overlay .x) { background: var(--surface-soft); border-color: var(--border); color: var(--muted); }
+html[data-theme="dark"] :is(.modal .x, button.x, .overlay .x):hover { background: var(--danger-soft); border-color: var(--danger-border); color: var(--danger-ink); }
+
+html[data-theme="dark"] .table :is(td, th) { border-bottom-color: var(--border); }
+html[data-theme="dark"] .table th { background: var(--surface-soft); color: var(--muted); box-shadow: inset 0 -1px 0 var(--border); }
+html[data-theme="dark"] .table tbody tr:nth-child(even) { background: var(--surface-soft); }
+html[data-theme="dark"] .table tbody tr:hover { background: var(--surface-hover); box-shadow: inset 3px 0 0 var(--green); }
+html[data-theme="dark"] .table .btn.ghost:hover { background: var(--surface-hover); border-color: var(--accent-border); color: var(--ink); }
+html[data-theme="dark"] .stat::before { background: radial-gradient(circle, var(--accent-soft), transparent 70%); }
+html[data-theme="dark"] :is(.lane, .kcol, .muted-block, .empty, .pref-list label, .progress, .bar-line .track,
+  .mini-chip, .day-divider span, .client-capture, .segmented, .step-mark, .cal-cell.other) { background: var(--surface-soft); border-color: var(--border); }
+html[data-theme="dark"] .lane:hover { background: var(--surface-hover); }
+html[data-theme="dark"] :is(.timeline, .event::before) { border-color: var(--accent-border); }
+html[data-theme="dark"] :is(.pill, .chip, .stat .tag, .calendar-day, .cal-event, .cal-ev, .mapchip, .customer-avatar, .identity-icon) { background: var(--accent-soft); color: var(--accent-ink); border-color: var(--accent-border); }
+html[data-theme="dark"] :is(.pill.amber, .chip.warn, .note, .duplicate-hint) { background: var(--warning-soft); color: var(--warning-ink); border-color: var(--warning-border); }
+html[data-theme="dark"] :is(.pill.red, .chip.danger, .msg-row .bubble.failed) { background: var(--danger-soft); color: var(--danger-ink); border-color: var(--danger-border); }
+html[data-theme="dark"] :is(.pill.gray, .chip.neutral) { background: var(--surface-soft); color: var(--muted); }
+html[data-theme="dark"] :is(.danger-text, .select-error, .inline-editor .err, .form-error, .work-error, .comms-error, .link-btn, .err-box) { color: var(--danger-ink); }
+html[data-theme="dark"] :is(.has-balance, .comms-warn, .sync-error) { color: var(--warning-ink); }
+
+/* Workspaces that use scoped colors for cards, message threads, and lanes. */
+html[data-theme="dark"] :is(.client-summary, .client-hero, .next-panel, .newchat) { background: var(--surface-soft); border-color: var(--border); }
+html[data-theme="dark"] :is(.customer-tile:hover, .customer-tile:focus-visible, .request:hover, .request[aria-current], .kcard:hover, .cal-cell.today) { border-color: var(--accent-border); }
+html[data-theme="dark"] :is(.display-choice button[aria-pressed="true"], .customer-tabs button[aria-pressed="true"],
+  .sale-steps [aria-current], .inline-link, .more-client-fields summary, .customer-tile-foot > span:last-child,
+  .client-saved, .comms-ok) { color: var(--accent-ink); }
+html[data-theme="dark"] :is(.sale-steps .done .step-mark, .display-choice button[aria-pressed="true"],
+  .request:hover, .request[aria-current], .chat-item.active, .comms-bubble.out, .msg-row.mine .bubble) { background: var(--accent-soft); border-color: var(--accent-border); }
+html[data-theme="dark"] .sale-steps [aria-current] .step-mark { background: var(--primary); color: var(--primary-ink); }
+html[data-theme="dark"] :is(.display-choice button, .customer-tile-head p, .customer-info dt, .client-table-tools summary,
+  .account-metrics dt, .account-metrics dd small, .finance-totals dt, .profile-fields dt, .tab-count,
+  .compact-activity time, .history-select, .client-type, .client-meta, .customer-tabs button,
+  .customer-timeline time, .client-empty, .related-list li span, .next-card span, .sale-steps li,
+  .metric > small, .segmented button, .row-copy small, .empty-list, .operation-links small,
+  .rule p, .history small, .chat-preview, .bubble-meta, .chat-empty, .day-divider span, .cal-cell b,
+  .cal-cell.other, .mini-chip) { color: var(--muted); }
+html[data-theme="dark"] :is(.work-row:hover, .operation-links a:hover, .chat-item:hover, .cal-ev:hover) { background: var(--surface-hover); }
+html[data-theme="dark"] .operation-links a { background: var(--surface-soft); border-color: var(--border); }
+html[data-theme="dark"] .segmented button[aria-pressed="true"] { background: var(--panel); color: var(--accent-ink); box-shadow: var(--shadow-soft); }
+html[data-theme="dark"] .metric { border-inline-color: var(--border); border-bottom-color: var(--border); }
+html[data-theme="dark"] .metric.mint { background: var(--accent-soft); }
+html[data-theme="dark"] .metric.blue { background: var(--info-soft); }
+html[data-theme="dark"] .metric.sand { background: var(--warning-soft); }
+html[data-theme="dark"] .metric.lilac { background: var(--lilac-soft); }
+html[data-theme="dark"] .workspace-actions .btn { background: var(--panel); color: var(--ink); border-color: var(--accent-border); }
+html[data-theme="dark"] .workspace-actions .btn.primary { background: var(--primary); color: var(--primary-ink); border-color: var(--primary); }
+html[data-theme="dark"] :is(.chat-side, .comms-bubble, table.preview th) { background: var(--surface-soft); }
+html[data-theme="dark"] .chat-window { background: var(--bg); }
+html[data-theme="dark"] .comms-unread td { background: var(--warning-soft); }
+html[data-theme="dark"] :is(.k-call, .k-telegram, .av-call, .av-telegram) { background: var(--info-soft); color: var(--info-ink); }
+html[data-theme="dark"] :is(.k-whatsapp, .av-whatsapp) { background: var(--accent-soft); color: var(--accent-ink); }
+html[data-theme="dark"] .messenger .badge { background: var(--primary); color: var(--primary-ink); }
+html[data-theme="dark"] .messenger .mini-chip.selected { background: var(--primary); border-color: var(--primary); color: var(--primary-ink); }

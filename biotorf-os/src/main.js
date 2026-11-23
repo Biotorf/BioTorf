@@ -6,6 +6,7 @@ import './styles/main.css';
 import './styles/client.css';
 import './styles/ui-polish-v2.css';
 import './styles/workspace.css';
+import './styles/theme.css';
 
 createApp(App).use(createPinia()).mount('#app');
 

@@ -2,6 +2,7 @@
 import { computed } from 'vue';
 import { useUiStore } from '@/stores/ui';
 import MiniProfile from '@/components/auth/MiniProfile.vue';
+import ThemeToggle from '@/components/ui/ThemeToggle.vue';
 
 const emit = defineEmits(['start-training']);
 const ui = useUiStore();
@@ -26,6 +27,7 @@ const searchable = computed(() => ['orders', 'pilots'].includes(ui.view));
     </label>
     <div class="topright profile">
       <button type="button" class="btn slim training-trigger" @click="emit('start-training', $event)">Обучение</button>
+      <ThemeToggle />
       <MiniProfile />
     </div>
   </header>
@@ -33,13 +35,18 @@ const searchable = computed(() => ['orders', 'pilots'].includes(ui.view));
 
 <style scoped>
 .topbar { min-height: 56px; height: auto; padding-block: 7px; gap: 10px; }
-.profile { margin-inline-start: auto; }
+.profile { margin-inline-start: auto; min-width: 0; }
 .section-nav { min-width: 0; display: flex; align-items: center; gap: 4px; overflow-x: auto; }
-.section-nav a { flex: none; font-size: 13px; color: #4b675b; text-decoration: none; padding: 7px 9px; border-radius: 7px; white-space: nowrap; }
-.section-nav a:hover, .section-nav [aria-current="page"] { background: #ecf6ef; color: #145a43; }
+.section-nav a { flex: none; font-size: 13px; color: var(--muted); text-decoration: none; padding: 7px 9px; border-radius: 7px; white-space: nowrap; }
+.section-nav a:hover, .section-nav [aria-current="page"] { background: var(--accent-soft); color: var(--accent-ink); }
 .section-nav [aria-current="page"] { font-weight: 720; }
 @media(max-width: 750px) {
   .section-nav { flex: 1 0 100%; order: 2; }
   .search { order: 3; }
+}
+@media (max-width: 390px) {
+  .profile { gap: 6px; }
+  .profile :deep(.avatar-btn) { padding-inline: 5px; }
+  .profile :deep(.who) { display: none; }
 }
 </style>

@@ -153,6 +153,7 @@ def connect():
         return pg.connect()
     conn = sqlite3.connect(DB_PATH, timeout=15)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
     # WAL: читатели не блокируются писателем и наоборот — критично при
     # одновременной работе API (несколько сотрудников + webhook-штормы) и
     # telegram_worker'а с одной базой. journal_mode персистентен в файле БД,

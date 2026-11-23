@@ -5,6 +5,7 @@
 // генеральный директор: его аккаунт создаётся автоматически с ролью director.
 import { ref, computed } from 'vue';
 import { login, register, authState } from '@/api/authClient';
+import ThemeToggle from '@/components/ui/ThemeToggle.vue';
 const emit = defineEmits(['session']);   // готовая сессия → App скрывает gate
 
 const mode = ref('login');            // login | register
@@ -59,6 +60,7 @@ async function submit() {
 
 <template>
   <div class="gate">
+    <div class="gate-theme"><ThemeToggle /></div>
     <form class="gate-card" @submit.prevent="submit">
       <div class="gate-brand"><span class="brand-mark">🌱</span><strong>BIOTORF BUSINESS OS</strong></div>
 
@@ -109,14 +111,15 @@ async function submit() {
 </template>
 
 <style scoped>
-.gate{min-height:100vh;display:grid;place-items:center;background:#0f2b21;padding:20px}
-.gate-card{width:min(400px,100%);background:#fff;border-radius:16px;padding:28px 26px;box-shadow:0 20px 70px rgba(0,0,0,.35);display:flex;flex-direction:column;gap:12px}
+.gate{position:relative;min-height:100vh;display:grid;place-items:center;background:#0f2b21;padding:68px 20px 20px}
+.gate-theme{position:absolute;inset-block-start:12px;inset-inline-end:12px}
+.gate-card{width:min(400px,100%);background:var(--panel);border-radius:16px;padding:28px 26px;box-shadow:var(--elevation);display:flex;flex-direction:column;gap:12px}
 .gate-brand{display:flex;align-items:center;gap:10px;margin-bottom:4px}
-.gate-brand strong{letter-spacing:1.5px;font-size:14px;color:#214f37}
+.gate-brand strong{letter-spacing:1.5px;font-size:14px;color:var(--accent-ink)}
 .gate-card h2{font-size:19px;margin-bottom:2px}
-.gate-note{font-size:12px;color:#7a6840;background:#fffbec;border:1px solid #e7ddbf;border-radius:9px;padding:9px 11px;margin:0}
-.gate-note.err{color:#b94337;background:#ffedea;border-color:#f0cfc9}
-.gate-note.ok{color:#218468;background:#e5f5ee;border-color:#cfe9db}
+.gate-note{font-size:12px;color:var(--warning-ink);background:var(--warning-soft);border:1px solid var(--warning-border);border-radius:9px;padding:9px 11px;margin:0}
+.gate-note.err{color:var(--danger-ink);background:var(--danger-soft);border-color:var(--danger-border)}
+.gate-note.ok{color:var(--accent-ink);background:var(--accent-soft);border-color:var(--accent-border)}
 .gate-card .btn.primary{margin-top:6px}
 .gate-switch{font-size:12px}
 </style>

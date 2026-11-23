@@ -4,6 +4,7 @@ import { useDbStore } from '@/stores/db';
 import { usePermissions } from '@/composables/usePermissions';
 import { useFormatters } from '@/composables/useFormatters';
 import { inventoryLink } from '@/utils/inventoryLink';
+import { crmPhotoLink } from '@/utils/crmPhotoLink';
 import { statusOptions } from '@/data/crmFields';
 import CrmDataTable from '@/components/CrmDataTable.vue';
 import CrmRowModal from '@/components/CrmRowModal.vue';
@@ -69,6 +70,7 @@ function canPost(row) {
         <p v-if="row.actualQty != null"><strong>Выпуск</strong> {{ row.actualQty }} {{ row.unit || 'шт.' }} · {{ row.qcStatus || 'Контроль ожидается' }}</p>
         <div class="actionbar">
           <button v-if="canEditCollection('production')" class="btn slim" @click="rowOpen = { record: row }">{{ row.status === 'Завершено' ? 'Открыть партию' : 'Заполнить партию' }}</button>
+          <a class="btn slim ghost" :href="crmPhotoLink('production', row.id)">Фото партии</a>
           <a v-if="canPost(row)" :href="inventoryLink('production', 'production', row.id)">Провести на складе</a>
         </div>
       </article>

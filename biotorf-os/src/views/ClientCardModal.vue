@@ -6,9 +6,12 @@ import { useDbStore, isLate } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
 import { usePermissions } from '@/composables/usePermissions';
 import { useFormatters } from '@/composables/useFormatters';
+import { crmPhotoLink } from '@/utils/crmPhotoLink';
 import { crmTitle, crmValue, REF_KINDS } from '@/data/crmFields';
 import CrmRowModal from '@/components/CrmRowModal.vue';
 import CrmSelectField from '@/components/CrmSelectField.vue';
+import CrmPhotoGallery from '@/components/photos/CrmPhotoGallery.vue';
+import CrmPhotoThumbnail from '@/components/photos/CrmPhotoThumbnail.vue';
 import StatusPill from '@/components/ui/StatusPill.vue';
 
 const props = defineProps({
@@ -87,13 +90,16 @@ const journeys = computed(() => related.value.journeys || []);
 const salesCount = computed(() => salesGroups.reduce((total, [table]) => total + (related.value[table]?.length || 0), journeys.value.length));
 const financeCount = computed(() => financeGroups.reduce((total, [table]) => total + (related.value[table]?.length || 0), 0));
 const tabs = computed(() => [
-  { id: 'overview', label: 'Обзор' }, { id: 'history', label: 'История' },
+  { id: 'overview', label: 'Обзор' }, { id: 'photos', label: 'Фото' }, { id: 'history', label: 'История' },
   { id: 'sales', label: 'Продажи', count: salesCount.value },
   { id: 'finance', label: 'Финансы', count: financeCount.value },
   { id: 'contacts', label: 'Контакты', count: contacts.value.length },
   { id: 'docs', label: 'Документы', count: related.value.clientDocs?.length },
 ]);
 const active = ref('overview');
+const photoCoverId = ref();
+function setPhotoCover(cover) { photoCoverId.value = cover?.id ?? ''; }
+watch(() => props.farmId, () => { photoCoverId.value = undefined; });
 const historyKind = ref('all');
 const historyLimit = ref(30);
 const historyPageSize = 50;
@@ -262,7 +268,11 @@ async function startSale() {
   <article v-if="farm" class="client-card">
     <header class="client-summary">
       <div class="summary-identity">
-        <span class="identity-icon" aria-hidden="true">{{ clientInitials(farm.name) }}</span>
+        <button type="button" class="identity-icon" aria-label="Открыть фотографии клиента" @click="active = 'photos'">
+          <CrmPhotoThumbnail collection="farms" :record-id="String(farm.id)" :cover-id="photoCoverId">
+            <template #fallback>{{ clientInitials(farm.name) }}</template>
+          </CrmPhotoThumbnail>
+        </button>
         <div>
           <div v-if="farm.type || farm.region" class="client-type">{{ [farm.type, farm.region].filter(Boolean).join(' · ') }}</div>
           <component :is="embedded ? 'h1' : 'h2'">{{ farm.name || farm.id }}</component>
@@ -292,7 +302,8 @@ async function startSale() {
     <div class="client-card-grid">
       <section class="client-card-main panel">
         <nav class="customer-tabs" aria-label="Разделы карточки">
-          <button v-for="tab in tabs" :key="tab.id" type="button" :aria-pressed="active === tab.id" @click="active = tab.id">
+          <button v-for="tab in tabs" :key="tab.id" type="button" :aria-pressed="active === tab.id"
+            :data-tour="tab.id === 'photos' ? 'client-photos' : undefined" @click="active = tab.id">
             {{ tab.label }}<span v-if="tab.count" class="tab-count">{{ tab.count }}</span>
           </button>
         </nav>
@@ -317,6 +328,11 @@ async function startSale() {
             </li>
           </ul>
           <p v-else class="client-empty">Событий пока нет.</p>
+        </div>
+
+        <div v-else-if="active === 'photos'" class="customer-tab-content">
+          <CrmPhotoGallery collection="farms" :record-id="String(farm.id)" :record-name="farm.name"
+            :editable="canEditCollection('farms')" @loaded="setPhotoCover" @changed="setPhotoCover" />
         </div>
 
         <div v-else-if="active === 'history'" class="customer-tab-content">
@@ -406,6 +422,7 @@ async function startSale() {
                   <a v-if="contact.email" :href="'mailto:' + contact.email">{{ contact.email }}</a>
                   <a v-if="contactHandles(contact).telegram" :href="contactHandles(contact).telegram" target="_blank" rel="noopener">Telegram</a>
                   <a v-if="contactHandles(contact).whatsapp" :href="contactHandles(contact).whatsapp" target="_blank" rel="noopener">WhatsApp</a>
+                  <a :href="crmPhotoLink('contacts', contact.id)" @click="!embedded && ui.closeModal()">Фото</a>
                 </div>
               </div>
               <button v-if="canEditCollection('contacts')" class="btn slim" @click="edit = { coll: 'contacts', record: contact }">Изменить</button>
@@ -460,7 +477,7 @@ async function startSale() {
 <style scoped>
 .client-summary { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; background: #f1f8f3; border: 1px solid #d7e9dc; border-radius: 14px; padding: 18px; margin-bottom: 14px; }
 .summary-identity { display: flex; min-width: 0; align-items: center; gap: 14px; }
-.identity-icon { display: grid; place-items: center; flex: 0 0 48px; aspect-ratio: 1; border-radius: 13px; background: #dcefe4; color: #216c4c; font-weight: 800; font-size: 18px; }
+.identity-icon { display: grid; place-items: center; flex: 0 0 48px; inline-size: 48px; aspect-ratio: 1; padding: 0; border: 0; border-radius: 13px; overflow: hidden; background: var(--accent-soft, #dcefe4); color: var(--accent-ink, #216c4c); font-weight: 800; font-size: 18px; cursor: pointer; }
 .account-metrics, .finance-totals { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; margin: 0 0 12px; }
 .account-metrics > div, .finance-totals > div { background: #fff; border: 1px solid #e1ece4; border-radius: 11px; padding: 10px 12px; min-width: 0; }
 .account-metrics dt, .finance-totals dt, .profile-fields dt { color: #52665b; font-size: 12px; }
