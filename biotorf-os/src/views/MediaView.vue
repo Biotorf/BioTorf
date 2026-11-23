@@ -7,10 +7,8 @@ import BackendBadge from '@/components/ui/BackendBadge.vue';
 
 import CrmRowModal from '@/components/CrmRowModal.vue';
 import ManualLink from '@/components/ui/ManualLink.vue';
-const rowColl = ref('media');
-const rowOpen = ref(false);
-const editRec = ref(null);
-function openEdit(rec) { editRec.value = rec; rowOpen.value = true; }
+const editor = ref(null);
+function openEditor(record = null) { editor.value = { record }; }
 
 const db = useDbStore();
 const query = ref('');
@@ -30,8 +28,17 @@ const rows = computed(() =>
       </div>
       <BackendBadge collection="media" />
     
-      <button class="btn primary slim" @click="rowOpen = true" title="Добавить запись вручную">＋ Добавить</button>
+      <button class="btn primary slim" @click="openEditor()" title="Добавить запись вручную">＋ Добавить</button>
     </div>
+
+    <CrmRowModal
+      v-if="editor"
+      inline
+      :key="editor.record?.id || 'new'"
+      coll="media"
+      :record="editor.record"
+      @close="editor = null"
+    />
 
     <div class="toolbar">
       <input v-model="query" class="input" style="max-width:320px" placeholder="Поиск по материалам…" />
@@ -40,12 +47,11 @@ const rows = computed(() =>
     <section class="panel">
       <CrmDataTable coll="media" :rows="rows" empty="Материалов нет.">
         <template #actions="{ row: m }">
-          <button class="btn slim ghost" @click="openEdit(m)">Изменить</button>
+          <button class="btn slim ghost" @click="openEditor(m)">Изменить</button>
         </template>
       </CrmDataTable>
     </section>
   </div>
-  <CrmRowModal v-if="rowOpen" :coll="rowColl" :record="editRec" @close="rowOpen = false; editRec = null" />
 </template>
 
 <style scoped>.mini { font-size: 12px; color: var(--muted, #7b8a86); }</style>

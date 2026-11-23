@@ -10,10 +10,8 @@ import BackendBadge from '@/components/ui/BackendBadge.vue';
 
 import CrmRowModal from '@/components/CrmRowModal.vue';
 import ManualLink from '@/components/ui/ManualLink.vue';
-const rowColl = ref('pilots');
-const rowOpen = ref(false);
-const editRec = ref(null);
-function openEdit(rec) { editRec.value = rec; rowOpen.value = true; }
+const editor = ref(null);
+function openEditor(record = null) { editor.value = { record }; }
 
 const db = useDbStore();
 const ui = useUiStore();
@@ -44,8 +42,17 @@ const pilots = computed(() =>
       </div>
       <input :value="ui.search" @input="ui.search = $event.target.value" class="input" style="max-width:260px" placeholder="Поиск по пилотам…" />
     
-      <button class="btn primary slim" @click="rowOpen = true" title="Добавить запись вручную">＋ Добавить</button>
+      <button class="btn primary slim" @click="openEditor()" title="Добавить запись вручную">＋ Добавить</button>
     </div>
+
+    <CrmRowModal
+      v-if="editor"
+      inline
+      :key="editor.record?.id || 'new'"
+      coll="pilots"
+      :record="editor.record"
+      @close="editor = null"
+    />
 
     <div class="insight" style="margin-bottom:14px;gap:8px">
       <b>Статус:</b>
@@ -57,7 +64,7 @@ const pilots = computed(() =>
         <template #actions="{ row: p }">
           <button class="btn slim ghost" @click="ui.openRecord('pilot', p.id)">Открыть</button>
           <button v-if="p.journeyId" class="btn slim ghost" @click="ui.openJourney(p.journeyId)">Процесс</button>
-          <button class="btn slim ghost" @click="openEdit(p)">Изменить</button>
+          <button class="btn slim ghost" @click="openEditor(p)">Изменить</button>
         </template>
       </CrmDataTable>
     </section>
@@ -66,7 +73,6 @@ const pilots = computed(() =>
       Обработки фиксируются отдельными записями в карточке пилота; проверенные схемы применения — в «Базе знаний».
     </div>
   </div>
-  <CrmRowModal v-if="rowOpen" :coll="rowColl" :record="editRec" @close="rowOpen = false; editRec = null" />
 </template>
 
 <style scoped>

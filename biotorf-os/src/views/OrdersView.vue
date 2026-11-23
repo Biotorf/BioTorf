@@ -49,6 +49,15 @@ const rows = computed(() =>
       <button class="btn primary slim" @click="rowModal = { coll: 'orders' }">＋ Заказ</button>
     </div>
 
+    <CrmRowModal
+      v-if="rowModal"
+      inline
+      :key="rowModal.record?.id || 'new'"
+      :coll="rowModal.coll"
+      :record="rowModal.record"
+      @close="rowModal = null"
+    />
+
     <div class="note">Подтверждённый заказ создаёт план выпуска. Перед отгрузкой проверьте доступный остаток и оформите резерв на складе.</div>
 
     <section class="panel">
@@ -63,7 +72,6 @@ const rows = computed(() =>
     </section>
 
     <CrmImportModal v-if="importColl" :coll="importColl" @close="importColl = ''" />
-    <CrmRowModal v-if="rowModal" :coll="rowModal.coll" :record="rowModal.record" @close="rowModal = null" />
   </div>
 </template>
 

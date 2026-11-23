@@ -3,20 +3,28 @@
 // Поля выводятся по типовому набору для коллекции (или по ключам существующих
 // записей). Сохранение идёт через db.importCollection(coll, [rec], 'merge') —
 // тот же путь, что и CSV-импорт: сервер + локальный кэш.
-import { ref, computed, watch, onMounted, useId } from 'vue';
+import { ref, computed, watch, onMounted, nextTick, useId } from 'vue';
+import CrmSelectField from '@/components/CrmSelectField.vue';
+import { usePermissions } from '@/composables/usePermissions';
 import { useDbStore } from '@/stores/db';
-import { COLL_RU, crmFieldLabel, REF_FIELD, REF_KINDS, crmFields, crmTitle, crmValue, DEAL_STAGES, dealStage, statusOptions } from '@/data/crmFields';
+import { useUiStore } from '@/stores/ui';
+import { COLL_RU, crmDictionaryKey, crmFieldLabel, REF_FIELD, REF_KINDS, crmFields, crmTitle, crmValue, DEAL_STAGES, dealStage, statusOptions } from '@/data/crmFields';
 
 const props = defineProps({
   coll: { type: String, required: true },     // farms, leads, deals…
   initialValues: { type: Object, default: () => ({}) },
   record: { type: Object, default: null },    // непусто — режим редактирования
+  inline: Boolean,
+  allowReferenceCreate: { type: Boolean, default: true },
 });
 const emit = defineEmits(['close', 'saved', 'deleted']);
 
 const db = useDbStore();
+const ui = useUiStore();
+const { canEditCollection, canSeeFarm } = usePermissions();
 const modalId = useId();
 const fieldId = (key) => `${modalId}-${key}`;
+const heading = ref(null);
 
 const NUM_FIELDS = new Set(['area', 'volumeL', 'amount', 'qty', 'price', 'stock', 'pack', 'reserved', 'total', 'version', 'plannedVolumeL', 'pasteUsedKg', 'powderUsedKg', 'actualQty', 'powderKgPerL', 'lossPct', 'plannedPowderKg']);
 const BOOL_FIELDS = new Set(['paid', 'primary', 'received', 'public']);
@@ -35,18 +43,6 @@ function boolValue(value) {
   return /^(1|true|да|yes)$/i.test(String(value).trim());
 }
 
-// ── Выпадающие списки с кнопкой «＋» ────────────────────────────────
-// Ключ справочника db.lists → откуда брать значения. optionsFor() объединяет
-// справочник со всеми уникальными значениями поля из существующих записей,
-// поэтому новые хозяйства/контакты/товары появляются в списках автоматически.
-const LIST_FIELD = {
-  region: 'regions', crop: 'crops', source: 'sources', owner: 'owners',
-  status: 'statuses', type: 'types', stage: null, unit: 'unitPack',
-  location: 'locations', warehouse: 'locations', transport: 'transport', driver: 'drivers',
-  plate: 'plates', shift: 'shifts', operator: 'operators', platform: 'platforms',
-  product: 'products', priority: 'priorities', method: 'methods', category: 'categories',
-};
-// Жёсткие перечисления (этапы воронки, приоритеты и т.п.)
 function acceptedRawLots(doc, includeLegacy = false) {
   if (doc?.kind !== 'supply' || doc.status !== 'Принят') return [];
   return [...new Set((Array.isArray(doc.items) ? doc.items : [])
@@ -57,6 +53,8 @@ function rawLots() {
   const supply = (db.data.logistics || []).find((row) => String(row.id) === form.value.supplyId);
   return acceptedRawLots(supply, String(props.record?.supplyId) === form.value.supplyId);
 }
+const unitOptions = ['шт.', 'упак.', 'л', 'кг', 'т'];
+const skuOptions = computed(() => db.skus.map((sku) => ({ value: String(sku.id), label: `${crmTitle(sku)} · ${sku.id}` })));
 const ENUM_FIELD = {
   inputLot: () => rawLots(),
   qcStatus: () => ['Ожидается', 'Пройден', 'Отклонён'],
@@ -64,27 +62,35 @@ const ENUM_FIELD = {
     ? [...new Set([...DEAL_STAGES, ...(db.data.deals || []).map((row) => dealStage(row.stage))].filter(Boolean))]
     : [...new Set([...(db.data.stages || []), ...(db.data.journeys || []).map((row) => row.stage)].filter(Boolean))],
   pilotStage: () => [...(db.data.pilotStages || [])],
-  unit: () => ['шт.', 'упак.', 'л', 'кг', 'т'],
+  unit: () => unitOptions,
+  product: () => db.skus.map((sku) => sku.name).filter(Boolean),
   priority: () => ['Низкий', 'Средний', 'Высокий', 'Критический'],
   consent: () => ['Нет', 'Да'],
   caseApproved: () => ['Нет', 'Да'],
   refKind: () => Object.entries(REF_KINDS).map(([value, coll]) => ({ value, label: COLL_RU[coll] })),
-  category: () => db.optionsFor('categories', props.coll, 'category'),
   status: () => statusOptions(props.coll, db.data[props.coll] || [], props.coll === 'pilots' ? db.data.pilotStages : []),
 };
 function listKeyFor(key) {
-  // У каждой операционной таблицы свои статусы. Общий справочник статусов относится к хозяйствам.
-  return key === 'status' && props.coll !== 'farms' ? null : LIST_FIELD[key];
+  return crmDictionaryKey(props.coll, key);
 }
 function referenceTable(key) {
-  return REF_FIELD[key] || (key === 'refId' ? REF_KINDS[form.value.refKind] : null);
+  if (Object.hasOwn(REF_FIELD, key)) return REF_FIELD[key];
+  if (key === 'refId' && Object.hasOwn(REF_KINDS, form.value.refKind)) return REF_KINDS[form.value.refKind];
+  return null;
 }
 function referenceRows(key) {
-  const rows = db.data[referenceTable(key)] || [];
-  return key === 'supplyId' ? rows.filter((row) => acceptedRawLots(row, String(row.id) === String(props.record?.supplyId)).length > 0) : rows;
+  const coll = referenceTable(key);
+  const rows = db.data[coll] || [];
+  if (key === 'supplyId') {
+    return rows.filter((row) => acceptedRawLots(row, String(row.id) === String(props.record?.supplyId)).length > 0);
+  }
+  return rows.filter((row) => {
+    const farm = coll === 'farms' ? row : (row.farmId && db.farmById(row.farmId));
+    return !farm || canSeeFarm(farm);
+  });
 }
 function isSelectField(key) {
-  return BOOL_FIELDS.has(key) || key in ENUM_FIELD || !!referenceTable(key) || !!listKeyFor(key);
+  return BOOL_FIELDS.has(key) || Object.hasOwn(ENUM_FIELD, key) || key === 'refId' || !!referenceTable(key) || !!listKeyFor(key);
 }
 function selectOptions(key) {
   if (BOOL_FIELDS.has(key)) return boolOptions;
@@ -92,11 +98,11 @@ function selectOptions(key) {
     return referenceRows(key).map((r) => ({ value: String(r.id), label: `${crmTitle(r)} · ${r.id}` }));
   }
   const listKey = listKeyFor(key);
-  if (key in ENUM_FIELD) {
+  if (Object.hasOwn(ENUM_FIELD, key)) {
     const base = ENUM_FIELD[key]();
     return listKey ? [...new Set([...base, ...db.optionsFor(listKey, props.coll, key)])] : base;
   }
-  return db.optionsFor(listKey, props.coll, key);
+  return listKey ? db.optionsFor(listKey, props.coll, key) : [];
 }
 
 function onChoiceChange(key) {
@@ -105,8 +111,48 @@ function onChoiceChange(key) {
     const lots = rawLots();
     form.value.inputLot = lots.length === 1 ? lots[0] : '';
   }
+  if ((key === 'sku' || key === 'skuId') && form.value[key] && fields.value.includes('product')) {
+    const sku = db.skus.find((row) => String(row.id) === form.value[key]);
+    if (sku) form.value.product = sku.name;
+  }
 }
 function fieldLabel(key) { return crmFieldLabel(props.coll, key); }
+
+const linkedDraft = ref(null);
+let referenceTrigger = null;
+const linkedInitial = computed(() => linkedDraft.value?.coll === 'farms' ? {
+  owner: ui.role === 'sales' ? (ui.login || ui.name || 'Менеджер А') : '',
+} : {});
+
+function canCreateReference(coll) {
+  return props.allowReferenceCreate && ['farms', 'skus'].includes(coll) && canEditCollection(coll);
+}
+
+function createReference(coll, key, item = null) {
+  if (canCreateReference(coll) && !linkedDraft.value) {
+    referenceTrigger = document.activeElement;
+    linkedDraft.value = { coll, key, item };
+  }
+}
+
+async function closeReference() {
+  linkedDraft.value = null;
+  await nextTick();
+  referenceTrigger?.focus();
+  referenceTrigger = null;
+}
+
+function referenceSaved(record) {
+  const target = linkedDraft.value;
+  if (!target || !record?.id) return;
+  if (target.item) {
+    target.item.sku = String(record.id);
+    selectSku(target.item);
+  } else {
+    form.value[target.key] = String(record.id);
+    onChoiceChange(target.key);
+  }
+}
 
 const isEdit = computed(() => !!props.record);
 
@@ -126,11 +172,19 @@ let initial = {};
 const jsonFields = new Set(['history', 'qualification']);
 const lineItems = ref([]);
 const initialItems = ref('[]');
+const itemKeys = new WeakMap();
+let nextItemKey = 0;
+
+function itemKey(item) {
+  if (!itemKeys.has(item)) itemKeys.set(item, nextItemKey++);
+  return itemKeys.get(item);
+}
+
 function addLine() {
   lineItems.value.push({ sku: '', name: '', packs: 1, unit: 'шт.', price: 0 });
 }
 function selectSku(item) {
-  const sku = db.skuById(item.sku);
+  const sku = db.skus.find((row) => String(row.id) === String(item.sku));
   if (!sku) return;
   item.name = sku.name;
   item.price = sku.price ?? item.price;
@@ -173,9 +227,23 @@ watch(fields, initForm, { immediate: true });
 
 const busy = ref(false);
 const error = ref('');
+const pendingOptions = ref(new Set());
+const addingBusy = computed(() => pendingOptions.value.size > 0);
+
+function setDictionaryBusy(key, saving) {
+  if (saving) pendingOptions.value.add(key);
+  else pendingOptions.value.delete(key);
+}
+
+onMounted(() => {
+  if (props.inline) {
+    heading.value?.focus({ preventScroll: true });
+    heading.value?.scrollIntoView({ block: 'nearest' });
+  }
+});
 
 async function save() {
-  if (busy.value || addingBusy.value) return;
+  if (busy.value || addingBusy.value || linkedDraft.value) return;
   error.value = ''; busy.value = true;
   try {
     const rec = {};
@@ -252,54 +320,16 @@ async function save() {
       if (props.coll === 'orders' && rec.amount == null) rec.amount = total;
     }
     if (props.record?._updatedAt) rec._expectedRev = props.record._updatedAt;
+    if (!isEdit.value && !rec.id?.trim()) rec.id = db.uid(props.coll);
     const isInvoice = props.coll === 'invoices';
     const result = await db.importCollection(props.coll, [rec], 'merge', isInvoice);
     if (isInvoice && db.serverOnline) await db.pullCrmState();
-    const options = {};
-    for (const k of fields.value) {
-      const key = listKeyFor(k);
-      if (key && typeof rec[k] === 'string' && rec[k].trim()) {
-        (options[key] ??= []).push(rec[k].trim());
-      }
-    }
-    db.mergeListOptions(options);
     emit('saved', result?.records?.[0] || rec);
     emit('close');
   } catch (e) {
     error.value = e.message || String(e);
   } finally {
     busy.value = false;
-  }
-}
-
-// ── ручное добавление значения в справочник прямо из модалки (кнопка «＋») ──
-const adding = ref({});   // field -> значение инпута
-const addingOpen = ref('');  // поле, у которого открыта строка ввода нового значения
-const addingBusy = ref(false);
-const optionsError = ref('');
-
-onMounted(async () => {
-  try {
-    await db.refreshListOptions();
-  } catch {
-    optionsError.value = 'Не удалось обновить общий справочник.';
-  }
-});
-
-async function quickAdd(k) {
-  const key = listKeyFor(k);
-  const value = (adding.value[k] || '').trim();
-  if (!key || !value || addingBusy.value || busy.value) return;
-  addingBusy.value = true;
-  optionsError.value = '';
-  try {
-    form.value[k] = await db.addListItem(key, value);
-    adding.value[k] = '';
-    addingOpen.value = '';
-  } catch (e) {
-    optionsError.value = e.message;
-  } finally {
-    addingBusy.value = false;
   }
 }
 
@@ -322,90 +352,82 @@ async function removeRecord() {
 </script>
 
 <template>
-  <div class="overlay" @click.self="emit('close')">
-    <div class="modal" role="dialog" aria-modal="true" :aria-labelledby="modalId">
+  <div :class="inline ? 'inline-wrap' : 'overlay'" @click.self="!inline && !busy && !addingBusy && !linkedDraft && emit('close')">
+    <section :class="inline ? 'panel inline-editor' : 'modal'" :role="inline ? undefined : 'dialog'"
+      :aria-modal="inline ? undefined : 'true'" :aria-labelledby="modalId">
       <div class="head">
-        <b :id="modalId">{{ isEdit ? 'Редактировать запись' : 'Новая запись' }} · {{ COLL_RU[coll] || coll }}</b>
-        <button class="x" @click="emit('close')">✕</button>
+        <h2 :id="modalId" ref="heading" tabindex="-1">{{ isEdit ? 'Редактировать запись' : 'Новая запись' }} · {{ COLL_RU[coll] || coll }}</h2>
+        <button class="x" type="button" aria-label="Закрыть форму" :disabled="busy || addingBusy || !!linkedDraft" @click="emit('close')">✕</button>
       </div>
       <div class="body">
         <fieldset v-if="fields.includes('items')" class="items wide">
           <legend>{{ fieldLabel('items') }}</legend>
-          <div v-for="(item, index) in lineItems" :key="index" class="item">
-            <label>{{ fieldLabel('sku') }}
-              <select v-model="item.sku" class="input" @change="selectSku(item)">
-                <option value="">Без артикула</option>
-                <option v-if="item.sku && !db.skuById(item.sku)" :value="item.sku">{{ item.sku }}</option>
-                <option v-for="sku in db.skus" :key="sku.id" :value="sku.id">{{ crmTitle(sku) }}</option>
-              </select>
-            </label>
+          <div v-for="(item, index) in lineItems" :key="itemKey(item)" class="item">
+            <CrmSelectField v-model="item.sku" :label="fieldLabel('sku')" :options="skuOptions" searchable
+              placeholder="Без артикула" :disabled="busy || !!linkedDraft" :allow-create="canCreateReference('skus')"
+              @change="selectSku(item)" @create-request="createReference('skus', 'items', item)" />
             <label>Название <input v-model="item.name" class="input" /></label>
             <label>Количество <input v-model="item.packs" class="input" type="number" min="0" step="any" /></label>
-            <label>Ед. изм. <input v-model="item.unit" class="input" /></label>
+            <CrmSelectField v-model="item.unit" :label="fieldLabel('unit')" :options="unitOptions" list-key="unitPack"
+              :disabled="busy || !!linkedDraft" @busy-change="setDictionaryBusy(item, $event)" />
             <label>Цена <input v-model="item.price" class="input" type="number" min="0" step="any" /></label>
-            <button type="button" class="btn slim danger-text" @click="lineItems.splice(index, 1)">Удалить позицию</button>
+            <button type="button" class="btn slim danger-text" :disabled="busy || addingBusy || !!linkedDraft"
+              @click="lineItems.splice(index, 1)">Удалить позицию</button>
           </div>
-          <button type="button" class="btn slim" @click="addLine">＋ Позиция</button>
+          <button type="button" class="btn slim" :disabled="busy || !!linkedDraft" @click="addLine">＋ Позиция</button>
         </fieldset>
         <div v-for="k in visibleFields" :key="k" class="field" :class="{ wide: (LONG_FIELDS.has(k) || isJsonField(k)) }">
           <label class="fname" :for="fieldId(k)">{{ fieldLabel(k) }}</label>
-          <!-- выпадающий список + кнопка «＋» добавления нового значения -->
-          <template v-if="isSelectField(k)">
-            <div class="selrow">
-              <select :id="fieldId(k)" class="input" v-model="form[k]" :disabled="k === 'stage' && coll === 'deals' && record?.journeyId" @change="onChoiceChange(k)">
-                <option value="">— не выбрано —</option>
-                <option v-for="o in selectOptions(k)" :key="o.value ?? o" :value="o.value ?? o">{{ o.label ?? o }}</option>
-                <!-- значение может быть введено раньше и отсутствовать в списке — оставляем его -->
-                <option v-if="form[k] && !selectOptions(k).some((o) => (o.value ?? o) === form[k])" :value="form[k]">{{ form[k] }} (текущее)</option>
-              </select>
-              <button v-if="listKeyFor(k)" type="button" class="btn slim plus" :aria-label="'Добавить значение · ' + fieldLabel(k)" title="Добавить новое значение в список"
-                      @click.prevent="addingOpen = addingOpen === k ? '' : k">＋</button>
-            </div>
-            <div v-if="listKeyFor(k) && addingOpen === k" class="addrow">
-              <input class="input" v-model="adding[k]" placeholder="Новое значение…" maxlength="500" @keyup.enter="quickAdd(k)" />
-              <button type="button" class="btn primary slim" :disabled="addingBusy || busy" @click="quickAdd(k)">Добавить</button>
-            </div>
-          </template>
+          <CrmSelectField v-if="isSelectField(k)" :id="fieldId(k)" v-model="form[k]" :label="fieldLabel(k)"
+            hide-label searchable :options="selectOptions(k)" :list-key="listKeyFor(k)" :allow-create="canCreateReference(referenceTable(k))"
+            :disabled="busy || !!linkedDraft || (k === 'stage' && coll === 'deals' && !!record?.journeyId) || (k === 'refId' && !referenceTable(k))"
+            @change="onChoiceChange(k)" @create-request="createReference(referenceTable(k), k)" @busy-change="setDictionaryBusy(k, $event)" />
           <textarea v-else-if="LONG_FIELDS.has(k) || isJsonField(k)" :id="fieldId(k)" v-model="form[k]" rows="3"></textarea>
           <input v-else :id="fieldId(k)" v-model="form[k]" :readonly="(k === 'id' && isEdit) || (coll === 'production' && k === 'plannedPowderKg')" :placeholder="k === 'id' && !isEdit ? 'Можно оставить пустым' : undefined" :inputmode="NUM_FIELDS.has(k) ? 'decimal' : undefined" />
         </div>
         <div v-if="extraFieldsCount" class="wide">
-          <button type="button" class="btn slim ghost" :aria-expanded="showExtraFields" @click="showExtraFields = !showExtraFields">
+          <button type="button" class="btn slim ghost" :disabled="addingBusy || !!linkedDraft" :aria-expanded="showExtraFields" @click="showExtraFields = !showExtraFields">
             {{ showExtraFields ? 'Скрыть дополнительные поля' : 'Дополнительные поля' }}
           </button>
         </div>
-        <div v-if="optionsError" class="err" role="alert">{{ optionsError }}</div>
+        <CrmRowModal v-if="linkedDraft" inline class="wide linked-editor" :coll="linkedDraft.coll" :key="linkedDraft.coll"
+          :initial-values="linkedInitial" :allow-reference-create="false" @saved="referenceSaved" @close="closeReference" />
         <div v-if="error" class="err" role="alert">{{ error }}</div>
       </div>
       <div class="foot">
-        <button v-if="isEdit" class="btn slim danger-text" :disabled="busy" @click="removeRecord">🗑 Удалить запись</button>
-        <span style="flex:1"></span>
-        <button class="btn ghost slim" @click="emit('close')">Отмена</button>
-        <button class="btn primary slim" :disabled="busy || addingBusy" @click="save">{{ busy ? 'Сохранение…' : 'Сохранить' }}</button>
+        <button v-if="isEdit" type="button" class="btn slim danger-text remove" :disabled="busy || addingBusy || !!linkedDraft" @click="removeRecord">🗑 Удалить запись</button>
+        <button type="button" class="btn ghost slim" :disabled="busy || addingBusy || !!linkedDraft" @click="emit('close')">Отмена</button>
+        <button type="button" class="btn primary slim" :disabled="busy || addingBusy || !!linkedDraft" @click="save">{{ busy ? 'Сохранение…' : 'Сохранить' }}</button>
       </div>
-    </div>
+    </section>
   </div>
 </template>
 
 <style scoped>
 .overlay { position: fixed; inset: 0; background: rgba(15, 25, 20, 0.45); display: grid; place-items: center; z-index: 60; }
 .modal { width: min(640px, 94vw); max-height: 86vh; display: flex; flex-direction: column; background: #ffffff; border-radius: 12px; box-shadow: 0 18px 50px rgba(10, 30, 20, 0.35); overflow: hidden; }
+.inline-wrap { min-width: 0; margin: 12px 0; }
+.inline-editor { padding: 0; background: var(--panel, #ffffff); }
+.linked-editor { margin: 6px 0; }
+.linked-editor :deep(.inline-editor) { border-color: #8ab2a0; }
 .head { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; border-bottom: 1px solid #e3ece7; font-size: 14px; }
+.head h2 { margin: 0; font-size: 15px; }
 .x { border: 0; background: none; cursor: pointer; font-size: 15px; color: #6c7f76; }
-.body { padding: 14px 16px; overflow: auto; display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
-.field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.body { padding: 14px 16px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; }
+.modal > .body { overflow: auto; }
+.field { display: flex; flex-direction: column; gap: 4px; min-width: 0; font-size: 12px; }
 .fname { color: #5d7168; }
 .field input, .field textarea { border: 1px solid #cfddd5; border-radius: 8px; padding: 7px 9px; font: inherit; background: #fbfdfc; }
 .field textarea { resize: vertical; }
 .wide { grid-column: 1 / -1; }
-.selrow { display: flex; gap: 6px; align-items: stretch; }
-.selrow select { flex: 1; border: 1px solid #cfddd5; border-radius: 8px; padding: 7px 9px; font: inherit; background: #fbfdfc; min-width: 0; }
-.btn.plus { flex: none; width: 34px; padding: 0; font-size: 16px; line-height: 1; border-radius: 8px; }
-.addrow { display: flex; gap: 6px; margin-top: 6px; }
-.addrow .input { flex: 1; min-width: 0; }
 .items { min-width: 0; border: 1px solid #cfddd5; border-radius: 8px; }
-.item { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 6px; align-items: end; margin-bottom: 8px; }
-.item label { min-width: 0; font-size: 12px; }
+.item { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 6px; align-items: end; margin-bottom: 8px; font-size: 12px; }
+.item label { min-width: 0; }
+.item label .input { width: 100%; }
 .err { grid-column: 1 / -1; color: #c0392b; font-size: 12px; }
-.foot { padding: 12px 16px; border-top: 1px solid #e3ece7; display: flex; justify-content: flex-end; gap: 8px; }
+.foot { padding: 12px 16px; border-top: 1px solid #e3ece7; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.remove { margin-right: auto; }
+@media (max-width: 580px) {
+  .body { grid-template-columns: minmax(0, 1fr); }
+}
 </style>

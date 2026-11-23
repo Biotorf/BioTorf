@@ -5,10 +5,12 @@ import { ref, computed } from 'vue';
 import { useDbStore } from '@/stores/db';
 import { crmFieldLabel, REF_KINDS } from '@/data/crmFields';
 import { useUiStore } from '@/stores/ui';
+import { usePermissions } from '@/composables/usePermissions';
 
 const props = defineProps({ kind: { type: String, required: true }, id: { type: String, required: true } });
 const db = useDbStore();
 const ui = useUiStore();
+const { canEditCollection } = usePermissions();
 
 const TITLES = { task: 'Задача', deal: 'Сделка', lead: 'Лид', farm: 'Хозяйство', pilot: 'Пилот', order: 'Заказ', invoice: 'Счёт', shipment: 'Отгрузка', quote: 'КП' };
 const rec = computed(() => {
@@ -30,22 +32,13 @@ function startEdit() {
   for (const [key] of fields.value) form.value[key] = rec.value?.[key] ?? '';
   editing.value = true;
 }
-const nextAction = ref({ result: '', owner: '', due: '' });
-
 function save() {
   db.editEntity(props.kind, props.id, { ...form.value });
   editing.value = false;
 }
-function applyNext() {
-  if (!nextAction.value.result.trim()) return;
-  db.addTask({
-    title: nextAction.value.result, owner: nextAction.value.owner || rec.value?.owner || 'Менеджер А',
-    due: nextAction.value.due || null, priority: 'Средний',
-    refKind: props.kind, refId: props.id, status: 'Открыта',
-  });
-  if (rec.value && 'next' in rec.value && nextAction.value.due) rec.value.next = nextAction.value.due;
-  db.save('Следующее действие', `${TITLES[props.kind]} ${props.id}`);
-  nextAction.value = { result: '', owner: '', due: '' };
+function createFollowUp() {
+  ui.closeModal();
+  ui.go('tasks', { new: '1', kind: props.kind, id: props.id, followUp: '1' });
 }
 function openRef() {
   const r = rec.value;
@@ -84,16 +77,7 @@ function openRef() {
         <button class="btn primary slim" @click="save">Сохранить</button>
         <button class="btn ghost slim" @click="editing = false">Отмена</button>
       </template>
-    </div>
-
-    <div class="muted-block" style="margin-top:12px">
-      <b class="mini">СЛЕДУЮЩЕЕ ДЕЙСТВИЕ</b>
-      <div class="field"><label>Результат (что нужно сделать)</label><input v-model="nextAction.result" class="input" placeholder="Напр.: отправить КП по картофелю" /></div>
-      <div style="display:flex;gap:8px">
-        <div class="field" style="flex:1"><label>Исполнитель</label><input v-model="nextAction.owner" class="input" :placeholder="rec.owner || ''" /></div>
-        <div class="field" style="flex:1"><label>Срок</label><input v-model="nextAction.due" type="date" class="input" /></div>
-      </div>
-      <button class="btn primary slim" :disabled="!nextAction.result.trim()" @click="applyNext">Поставить задачу</button>
+      <button v-if="!editing && canEditCollection('tasks')" type="button" class="btn primary slim" @click="createFollowUp">Поставить задачу</button>
     </div>
 
     <div class="actionbar" style="margin-top:16px">

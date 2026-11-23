@@ -74,6 +74,15 @@ function move(d, dir) {
       </div>
     </div>
 
+    <CrmRowModal
+      v-if="rowModal"
+      inline
+      :key="rowModal.record?.id || 'new'"
+      :coll="rowModal.coll"
+      :record="rowModal.record"
+      @close="rowModal = null"
+    />
+
     <div class="toolbar deal-tools">
       <input v-model="ui.search" class="input" type="search" placeholder="Название, клиент, этап" aria-label="Поиск сделки" />
       <select v-model="owner" class="select" aria-label="Ответственный">
@@ -115,7 +124,6 @@ function move(d, dir) {
     </section>
 
     <CrmImportModal v-if="importColl" :coll="importColl" @close="importColl = ''" />
-    <CrmRowModal v-if="rowModal" :coll="rowModal.coll" :record="rowModal.record" @close="rowModal = null" />
   </div>
 </template>
 

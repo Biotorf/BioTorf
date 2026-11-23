@@ -66,6 +66,16 @@ function addPayment(invoice) {
       </button>
     </header>
 
+    <CrmRowModal
+      v-if="editor"
+      inline
+      :key="editor.coll + ':' + (editor.record?.id || editor.initialValues?.invoiceId || 'new')"
+      :coll="editor.coll"
+      :record="editor.record"
+      :initial-values="editor.initialValues"
+      @close="editor = null"
+    />
+
     <div class="stats finance-stats" aria-label="Сводка по счетам">
       <div class="stat"><div class="label">Выставлено</div><div class="val">{{ money(totals.issued) }}</div></div>
       <div class="stat"><div class="label">Учтено в оплате</div><div class="val green">{{ money(totals.paid) }}</div></div>
@@ -101,8 +111,6 @@ function addPayment(invoice) {
         <button v-if="canEditCollection('payments')" type="button" class="btn slim ghost" @click="openEditor('payments', row)">Изменить</button>
       </template>
     </CrmDataTable>
-
-    <CrmRowModal v-if="editor" :coll="editor.coll" :record="editor.record" :initial-values="editor.initialValues" @close="editor = null" />
   </section>
 </template>
 

@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
+import CrmSelectField from '@/components/CrmSelectField.vue';
 import { useFormatters } from '@/composables/useFormatters';
 import { usePermissions } from '@/composables/usePermissions';
 import { useDbStore } from '@/stores/db';
@@ -9,9 +10,10 @@ import { useUiStore } from '@/stores/ui';
 const db = useDbStore();
 const ui = useUiStore();
 const { day, money } = useFormatters();
-const { canEditCollection } = usePermissions();
+const { canEditCollection, canSeeFarm } = usePermissions();
 const canWork = computed(() => canEditCollection('journeys'));
-const clientTypes = ['Агропроизводитель', 'Частный покупатель', 'Розничный магазин', 'Оптовая база', 'Дилер', 'Дистрибьютор', 'Другой'];
+const clientOptions = computed(() => db.farms.filter(canSeeFarm).map((row) => ({ value: row.id, label: [row.name || row.id, row.region, row.phone].filter(Boolean).join(' · ') })));
+const skuOptions = computed(() => db.skus.map((row) => ({ value: row.id, label: [row.name || row.id, row.pack ? `${row.pack} л` : ''].filter(Boolean).join(' · ') })));
 const phases = ['Клиент', 'Сделка', 'Предложение', 'Заказ и оплата', 'Доставка', 'Сопровождение'];
 
 const readSelection = () => new URLSearchParams(location.hash.split('?')[1]).get('id');
@@ -84,7 +86,8 @@ function matchingClient(phone) {
   for (const contact of db.data.contacts || []) {
     if (normalize(contact.phone) === key || normalize(contact.whatsapp) === key) ids.add(contact.farmId);
   }
-  return ids.size === 1 ? db.farmById([...ids][0]) : null;
+  const match = ids.size === 1 ? db.farmById([...ids][0]) : null;
+  return match && canSeeFarm(match) ? match : null;
 }
 
 function openEditor(key) {
@@ -141,6 +144,9 @@ function saveEditor() {
     lead: saveLead,
     qualification: () => {
       if (!value.clientType) throw new Error('Выберите тип клиента.');
+      if (value.farmAction === 'link' && !clientOptions.value.some(({ value: id }) => id === value.farmId)) {
+        throw new Error('Выберите существующего клиента.');
+      }
       if (!isAgroType(value.clientType)) Object.assign(value, { crop: '', area: '', need: '' });
       if (value.farmAction === 'create' && !value.newFarmName.trim()) {
         value.newFarmName = value.contactName?.trim() || lead.value?.name || '';
@@ -306,39 +312,35 @@ function skuChanged(line) {
               <summary>Дополнительные данные</summary>
               <div class="formgrid">
                 <label class="field">Компания<input v-model="form.company" class="input" /></label>
-                <label class="field">Регион<input v-model="form.region" class="input" /></label>
-                <label class="field">Источник<input v-model="form.source" class="input" placeholder="WhatsApp, звонок, сайт" /></label>
-                <label class="field">Ответственный<input v-model="form.owner" class="input" /></label>
+                <CrmSelectField v-model="form.region" label="Регион" :options="db.optionsFor('regions', 'leads', 'region')" list-key="regions" />
+                <CrmSelectField v-model="form.source" label="Источник" :options="db.optionsFor('sources', 'leads', 'source')" list-key="sources" />
+                <CrmSelectField v-model="form.owner" label="Ответственный" :options="db.optionsFor('owners', 'leads', 'owner')" list-key="owners" />
                 <label class="field">Дата следующего контакта<input v-model="form.next" class="input" type="date" /></label>
               </div>
             </details>
           </div>
           <div v-else-if="editor === 'qualification'" class="formgrid">
-            <label class="field">Тип клиента<select v-model="form.clientType" class="select" aria-label="Тип клиента" required>
-              <option value="">Выберите тип клиента</option><option v-for="type in clientTypes" :key="type">{{ type }}</option>
-              <option v-if="form.clientType && !clientTypes.includes(form.clientType)">{{ form.clientType }}</option>
-            </select></label>
+            <CrmSelectField v-model="form.clientType" label="Тип клиента" :options="db.optionsFor('types', 'farms', 'type')" list-key="types" required />
             <label class="field">Карточка клиента<select v-model="form.farmAction" class="select" aria-label="Карточка клиента">
               <option value="create">Создать карточку</option><option value="link">Выбрать существующую</option><option value="none">Уточнить позже</option>
             </select></label>
-            <label v-if="form.farmAction === 'link'" class="field full">Существующий клиент<select v-model="form.farmId" class="select" aria-label="Существующий клиент" required>
-              <option value="">Выберите клиента</option><option v-for="entry in db.farms" :key="entry.id" :value="entry.id">{{ entry.name }}</option>
-            </select></label>
+            <CrmSelectField v-if="form.farmAction === 'link'" v-model="form.farmId" class="full" label="Существующий клиент"
+              :options="clientOptions" placeholder="Выберите клиента" searchable required />
             <label v-if="form.farmAction === 'create'" class="field full">Имя или название<input v-model="form.newFarmName" class="input" :placeholder="lead?.name || ''" /></label>
             <label class="field">Контактное лицо<input v-model="form.contactName" class="input" /></label>
             <label class="field">Телефон<input v-model="form.phone" class="input" type="tel" /></label>
             <template v-if="isAgroType(form.clientType)">
-              <label class="field">Культура<input v-model="form.crop" class="input" /></label>
+              <CrmSelectField v-model="form.crop" label="Культура" :options="db.optionsFor('crops', 'pilots', 'crop')" list-key="crops" />
               <label class="field">Площадь, га<input v-model="form.area" class="input" type="number" min="0" step="any" /></label>
               <label class="field full">Потребность<input v-model="form.need" class="input" /></label>
             </template>
             <details class="full form-details">
               <summary>Дополнительные данные</summary>
               <div class="formgrid">
-                <label class="field">Регион<input v-model="form.region" class="input" /></label>
+                <CrmSelectField v-model="form.region" label="Регион" :options="db.optionsFor('regions', 'farms', 'region')" list-key="regions" />
                 <label class="field">Telegram<input v-model="form.telegram" class="input" /></label>
                 <label class="field">Почта<input v-model="form.email" class="input" type="email" /></label>
-                <label class="field">Источник<input v-model="form.source" class="input" /></label>
+                <CrmSelectField v-model="form.source" label="Источник" :options="db.optionsFor('sources', 'farms', 'source')" list-key="sources" />
                 <label class="field full">Примечание<textarea v-model="form.note" class="textarea" rows="2" /></label>
               </div>
             </details>
@@ -348,7 +350,7 @@ function skuChanged(line) {
             <label class="field">Ожидаемая сумма, сом<input v-model="form.amount" class="input" type="number" min="0" step="0.01" /></label>
           </div>
           <div v-else-if="editor === 'pilot'" class="formgrid">
-            <label class="field">Культура<input v-model="form.crop" class="input" /></label>
+            <CrmSelectField v-model="form.crop" label="Культура" :options="db.optionsFor('crops', 'pilots', 'crop')" list-key="crops" />
             <label class="field">Площадь, га<input v-model="form.area" class="input" type="number" min="0" step="any" /></label>
             <label class="field">Контрольный участок<input v-model="form.control" class="input" /></label>
             <label class="field">Дата старта<input v-model="form.date" class="input" type="date" /></label>
@@ -356,9 +358,7 @@ function skuChanged(line) {
           </div>
           <div v-else-if="editor === 'quote'" class="quote-form">
             <div v-for="(line, index) in form.items" :key="index" class="quote-line">
-              <label class="field">Товар<select v-model="line.sku" class="select" aria-label="Товар" required @change="skuChanged(line)">
-                <option value="">Выберите товар</option><option v-for="sku in db.skus" :key="sku.id" :value="sku.id">{{ sku.name }} · {{ sku.pack }} л</option>
-              </select></label>
+              <CrmSelectField v-model="line.sku" label="Товар" :options="skuOptions" placeholder="Выберите товар" searchable required @change="skuChanged(line)" />
               <label class="field">Упаковки<input v-model="line.packs" class="input" type="number" min="1" required /></label>
               <label class="field">Цена упаковки, сом<input v-model="line.price" class="input" type="number" min="0.01" step="0.01" required /></label>
               <button v-if="form.items.length > 1" type="button" class="btn slim ghost" :aria-label="`Убрать позицию ${index + 1}`" @click="form.items.splice(index, 1)">Убрать</button>
@@ -374,9 +374,9 @@ function skuChanged(line) {
           </div>
           <div v-else-if="editor === 'shipment'" class="formgrid">
             <label class="field">Плановая дата<input v-model="form.planDate" class="input" type="date" /></label>
-            <label class="field">Перевозчик<input v-model="form.carrier" class="input" /></label>
-            <label class="field">Транспорт<input v-model="form.vehicle" class="input" /></label>
-            <label class="field">Водитель<input v-model="form.driver" class="input" /></label>
+            <CrmSelectField v-model="form.carrier" label="Перевозчик" :options="db.optionsFor('carriers', 'shipments', 'carrier')" list-key="carriers" />
+            <CrmSelectField v-model="form.vehicle" label="Транспорт" :options="db.optionsFor('transport', 'shipments', 'vehicle')" list-key="transport" />
+            <CrmSelectField v-model="form.driver" label="Водитель" :options="db.optionsFor('drivers', 'shipments', 'driver')" list-key="drivers" />
           </div>
           <div v-else-if="editor === 'received'" class="formgrid">
             <label class="field full">Задача после доставки<input v-model="form.nextTask" class="input" /></label>
@@ -384,7 +384,7 @@ function skuChanged(line) {
           </div>
           <div v-else-if="editor === 'followup'" class="formgrid">
             <label class="field full">Что нужно сделать<input v-model.trim="form.result" class="input" required /></label>
-            <label class="field">Ответственный<input v-model="form.owner" class="input" /></label>
+            <CrmSelectField v-model="form.owner" label="Ответственный" :options="db.optionsFor('owners', 'tasks', 'owner')" list-key="owners" />
             <label class="field">Срок<input v-model="form.due" class="input" type="date" /></label>
           </div>
           <p v-if="error" class="form-error" role="alert">{{ error }}</p>

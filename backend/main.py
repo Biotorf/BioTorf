@@ -387,8 +387,10 @@ async def _auth_middleware_inner(request: Request, call_next, path: str):
         if path.startswith("/api/crm/") and crm_path[0] in crm.COLLECTIONS:
             if not auth.can_write_crm_collection(role, crm_path[0]):
                 return JSONResponse(status_code=403, content={"detail": f"Роль не может изменять таблицу «{crm_path[0]}»"})
-        elif path.rstrip("/") == "/api/crm/state" and request.method == "PUT":
-            pass  # Точный набор таблиц проверяется по телу изменений.
+        elif (path.rstrip("/"), request.method) in {
+            ("/api/crm/state", "PUT"), ("/api/crm/options", "POST"),
+        }:
+            pass  # Права на отдельные таблицы и справочники проверяются по телу запроса.
         else:
             section = auth.section_for(path)
             if section and not auth.can_write(role, section):
@@ -763,7 +765,8 @@ class ChatWorkIn(ChatWorkRevision):
 class ChatClientIn(ChatWorkRevision):
     clientId: str | None = Field(default=None, max_length=320)
     name: str = Field(default="", max_length=200)
-    type: str = Field(default="", max_length=100)
+    type: str = Field(default="", max_length=500)
+    region: str = Field(default="", max_length=500)
     contactName: str = Field(default="", max_length=200)
     phone: str = Field(default="", max_length=60)
     assignee: str | None = Field(default=None, max_length=320)
@@ -1268,14 +1271,31 @@ def crm_state():
         return crm.get_state(conn)
 
 
+def _editable_crm_options(role: str) -> set[str]:
+    return {
+        key for key, tables in crm.OPTION_LIST_TABLES.items()
+        if any(
+            auth.can_write(role, "shipments") if table == "logistics"
+            else auth.can_write_crm_collection(role, table)
+            for table in tables
+        )
+    }
+
+
 @app.get("/api/crm/options")
-def crm_options():
+def crm_options(request: Request, includePermissions: bool = False):
     with closing(store.connect()) as conn:
-        return crm.get_options(conn)
+        values = crm.get_options(conn)
+    if includePermissions:
+        return {"values": values, "editable": sorted(_editable_crm_options(request.state.role))}
+    return values
 
 
 @app.post("/api/crm/options")
-def crm_add_options(body: dict):
+def crm_add_options(body: dict, request: Request):
+    forbidden = crm.OPTION_LISTS.intersection(body) - _editable_crm_options(request.state.role)
+    if forbidden:
+        raise HTTPException(403, "Роль не позволяет пополнять этот справочник.")
     try:
         with closing(store.connect()) as conn:
             return crm.add_options(conn, body)

@@ -14,7 +14,9 @@ async function req(path, options = {}) {
   if (!resp.ok) {
     const data = await resp.json().catch(() => ({}));
     const detail = typeof data.detail === 'string' ? data.detail : data.detail?.message;
-    throw new Error(`CRM API ${resp.status}: ${detail || resp.statusText}`);
+    const error = new Error(`CRM API ${resp.status}: ${detail || resp.statusText}`);
+    error.status = resp.status;
+    throw error;
   }
   if (resp.status === 204) return null;
   return resp.json();
@@ -23,7 +25,7 @@ async function req(path, options = {}) {
 export const crmApi = {
   online: () => checkApi(),
   getState: () => req('/api/crm/state'),
-  getOptions: () => req('/api/crm/options'),
+  getOptions: () => req('/api/crm/options?includePermissions=true'),
   addOptions: (options) => req('/api/crm/options', { method: 'POST', body: JSON.stringify(options) }),
   putState: (payload) => req('/api/crm/state', { method: 'PUT', body: JSON.stringify(payload) }),
   seed: (payload) => req('/api/crm/seed', { method: 'POST', body: JSON.stringify(payload) }),

@@ -35,19 +35,52 @@ COLLECTIONS = (
     "warehouse", "production", "clientDocs",
 )
 
-OPTION_LISTS = frozenset({
-    "regions", "crops", "sources", "owners", "statuses", "types", "unitPack",
-    "locations", "transport", "drivers", "plates", "shifts", "operators",
-    "platforms", "products", "priorities", "methods", "categories",
-})
+OPTION_LIST_TABLES = {
+    "regions": ("farms", "leads"),
+    "crops": ("farms", "pilots", "knowledge"),
+    "sources": ("farms", "leads", "knowledge"),
+    "owners": ("tasks",),
+    "statuses": ("farms",),
+    "types": ("farms",),
+    "unitPack": ("skus", "orders", "warehouse", "production", "logistics"),
+    "locations": ("warehouse", "production", "logistics"),
+    "transport": ("shipments", "logistics"),
+    "drivers": ("shipments", "logistics"),
+    "carriers": ("shipments", "logistics"),
+    "plates": ("shipments",),
+    "shifts": ("production",),
+    "operators": ("production",),
+    "platforms": ("social",),
+    "products": ("orders", "production"),
+    "priorities": ("tasks",),
+    "methods": ("payments",),
+    "applicationMethods": ("applications",),
+    "categories": ("skus", "knowledge"),
+    "suppliers": ("logistics",),
+    "lines": ("skus",),
+    "documentTypes": ("clientDocs",),
+}
+OPTION_LISTS = frozenset(OPTION_LIST_TABLES)
 OPTION_COLLECTION = "crmOptions"
+OPTION_DEFAULTS = {
+    "regions": (
+        "Баткенская область", "Джалал-Абадская область", "Иссык-Кульская область",
+        "Нарынская область", "Ошская область", "Таласская область", "Чуйская область",
+        "Бишкек", "Ош",
+    ),
+    "lines": ("AGRO", "HOME"),
+}
 
 
 def get_options(conn) -> dict:
-    options = {}
+    options = {
+        key: {value.casefold(): value for value in values}
+        for key, values in OPTION_DEFAULTS.items()
+    }
     for record in list_records(conn, OPTION_COLLECTION):
-        options.setdefault(record["listKey"], []).append(record["value"])
-    return options
+        value = record["value"]
+        options.setdefault(record["listKey"], {}).setdefault(value.casefold(), value)
+    return {key: list(values.values()) for key, values in options.items()}
 
 
 def add_options(conn, options: dict) -> dict:

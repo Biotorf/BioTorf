@@ -25,6 +25,15 @@ const visible = computed(() => {
       </div>
       <button v-if="canEditCollection('skus')" class="btn primary" @click="editor = { record: null }">Добавить товар</button>
     </div>
+    <CrmRowModal
+      v-if="editor"
+      inline
+      :key="editor.record?.id || 'new'"
+      coll="skus"
+      :record="editor.record"
+      @close="editor = null"
+    />
+
     <div class="toolbar">
       <input v-model="filter" type="search" class="input" aria-label="Поиск товара" placeholder="Название или артикул" />
       <a href="#/registry?table=skus">Полный реестр товаров</a>
@@ -44,7 +53,6 @@ const visible = computed(() => {
       </article>
     </div>
     <p v-else class="empty">Товары не найдены.</p>
-    <CrmRowModal v-if="editor" coll="skus" :record="editor.record" @close="editor = null" />
   </section>
 </template>
 

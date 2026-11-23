@@ -8,6 +8,7 @@ import { usePermissions } from '@/composables/usePermissions';
 import { useFormatters } from '@/composables/useFormatters';
 import { crmTitle, crmValue, REF_KINDS } from '@/data/crmFields';
 import CrmRowModal from '@/components/CrmRowModal.vue';
+import CrmSelectField from '@/components/CrmSelectField.vue';
 import StatusPill from '@/components/ui/StatusPill.vue';
 
 const props = defineProps({
@@ -279,6 +280,7 @@ async function startSale() {
       </div>
     </header>
     <p v-if="cardError" class="danger-text" role="alert">{{ cardError }}</p>
+    <CrmRowModal v-if="edit" :key="`${edit.coll}:${edit.record?.id || 'new'}`" inline :coll="edit.coll" :record="edit.record" :initial-values="edit.initial" @close="edit = null" />
 
     <dl class="account-metrics" aria-label="Показатели клиента">
       <div><dt>Активные сделки</dt><dd>{{ activeDeals.length }}<small v-if="pipelineAmount != null">{{ money(pipelineAmount) }}</small></dd></div>
@@ -430,7 +432,7 @@ async function startSale() {
           </div>
           <form v-if="planning" class="next-form" @submit.prevent="scheduleAction">
             <label class="field">Что сделать <input v-model="action.title" class="input" required /></label>
-            <label class="field">Ответственный <input v-model="action.owner" class="input" /></label>
+            <CrmSelectField v-model="action.owner" label="Ответственный" :options="db.optionsFor('owners', 'tasks', 'owner')" list-key="owners" />
             <label class="field">Срок <input v-model="action.due" class="input" type="date" /></label>
             <div class="client-actions">
               <button type="button" class="btn slim" @click="planning = false">Отмена</button>
@@ -450,7 +452,6 @@ async function startSale() {
       </aside>
     </div>
     <Teleport to="body">
-      <CrmRowModal v-if="edit" :coll="edit.coll" :record="edit.record" :initial-values="edit.initial" @close="edit = null" />
     </Teleport>
   </article>
   <p v-else class="empty">Карточка клиента недоступна.</p>

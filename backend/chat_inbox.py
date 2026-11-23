@@ -179,6 +179,7 @@ def save_client(peer_key: str, body: dict, login: str, role: str) -> dict:
             client_id = f"F-{uuid4().hex[:12]}"
             client = crm._write(tx, "farms", {
                 "id": client_id, "name": name, "type": body["type"].strip(), "phone": phone,
+                "region": body.get("region", "").strip(),
                 "telegram": identity["telegram"], "source": identity["source"],
                 "status": "Активный", "owner": owner,
             }, client_id)

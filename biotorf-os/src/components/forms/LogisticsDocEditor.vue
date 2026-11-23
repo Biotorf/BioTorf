@@ -1,25 +1,34 @@
 <script setup>
-// Редактор документа логистики (поставка / выгрузка) в модалке AppModal.
+// Редактор поставок и отгрузок.
 // Таблица позиций редактируется прямо в ячейках — как в Excel:
 //   товар | кол-во | ед. | цена | сумма (авто) | примечание.
 // Кнопки: добавить/удалить строку, сохранить, создать акт (печать + сохранение в документе),
 // скачать .xls / .csv всего реестра — в ShipmentsView.
-import { computed, reactive, ref } from 'vue';
+import { computed, onMounted, reactive, ref, useId } from 'vue';
+import CrmSelectField from '@/components/CrmSelectField.vue';
 import { useDbStore } from '@/stores/db';
 import { crmFieldLabel, LOGISTICS_KINDS } from '@/data/crmFields';
 import { useUiStore } from '@/stores/ui';
 import { useFormatters } from '@/composables/useFormatters';
+import { usePermissions } from '@/composables/usePermissions';
 import { toCsv, toXmlSpreadsheet, downloadBlob, printHtml, escapeHtml } from '@/utils/spreadsheet';
 
 const props = defineProps({
   doc: { type: Object, default: null },   // существующий документ или null (создание)
   kind: { type: String, default: 'supply' },
   initialValues: { type: Object, default: () => ({}) },
+  inline: Boolean,
 });
+const emit = defineEmits(['close']);
 
 const db = useDbStore();
 const ui = useUiStore();
 const { money, num } = useFormatters();
+const { canEdit, canSeeFarm } = usePermissions();
+onMounted(() => db.refreshListOptions().catch(() => {}));
+const canWrite = computed(() => canEdit('shipments'));
+const formId = useId();
+const fieldId = (key) => `${formId}-${key}`;
 
 const label = (key) => crmFieldLabel('logistics', key);
 const savedDoc = ref(props.doc?.id && !String(props.doc.id).startsWith('NEW') ? props.doc : null);
@@ -27,7 +36,10 @@ const isNew = computed(() => !savedDoc.value);
 const clientId = db.uid('LOC');
 const saveError = ref('');
 const saving = ref(false);
+const busyLists = reactive(new Set());
+const disabled = computed(() => saving.value || busyLists.size > 0 || !canWrite.value);
 const today = new Date().toISOString().slice(0, 10);
+let nextItemKey = 0;
 
 const source = props.doc || props.initialValues;
 const form = reactive({
@@ -44,12 +56,16 @@ const form = reactive({
   base: source?.base || '',
   note: source?.note || '',
   items: source?.items?.length
-    ? source.items.map((it) => ({ ...it }))
-    : [emptyItem()],
+    ? source.items.map((item) => itemDraft(item))
+    : [emptyItem(source?.kind || props.kind)],
 });
 
-function emptyItem() {
-  return { skuId: '', name: '', qty: 1, unit: 'л', price: 0, note: '' };
+function itemDraft(item) {
+  return { ...item, key: ++nextItemKey };
+}
+
+function emptyItem(kind) {
+  return itemDraft({ skuId: '', name: '', qty: 1, unit: kind === 'dispatch' ? 'шт.' : 'л', price: 0, note: '' });
 }
 
 function genNumber(kind) {
@@ -57,27 +73,110 @@ function genNumber(kind) {
 }
 
 const STATUSES = ['Черновик', 'Создан', 'На проверке', 'Принят', 'Отгружено', 'Доставлено', 'Оплачен', 'Закрыт', 'Отменён'];
-const UNITS = ['л', 'кг', 'шт', 'упак', 'т', 'м²'];
+const UNITS = ['л', 'кг', 'шт.', 'упак', 'т', 'м²'];
 
 const isDispatch = computed(() => form.kind === 'dispatch');
+const editorTitle = computed(() => isNew.value
+  ? (isDispatch.value ? 'Новая отгрузка' : 'Новая поставка')
+  : `Документ ${isDispatch.value ? 'отгрузки' : 'поставки'} ${form.number}`);
+const customers = computed(() => db.farms.filter(canSeeFarm).map((farm) => ({ value: farm.id, label: farm.name || farm.id })));
+const orders = computed(() => db.orders.filter((order) => {
+  const farm = db.farmById(order.farmId);
+  return (!farm || canSeeFarm(farm)) && (!form.farmId || !order.farmId || order.farmId === form.farmId);
+}).map((order) => ({
+  value: order.id,
+  label: [order.number || order.num || order.id, db.farmById(order.farmId)?.name].filter(Boolean).join(' · '),
+})));
+const warehouses = computed(() => [...new Set([
+  ...db.warehouse.map((row) => row.warehouse || row.location),
+  ...db.logistics.map((row) => row.warehouse),
+].filter(Boolean))]);
+const suppliers = computed(() => logisticsOptions('party', 'supply'));
+const vehicles = computed(() => logisticsOptions('vehicle'));
+const drivers = computed(() => logisticsOptions('driver'));
+const products = computed(() => db.skus.map((sku) => ({
+  value: sku.id,
+  label: [sku.name || sku.id, sku.pack ? `${sku.pack} л` : '', sku.id].filter(Boolean).join(' · '),
+})));
+const selectedOrder = computed(() => db.orderById(form.orderId));
+const hasItems = computed(() => form.items.some((item) => item.skuId || item.name || item.material));
+const orderItems = computed(() => {
+  const order = selectedOrder.value;
+  if (!order) return [];
+  const items = order.items?.length ? order.items : order.sku ? [order] : [];
+  return items.filter((item) => item.sku || item.skuId).map((item) => {
+    const skuId = item.sku || item.skuId;
+    const sku = db.skuById(skuId);
+    return {
+      skuId, name: item.name || sku?.name || skuId, qty: item.packs ?? item.qty ?? 1,
+      unit: item.unit || 'шт.', price: item.price ?? sku?.price ?? 0, note: item.note || '',
+    };
+  });
+});
+let previousFarmId = form.farmId;
+let previousOrderId = form.orderId;
+
+function logisticsOptions(key, kind = 'dispatch') {
+  return [...new Set(db.logistics.filter((row) => row.kind === kind).map((row) => row[key]).filter(Boolean))];
+}
+
+function setListBusy(key, busy) {
+  if (busy) busyLists.add(key);
+  else busyLists.delete(key);
+}
+
+function applyFarm(id) {
+  const previous = db.farmById(previousFarmId);
+  const farm = db.farmById(id);
+  if (!form.party || form.party === previous?.name) form.party = farm?.name || '';
+  previousFarmId = id;
+}
+
+function chooseFarm(id) {
+  applyFarm(id);
+  if (id && selectedOrder.value?.farmId && selectedOrder.value.farmId !== id) {
+    form.orderId = '';
+    chooseOrder('');
+  }
+}
+
+function useOrderItems() {
+  if (orderItems.value.length) form.items = orderItems.value.map(itemDraft);
+}
+
+const orderBase = (order) => order ? `Заказ ${order.number || order.num || order.id}` : '';
+
+function chooseOrder(id) {
+  const order = db.orderById(id);
+  if (!form.base || form.base === orderBase(db.orderById(previousOrderId))) form.base = orderBase(order);
+  previousOrderId = id;
+  if (!order) return;
+  if (order.farmId) {
+    form.farmId = order.farmId;
+    applyFarm(order.farmId);
+  }
+  if (!hasItems.value) useOrderItems();
+}
+
+function closeEditor() {
+  emit('close');
+  if (!props.inline) ui.closeModal();
+}
 
 const lineSum = (it) => (Number(it.qty) || 0) * (Number(it.price) || 0);
 const totalQty = computed(() => form.items.reduce((s, it) => s + (Number(it.qty) || 0), 0));
 const totalPrice = computed(() => form.items.reduce((s, it) => s + lineSum(it), 0));
 
-const addRow = () => form.items.push(emptyItem());
+const addRow = () => form.items.push(emptyItem(form.kind));
 const removeRow = (i) => {
   if (form.items.length > 1) form.items.splice(i, 1);
 };
 
-// выбор SKU из каталога — подтягиваем название и цену
-function onSku(i, ev) {
-  const el = ev.target;
-  const opt = el.selectedOptions[0];
-  const it = form.items[i];
-  it.skuId = el.value;
-  it.name = opt?.dataset?.name || '';
-  if (!it.price && opt?.dataset?.price) it.price = Number(opt.dataset.price) || 0;
+function onSku(item, id) {
+  if (!id) return;
+  const sku = db.skuById(id);
+  item.name = sku.name;
+  if (!item.price) item.price = Number(sku.price) || 0;
 }
 
 const docPayload = () => ({
@@ -95,7 +194,7 @@ const docPayload = () => ({
   note: form.note.trim(),
   act: savedDoc.value?.act || null,
   items: form.items.map((it) => ({
-    skuId: it.skuId, name: it.name.trim(),
+    skuId: it.skuId, name: String(it.name || '').trim(),
     qty: Number(it.qty) || 0, unit: it.unit,
     price: Number(it.price) || 0, note: (it.note || '').trim(),
     material: it.material || '', lot: (it.lot || '').trim(), qcStatus: it.qcStatus || '',
@@ -130,14 +229,14 @@ async function persist(payload) {
 }
 
 async function save(closeAfter = true) {
-  if (saving.value) return;
+  if (disabled.value) return;
   saving.value = true;
   saveError.value = '';
   try {
     const document = await persist(docPayload());
     if (String(document.id).startsWith('LOC-')) {
       saveError.value = 'Документ пока сохранён только на этом устройстве. Откройте реестр после восстановления связи.';
-    } else if (closeAfter) ui.closeModal();
+    } else if (closeAfter) closeEditor();
   } catch (error) {
     saveError.value = error.message;
   } finally {
@@ -148,7 +247,7 @@ async function save(closeAfter = true) {
 function isRawMaterial(item) { return ['powder', 'paste'].includes(item.material); }
 
 function addPowderRow() {
-  const material = { ...emptyItem(), name: 'Порошок', material: 'powder', lot: '', unit: 'кг', qcStatus: 'Ожидается' };
+  const material = { ...emptyItem(form.kind), name: 'Порошок', material: 'powder', lot: '', unit: 'кг', qcStatus: 'Ожидается' };
   const first = form.items[0];
   if (form.items.length === 1 && !first.skuId && !first.name) form.items.splice(0, 1, material);
   else form.items.push(material);
@@ -199,7 +298,7 @@ function buildActHtml(actMeta) {
 }
 
 async function createAct() {
-  if (saving.value) return;
+  if (disabled.value) return;
   saving.value = true;
   saveError.value = '';
   try {
@@ -212,7 +311,7 @@ async function createAct() {
     printHtml(meta.type + ' ' + meta.number, buildActHtml(meta));
     if (String(document.id).startsWith('LOC-')) {
       saveError.value = 'Акт сохранён только на этом устройстве, пока нет связи с сервером.';
-    } else ui.closeModal();
+    } else closeEditor();
   } catch (error) {
     saveError.value = error.message;
   } finally {
@@ -230,52 +329,61 @@ function exportCsv() {
 </script>
 
 <template>
-  <div>
+  <section :class="{ 'panel logistics-editor': inline }" :aria-labelledby="inline ? fieldId('title') : undefined">
+    <h2 v-if="inline" :id="fieldId('title')" class="editor-title">{{ editorTitle }}</h2>
+    <fieldset class="editor-fields" :disabled="saving || !canWrite">
     <div class="formgrid" style="margin-bottom:16px">
       <div class="field">
-        <label>{{ label('kind') }}</label>
-        <select v-model="form.kind" class="select" :disabled="!isNew">
+        <label :for="fieldId('kind')">{{ label('kind') }}</label>
+        <select :id="fieldId('kind')" v-model="form.kind" class="select" :disabled="!isNew || busyLists.size > 0">
           <option v-for="(name, kind) in LOGISTICS_KINDS" :key="kind" :value="kind">{{ name }}</option>
         </select>
       </div>
-      <div class="field"><label>{{ label('number') }}</label><input v-model="form.number" class="input" placeholder="П-001"></div>
-      <div class="field"><label>{{ label('date') }}</label><input v-model="form.date" type="date" class="input"></div>
+      <div class="field"><label :for="fieldId('number')">{{ label('number') }}</label><input :id="fieldId('number')" v-model="form.number" class="input" placeholder="П-001"></div>
+      <div class="field"><label :for="fieldId('date')">{{ label('date') }}</label><input :id="fieldId('date')" v-model="form.date" type="date" class="input"></div>
       <div class="field">
-        <label>{{ label('status') }}</label>
-        <select v-model="form.status" class="select">
+        <label :for="fieldId('status')">{{ label('status') }}</label>
+        <select :id="fieldId('status')" v-model="form.status" class="select">
+          <option v-if="form.status && !STATUSES.includes(form.status)" :value="form.status">{{ form.status }}</option>
           <option v-for="s in STATUSES" :key="s">{{ s }}</option>
         </select>
       </div>
+      <template v-if="isDispatch">
+        <CrmSelectField v-model="form.farmId" class="field" :label="label('farmId')" :options="customers"
+          searchable placeholder="Выберите клиента" @change="chooseFarm" />
+        <CrmSelectField v-model="form.orderId" class="field" :label="label('orderId')" :options="orders"
+          searchable placeholder="Выберите заказ" @change="chooseOrder" />
+        <div class="field">
+          <label :for="fieldId('party')">{{ label('party') }}</label>
+          <input :id="fieldId('party')" v-model="form.party" class="input" placeholder="Имя получателя в документе">
+        </div>
+      </template>
+      <CrmSelectField v-else v-model="form.party" class="field" :label="label('party')" :options="suppliers"
+        list-key="suppliers" searchable placeholder="Выберите поставщика" @busy-change="setListBusy('suppliers', $event)" />
+      <CrmSelectField v-model="form.warehouse" class="field" :label="label('warehouse')" :options="warehouses"
+        list-key="locations" searchable placeholder="Выберите склад" @busy-change="setListBusy('locations', $event)" />
       <div class="field">
-        <label>{{ label('party') }}</label>
-        <input v-model="form.party" class="input" :placeholder="isDispatch ? 'Хозяйство или контрагент' : 'Компания-поставщик'">
-      </div>
-      <div class="field" v-if="isDispatch">
-        <label>{{ label('farmId') }}</label>
-        <select v-model="form.farmId" class="select">
-          <option value="">— не выбрано —</option>
-          <option v-for="f in db.farms" :key="f.id" :value="f.id">{{ f.name }}</option>
-        </select>
-      </div>
-      <div class="field">
-        <label>{{ label('warehouse') }}</label>
-        <input v-model="form.warehouse" class="input" placeholder="Склад Бишкек">
-      </div>
-      <div class="field">
-        <label>{{ label('base') }}</label>
-        <input v-model="form.base" class="input" placeholder="Договор №…">
+        <label :for="fieldId('base')">{{ label('base') }}</label>
+        <input :id="fieldId('base')" v-model="form.base" class="input" placeholder="Договор №…">
       </div>
       <template v-if="isDispatch">
-        <div class="field"><label>{{ label('vehicle') }}</label><input v-model="form.vehicle" class="input" placeholder="MB Sprinter · 01 AA 123 KG"></div>
-        <div class="field"><label>{{ label('driver') }}</label><input v-model="form.driver" class="input"></div>
+        <CrmSelectField v-model="form.vehicle" class="field" :label="label('vehicle')" :options="vehicles"
+          list-key="transport" searchable placeholder="Выберите автомобиль" @busy-change="setListBusy('transport', $event)" />
+        <CrmSelectField v-model="form.driver" class="field" :label="label('driver')" :options="drivers"
+          list-key="drivers" searchable placeholder="Выберите водителя" @busy-change="setListBusy('drivers', $event)" />
       </template>
       <div class="field full">
-        <label>{{ label('note') }}</label>
-        <textarea v-model="form.note" class="textarea" rows="2"></textarea>
+        <label :for="fieldId('note')">{{ label('note') }}</label>
+        <textarea :id="fieldId('note')" v-model="form.note" class="textarea" rows="2"></textarea>
       </div>
     </div>
 
-    <h3 style="margin-bottom:8px">{{ label('items') }}</h3>
+    <div class="items-heading">
+      <h3>{{ label('items') }}</h3>
+      <button v-if="canWrite && isDispatch && orderItems.length" class="btn slim ghost" type="button" @click="useOrderItems">
+        {{ hasItems ? 'Заменить позиции из заказа' : 'Загрузить позиции из заказа' }}
+      </button>
+    </div>
     <div class="table-wrap" style="margin-bottom:10px">
       <table class="table items-table">
         <thead>
@@ -290,14 +398,11 @@ function exportCsv() {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(it, i) in form.items" :key="i">
+          <tr v-for="(it, i) in form.items" :key="it.key">
             <td>
-              <select v-if="!isRawMaterial(it)" class="input slim-in" :value="it.skuId" @change="onSku(i, $event)">
-                <option value="">— свободная позиция —</option>
-                <option v-for="s in db.skus" :key="s.id" :value="s.id"
-                        :data-name="s.name" :data-price="s.price || 0">{{ s.name }} ({{ s.pack }})</option>
-              </select>
-              <input v-model="it.name" class="input slim-in" style="margin-top:4px" placeholder="Наименование">
+              <CrmSelectField v-if="!isRawMaterial(it)" v-model="it.skuId" :label="label('skuId')" :options="products"
+                hide-label searchable placeholder="— свободная позиция —" @change="onSku(it, $event)" />
+              <input v-model="it.name" class="input slim-in" style="margin-top:4px" aria-label="Наименование" placeholder="Наименование">
               <template v-if="isRawMaterial(it)">
                 <span v-if="it.material === 'paste'" class="mini">Архивная позиция: паста</span>
                 <label>{{ label('lot') }} <input v-model.trim="it.lot" class="input slim-in" maxlength="200" /></label>
@@ -332,40 +437,48 @@ function exportCsv() {
       </table>
     </div>
 
+    </fieldset>
     <div class="actionbar" style="margin-bottom:14px">
-      <button class="btn slim" @click="addRow">＋ Строка</button>
-      <button v-if="!isDispatch" class="btn slim" @click="addPowderRow">＋ Партия порошка</button>
+      <button v-if="canWrite" class="btn slim" :disabled="saving" @click="addRow">＋ Строка</button>
+      <button v-if="canWrite && !isDispatch" class="btn slim" :disabled="saving" @click="addPowderRow">＋ Партия порошка</button>
       <button class="btn slim ghost" @click="exportXls">⬇ Скачать .xls</button>
       <button class="btn slim ghost" @click="exportCsv">⬇ Скачать .csv</button>
     </div>
 
-    <div class="muted-block" style="margin-bottom:16px">
+    <div v-if="canWrite || savedDoc?.act" class="muted-block" style="margin-bottom:16px">
       <div class="mini" style="margin-bottom:8px">
         <b>Акт под документ:</b>
         <template v-if="savedDoc?.act">
           ранее создан — {{ savedDoc.act.type }} № {{ savedDoc.act.number }} от {{ savedDoc.act.date }}.
-          Повторное создание перезапишет реквизиты акта.
+          <span v-if="canWrite">Повторное создание перезапишет реквизиты акта.</span>
         </template>
         <template v-else>создайте акт приёма-передачи — он сохранится в карточке документа и откроется на печать (PDF).</template>
       </div>
-      <div class="actionbar">
+      <div v-if="canWrite" class="actionbar">
         <select v-model="actType" class="select" style="max-width:280px">
           <option v-for="t in ACT_TYPES" :key="t">{{ t }}</option>
         </select>
-        <button class="btn primary slim" :disabled="saving" @click="createAct">📄 Создать акт и открыть на печать</button>
+        <button class="btn primary slim" :disabled="disabled" @click="createAct">📄 Создать акт и открыть на печать</button>
       </div>
     </div>
 
-    <div class="modal-foot" style="padding:0;border:0;display:flex;gap:10px;justify-content:flex-end">
-      <button class="btn" @click="ui.closeModal()">Отмена</button>
+    <div class="editor-actions">
+      <button class="btn" :disabled="saving || busyLists.size > 0" @click="closeEditor">{{ canWrite ? 'Отмена' : 'Закрыть' }}</button>
       <span v-if="saveError" class="danger-text" role="alert">{{ saveError }}</span>
-      <button class="btn" :disabled="saving" @click="save(false)">Сохранить и остаться</button>
-      <button class="btn primary" :disabled="saving" @click="save(true)">💾 Сохранить документ</button>
+      <button v-if="canWrite" class="btn" :disabled="disabled" @click="save(false)">Сохранить и остаться</button>
+      <button v-if="canWrite" class="btn primary" :disabled="disabled" @click="save(true)">Сохранить документ</button>
     </div>
-  </div>
+  </section>
 </template>
 
 <style scoped>
+.logistics-editor { margin-block: 12px; }
+.editor-title { margin-bottom: 16px; }
+.editor-fields { min-width: 0; padding: 0; margin: 0; border: 0; }
+.items-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.items-heading h3 { margin: 0; }
+.editor-actions { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 10px; }
+.items-table { min-width: 690px; }
 .right-h { text-align: right; }
 .right { text-align: right; }
 .items-table td { padding: 8px 10px; white-space: normal; }

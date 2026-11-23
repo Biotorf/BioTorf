@@ -1,5 +1,6 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, useId, watch } from 'vue';
+import CrmSelectField from '@/components/CrmSelectField.vue';
 import { logisticsApi } from '@/api/logisticsClient';
 import { inventoryApi } from '@/api/inventoryClient';
 import { usePermissions } from '@/composables/usePermissions';
@@ -46,6 +47,7 @@ const query = ref('');
 const tab = ref('balances');
 const loading = ref(false);
 const saving = ref(false);
+const busyWarehouses = reactive(new Set());
 const error = ref('');
 const formError = ref('');
 const success = ref('');
@@ -54,9 +56,7 @@ const ready = ref(false);
 const unavailable = ref(false);
 const canPost = computed(() => ready.value && !unavailable.value && !loading.value && !error.value);
 let lastSubmission = null;
-const warehouseListId = useId();
-const orderListId = useId();
-const sourceListId = useId();
+let nextLineKey = 0;
 const lotListId = useId();
 const number = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 3 });
 const signedNumber = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 3, signDisplay: 'exceptZero' });
@@ -82,7 +82,11 @@ const visibleBalances = computed(() => balances.value.filter((row) =>
 const visibleEvents = computed(() => events.value.filter((event) =>
   includesQuery([labels[event.type], event.reference, event.orderId, event.createdBy, event.source?.id,
     ...(event.lines || []).flatMap((line) => [labelSku(line.sku), line.sku, line.lot, line.warehouse])])));
-const knownWarehouses = computed(() => [...new Set(balances.value.map((row) => row.warehouse))]);
+const knownWarehouses = computed(() => [...new Set([
+  ...balances.value.map((row) => row.warehouse),
+  ...logisticsDocuments.value.map((row) => row.warehouse),
+  ...db.warehouse.map((row) => row.warehouse || row.location),
+].filter(Boolean))]);
 const knownLots = computed(() => [...new Set(balances.value.map((row) => row.lot))]);
 const finishedSkus = computed(() => [...new Set([
   ...(db.skus || []).map((row) => row.id),
@@ -99,10 +103,20 @@ const sourceRows = computed(() => {
   return rows;
 });
 const selectedSource = computed(() => sourceRows.value.find((row) => String(row.id) === form.value?.sourceId));
+const sourceChoices = computed(() => sourceRows.value.map((row) => ({ value: String(row.id), label: crmTitle(row) })));
+const orderChoices = computed(() => db.orders.map((order) => ({
+  value: String(order.id),
+  label: [crmTitle(order), db.farmById(order.farmId)?.name].filter(Boolean).join(' · '),
+})));
 const reverseEvent = computed(() => events.value.find((event) => event.id === form.value?.reverseOf));
 const sourceOptions = computed(() => sourceTypes[form.value?.type] || []);
 const orderRequired = computed(() => ['reserve', 'release'].includes(form.value?.type));
 const orderVisible = computed(() => orderRequired.value || ['dispatch', 'return'].includes(form.value?.type));
+
+function setWarehouseBusy(row, busy) {
+  if (busy) busyWarehouses.add(row);
+  else busyWarehouses.delete(row);
+}
 
 function accept(data) {
   balances.value = data.balances;
@@ -138,8 +152,8 @@ async function refresh() {
   }
   if (canPost.value) showLinkedForm();
 }
-function line(sku = '', warehouse = '') {
-  return { sku, lot: '', warehouse, qty: '' };
+function line(sku = '', warehouse = '', lot = '', qty = '') {
+  return { key: ++nextLineKey, sku, lot, warehouse, qty };
 }
 function changeType() {
   const draft = form.value;
@@ -169,17 +183,14 @@ function prefillSource(record) {
   if (!record || !draft) return;
   if (draft.type === 'receipt_powder') {
     draft.lines = record.items.filter((item) => item.material === 'powder' && item.qcStatus === 'Пройден')
-      .map((item) => ({
-        sku: 'POWDER', lot: item.lot, warehouse: record.warehouse || '',
-        qty: String(Number(item.qty) * (item.unit === 'т' ? 1000 : 1)),
-      }));
+      .map((item) => line('POWDER', record.warehouse || '', item.lot, String(Number(item.qty) * (item.unit === 'т' ? 1000 : 1))));
   } else if (draft.type === 'production') {
     const matchingWarehouses = [...new Set(balances.value.filter((row) =>
       row.sku === 'POWDER' && row.lot === record.inputLot && Number(row.available) > 0).map((row) => row.warehouse))];
     const warehouse = matchingWarehouses.length === 1 ? matchingWarehouses[0] : '';
-    draft.lines = [{ sku: 'POWDER', lot: record.inputLot || '', warehouse, qty: String(record.powderUsedKg ?? '') }];
+    draft.lines = [line('POWDER', warehouse, record.inputLot || '', String(record.powderUsedKg ?? ''))];
     if (record.qcStatus === 'Пройден') {
-      draft.lines.push({ sku: record.sku || '', lot: record.lot || '', warehouse, qty: String(record.actualQty ?? '') });
+      draft.lines.push(line(record.sku || '', warehouse, record.lot || '', String(record.actualQty ?? '')));
     }
   } else if (['dispatch', 'return'].includes(draft.type)) {
     if (record.orderId) draft.orderId = record.orderId;
@@ -187,17 +198,18 @@ function prefillSource(record) {
     const items = Array.isArray(record.items) ? record.items : [];
     const suggested = items.filter((item) => item.sku || item.skuId).map((item) => {
       const sku = item.sku || item.skuId;
-      const quantity = Number(item.packs ?? item.qty);
-      const matches = balances.value.filter((row) => row.sku === sku
+      const packageUnit = !item.unit || ['шт.', 'шт', 'штук', 'упак'].includes(item.unit);
+      const quantity = Number(item.packs ?? (packageUnit ? item.qty : 0));
+      const matches = balances.value.filter((row) => row.sku === sku && (!record.warehouse || row.warehouse === record.warehouse)
         && Number(row.available) + Number(row.reservations?.[draft.orderId] || 0) >= quantity);
       const match = quantity > 0 && matches.length === 1 ? matches[0] : null;
-      return { sku, lot: match?.lot || '', warehouse: match?.warehouse || '', qty: quantity > 0 ? String(quantity) : '' };
+      return line(sku, match?.warehouse || record.warehouse || '', match?.lot || '', quantity > 0 ? String(quantity) : '');
     });
     if (suggested.length) draft.lines = suggested;
   }
 }
 watch(selectedSource, (record) => {
-  if (form.value?.lines?.every((row) => !row.lot && !row.qty)) prefillSource(record);
+  if (!busyWarehouses.size && form.value?.lines?.every((row) => !row.lot && !row.qty)) prefillSource(record);
 });
 function chooseSource() { prefillSource(selectedSource.value); }
 function showLinkedForm() {
@@ -209,14 +221,14 @@ function showLinkedForm() {
   showForm(type, { collection: query.get('sourceCollection'), id: query.get('sourceId') || '' }, query.get('orderId') || '');
 }
 function showReverse(event) {
-  if (!canPost.value || !canEdit('warehouse') || event.reversedBy || event.type === 'reversal') return;
+  if (!canPost.value || !canEdit('warehouse') || busyWarehouses.size || event.reversedBy || event.type === 'reversal') return;
   formError.value = '';
   success.value = '';
   lastSubmission = null;
   form.value = { type: 'reversal', reverseOf: event.id, reference: '' };
 }
 function closeForm() {
-  if (saving.value) return;
+  if (saving.value || busyWarehouses.size) return;
   form.value = null;
   formError.value = '';
   lastSubmission = null;
@@ -271,7 +283,7 @@ function makeId() {
   return [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join('-');
 }
 async function submit() {
-  if (saving.value || !canPost.value) return;
+  if (saving.value || !canPost.value || busyWarehouses.size) return;
   formError.value = '';
   saving.value = true;
   try {
@@ -302,6 +314,7 @@ function effectsText(row) {
 
 onMounted(() => {
   refresh();
+  db.refreshListOptions().catch(() => {});
   logisticsApi.list().then((docs) => { logisticsDocuments.value = docs || []; }).catch(() => {});
   window.addEventListener('hashchange', showLinkedForm);
 });
@@ -333,24 +346,20 @@ onBeforeUnmount(() => window.removeEventListener('hashchange', showLinkedForm));
         <p v-if="reverseEvent">{{ labels[reverseEvent.type] }} · {{ dateTime(reverseEvent.createdAt) }} · {{ reverseEvent.reference || reverseEvent.id }}</p>
         <div class="operation-fields">
           <label v-if="!form.reverseOf">Вид операции
-            <select v-model="form.type" class="select" @change="changeType">
+            <select v-model="form.type" class="select" :disabled="busyWarehouses.size > 0" @change="changeType">
               <option v-for="type in inventoryTypes" :key="type" :value="type">{{ labels[type] }}</option>
             </select>
           </label>
           <label v-if="sourceOptions.length > 1">Вид документа
-            <select v-model="form.collection" class="select" @change="form.sourceId = ''">
+            <select v-model="form.collection" class="select" :disabled="busyWarehouses.size > 0" @change="form.sourceId = ''">
               <option v-for="table in sourceOptions" :key="table" :value="table">{{ sourceTables[table] }}</option>
             </select>
           </label>
-          <label v-if="form.collection && form.collection !== 'orders'">
-            {{ sourceTables[form.collection] }} · ID
-            <input v-model="form.sourceId" class="input" :list="sourceListId" maxlength="100" @change="chooseSource" />
-            <datalist :id="sourceListId"><option v-for="row in sourceRows" :key="row.id" :value="row.id">{{ crmTitle(row) }}</option></datalist>
-          </label>
-          <label v-if="orderVisible">Заказ · ID
-            <input v-model="form.orderId" class="input" :list="orderListId" :required="orderRequired" maxlength="100" />
-            <datalist :id="orderListId"><option v-for="order in db.orders" :key="order.id" :value="order.id">{{ crmTitle(order) }}</option></datalist>
-          </label>
+          <CrmSelectField v-if="form.collection && form.collection !== 'orders'" v-model="form.sourceId" class="field"
+            :label="sourceTables[form.collection]" :options="sourceChoices" :disabled="busyWarehouses.size > 0"
+            searchable placeholder="Выберите документ" @change="chooseSource" />
+          <CrmSelectField v-if="orderVisible" v-model="form.orderId" class="field" label="Заказ" :options="orderChoices"
+            :required="orderRequired" searchable placeholder="Выберите заказ" />
           <label>{{ form.reverseOf ? 'Причина сторно' : 'Основание' }}
             <input v-model="form.reference" class="input" maxlength="500" :required="!!form.reverseOf || ['opening', 'adjustment'].includes(form.type)" />
           </label>
@@ -358,33 +367,30 @@ onBeforeUnmount(() => window.removeEventListener('hashchange', showLinkedForm));
 
         <template v-if="!form.reverseOf">
           <button v-if="selectedSource && ['receipt_powder', 'production', 'dispatch'].includes(form.type)" type="button"
-            class="btn slim ghost prefill" @click="chooseSource">Заполнить из документа</button>
+            class="btn slim ghost prefill" :disabled="busyWarehouses.size > 0" @click="chooseSource">Заполнить из документа</button>
           <p v-if="form.type === 'production'" class="mini">Укажите расход порошка и фактический выпуск по партиям. При отклонении контроля качества укажите расход сырья.</p>
           <p v-if="form.type === 'adjustment'" class="mini">Укажите разницу между фактическим и учётным остатком. Уменьшение записывается со знаком минус.</p>
-          <div v-for="(row, index) in form.lines" :key="index" class="movement-line">
-            <label>Товар
-              <select v-model="row.sku" class="select" required>
-                <option value="" disabled>Выберите товар</option>
-                <option v-for="sku in skuOptions(form.type)" :key="sku" :value="sku">{{ labelSku(sku) }} · {{ sku }}</option>
-              </select>
-            </label>
+          <div v-for="(row, index) in form.lines" :key="row.key" class="movement-line">
+            <CrmSelectField v-model="row.sku" class="field" label="Товар"
+              :options="skuOptions(form.type).map((sku) => ({ value: sku, label: `${labelSku(sku)} · ${sku}` }))"
+              required searchable placeholder="Выберите товар" />
             <label>Партия <input v-model="row.lot" class="input" :list="lotListId" required maxlength="100" /></label>
-            <label>Склад <input v-model="row.warehouse" class="input" :list="warehouseListId" required maxlength="100" /></label>
+            <CrmSelectField v-model="row.warehouse" class="field" label="Склад" :options="knownWarehouses" list-key="locations"
+              required searchable placeholder="Выберите склад" @busy-change="setWarehouseBusy(row, $event)" />
             <label>Количество{{ row.sku ? ', ' + unitFor(row.sku) : '' }}
               <input v-model="row.qty" class="input" inputmode="decimal" required maxlength="24" />
             </label>
-            <button type="button" class="btn slim ghost danger-text" :disabled="form.lines.length === 1"
+            <button type="button" class="btn slim ghost danger-text" :disabled="form.lines.length === 1 || busyWarehouses.size > 0"
               :aria-label="'Удалить строку ' + (index + 1)" @click="form.lines.splice(index, 1)">✕</button>
           </div>
-          <datalist :id="warehouseListId"><option v-for="warehouse in knownWarehouses" :key="warehouse" :value="warehouse" /></datalist>
           <datalist :id="lotListId"><option v-for="lot in knownLots" :key="lot" :value="lot" /></datalist>
           <button type="button" class="btn slim ghost" @click="form.lines.push(line(form.type === 'receipt_powder' ? 'POWDER' : '', form.lines.at(-1)?.warehouse))">＋ Строка</button>
         </template>
 
         <p v-if="formError" class="danger-text" role="alert">{{ formError }}</p>
         <div class="actionbar operation-footer">
-          <button type="submit" class="btn slim primary" :disabled="!canPost">{{ saving ? 'Проведение…' : form.reverseOf ? 'Провести сторно' : 'Провести операцию' }}</button>
-          <button type="button" class="btn slim ghost" @click="closeForm">Отмена</button>
+          <button type="submit" class="btn slim primary" :disabled="!canPost || busyWarehouses.size > 0">{{ saving ? 'Проведение…' : form.reverseOf ? 'Провести сторно' : 'Провести операцию' }}</button>
+          <button type="button" class="btn slim ghost" :disabled="busyWarehouses.size > 0" @click="closeForm">Отмена</button>
         </div>
       </fieldset>
     </form>

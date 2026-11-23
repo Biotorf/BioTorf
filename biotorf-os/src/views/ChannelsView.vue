@@ -2,7 +2,7 @@
 // «Каналы CRM» — подключение мессенджеров и площадок из настроек приложения.
 // Больше не нужно править farms.json/.env: добавляем канал, вставляем токен/секрет,
 // входящие сообщения приходят через generic-вебхук POST /webhooks/channel/{kind}.
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, nextTick, onMounted } from 'vue';
 import { channelsApi } from '../api/channelsClient';
 import { apiState } from '../api/commsClient';
 
@@ -12,10 +12,11 @@ const loading = ref(false);
 const error = ref('');
 const okMsg = ref('');
 
-// модалка подключения аккаунта
-const connectFor = ref(null);          // канал, для которого открываем форму
+const connectFor = ref(null);
+const connectForms = ref([]);
 const form = ref({ login: '', displayName: '', token: '', secret: '' });
 const busy = ref(false);
+const connectError = ref('');
 
 // форма добавления своего канала
 const showAdd = ref(false);
@@ -53,23 +54,31 @@ onMounted(load);
 const availablePresets = computed(() =>
   presets.value.filter((p) => !items.value.some((c) => c.id === p.id)));
 
-function openConnect(ch) {
+async function openConnect(ch) {
+  if (connectFor.value?.id === ch.id) return;
   connectFor.value = ch;
   form.value = { login: '', displayName: '', token: '', secret: '' };
+  connectError.value = '';
   okMsg.value = '';
+  await nextTick();
+  connectForms.value[0]?.elements.login.focus();
 }
-function closeConnect() { connectFor.value = null; }
+function closeConnect() {
+  connectFor.value = null;
+  form.value = { login: '', displayName: '', token: '', secret: '' };
+}
 
 async function doConnect() {
   const ch = connectFor.value;
-  busy.value = true; error.value = '';
+  if (!ch || busy.value || !form.value.login.trim()) return;
+  busy.value = true; connectError.value = '';
   try {
     await channelsApi.connect(ch.id, { ...form.value });
     okMsg.value = `Аккаунт ${ch.label} подключён`;
-    connectFor.value = null;
+    closeConnect();
     await load();
   } catch (e) {
-    error.value = e.status422?.detail || String(e.message || e);
+    connectError.value = e.status422?.detail || String(e.message || e);
   } finally { busy.value = false; }
 }
 
@@ -178,9 +187,30 @@ const groups = computed(() => {
           </ul>
 
           <div class="row" style="gap:8px;margin-top:8px">
-            <button class="btn btn-sm" @click="openConnect(ch)">🔌 Подключить аккаунт</button>
+            <button class="btn btn-sm" :disabled="busy" :aria-expanded="connectFor?.id === ch.id" @click="openConnect(ch)">🔌 Подключить аккаунт</button>
             <button class="btn btn-sm ghost" @click="hookOpen = hookOpen === ch.id ? null : ch.id">📥 Как приводить сообщения</button>
           </div>
+
+          <form v-if="connectFor?.id === ch.id" ref="connectForms" class="account-form" aria-label="Подключение аккаунта" @submit.prevent="doConnect">
+            <h4>Подключение · {{ ch.label }}</h4>
+            <label class="field"><span>Логин / номер / название аккаунта</span>
+              <input v-model="form.login" name="login" class="input" required placeholder="@biotorf_bot / 770123456 / аккаунт Авито" /></label>
+            <label class="field"><span>Отображаемое имя (в ленте)</span>
+              <input v-model="form.displayName" class="input" :placeholder="ch.label" /></label>
+            <label class="field"><span>Токен доступа</span>
+              <input v-model="form.token" class="input" type="password" autocomplete="off"
+                     :placeholder="TOKEN_HINTS[ch.id] || TOKEN_HINTS.default" /></label>
+            <label class="field"><span>{{ SECRET_LABELS[ch.id] || SECRET_LABELS.default }}</span>
+              <input v-model="form.secret" class="input" type="password" autocomplete="off" placeholder="придумайте длинный случайный секрет" /></label>
+            <div class="mini muted">Секреты хранятся на сервере. В списке аккаунтов отображается только маска токена.</div>
+            <div v-if="connectError" class="mini err-box" role="alert">{{ connectError }}</div>
+            <div class="row account-actions">
+              <button class="btn" type="button" :disabled="busy" @click="closeConnect">Отмена</button>
+              <button class="btn btn-primary" type="submit" :disabled="busy || !form.login.trim()">
+                {{ busy ? 'Подключение…' : 'Подключить' }}
+              </button>
+            </div>
+          </form>
 
           <div v-if="hookOpen === ch.id" class="hook-box">
             <div class="mini">Отправляйте входящие сообщения на этот URL (n8n/Zapier/скрипт-парсер площадки):</div>
@@ -205,29 +235,6 @@ const groups = computed(() => {
       </div>
       <div class="mini muted">Один клик — канал появится выше, останется подключить аккаунт.</div>
     </section>
-
-    <!-- модалка подключения -->
-    <div v-if="connectFor" class="overlay" @click.self="closeConnect">
-      <div class="modal">
-        <h3 style="margin-top:0">{{ connectFor.icon }} Подключение · {{ connectFor.label }}</h3>
-        <label class="field"><span>Логин / номер / название аккаунта</span>
-          <input v-model="form.login" class="input" placeholder="@biotorf_bot / 770123456 / аккаунт Авито" /></label>
-        <label class="field"><span>Отображаемое имя (в ленте)</span>
-          <input v-model="form.displayName" class="input" :placeholder="connectFor.label" /></label>
-        <label class="field"><span>Токен доступа</span>
-          <input v-model="form.token" class="input" type="password" autocomplete="off"
-                 :placeholder="TOKEN_HINTS[connectFor.id] || TOKEN_HINTS.default" /></label>
-        <label class="field"><span>{{ SECRET_LABELS[connectFor.id] || SECRET_LABELS.default }}</span>
-          <input v-model="form.secret" class="input" type="password" autocomplete="off" placeholder="придумайте длинный случайный секрет" /></label>
-        <div class="mini muted">Секреты хранятся на сервере и никогда не возвращаются в браузер (маска вида 123…h1).</div>
-        <div class="row" style="gap:8px;margin-top:10px;justify-content:flex-end">
-          <button class="btn" @click="closeConnect">Отмена</button>
-          <button class="btn btn-primary" :disabled="busy || !form.login" @click="doConnect">
-            {{ busy ? 'Подключение…' : 'Подключить' }}
-          </button>
-        </div>
-      </div>
-    </div>
   </div>
 </template>
 
@@ -252,12 +259,9 @@ const groups = computed(() => {
 .preset-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip { border: 1px dashed rgba(127,127,127,.45); background: transparent; border-radius: 999px; padding: 6px 14px; cursor: pointer; font-size: 13px; }
 .chip:hover { border-color: var(--accent, #2aabee); }
-.overlay { position: fixed; inset: 0; background: rgba(10, 14, 18, .72); backdrop-filter: none; display: flex; align-items: center; justify-content: center; z-index: 100; }
-.modal { width: min(460px, 92vw); padding: 16px; background: #ffffff; color: #1c2430; border: 1px solid rgba(127,127,127,.35); box-shadow: 0 18px 48px rgba(0,0,0,.35); opacity: 1; }
-.modal .input { background: #f4f6f8; color: #1c2430; }
-.modal .btn { background: #eef1f4; color: #1c2430; }
-.modal .btn-primary { background: var(--accent, #2aabee); color: #fff; border-color: transparent; }
-.modal .mini.muted { opacity: 1; color: #5b6675; }
+.account-form { margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(127,127,127,.2); }
+.account-form h4 { margin: 0 0 12px; }
+.account-actions { flex-wrap: wrap; gap: 8px; margin-top: 10px; justify-content: flex-end; }
 .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; font-size: 12px; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .add-card { margin-top: 12px; padding: 12px; }

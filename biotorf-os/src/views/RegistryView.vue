@@ -6,6 +6,7 @@ import { usePermissions } from '@/composables/usePermissions';
 import { COLL_RU, crmFieldLabel, crmDisplayValue, REF_FIELD, REF_KINDS, crmFields, crmReferences, crmTitle, crmValue } from '@/data/crmFields';
 import CrmDataTable from '@/components/CrmDataTable.vue';
 import CrmRowModal from '@/components/CrmRowModal.vue';
+import LogisticsDocEditor from '@/components/forms/LogisticsDocEditor.vue';
 
 const db = useDbStore();
 const ui = useUiStore();
@@ -82,6 +83,7 @@ function onHashChange() {
   route.value = params();
   status.value = '';
   shareUrl.value = '';
+  editing.value = null;
 }
 onMounted(() => window.addEventListener('hashchange', onHashChange));
 onBeforeUnmount(() => window.removeEventListener('hashchange', onHashChange));
@@ -101,11 +103,7 @@ function linksFor(row, key) {
     }));
 }
 function openEditor(table, row = null, initialValues = {}, kind = 'dispatch') {
-  if (table === 'logistics') {
-    ui.openModal('Документ логистики', () => import('@/components/forms/LogisticsDocEditor.vue'), { doc: row, initialValues, kind });
-  } else {
-    editing.value = { table, row, initialValues };
-  }
+  editing.value = { table, row, initialValues, kind };
 }
 function addRelated(table, field) {
   const row = record.value;
@@ -179,6 +177,10 @@ async function remove(row) {
     </div>
 
     <p v-if="status" role="status">{{ status }}</p>
+    <LogisticsDocEditor v-if="editing?.table === 'logistics'" :key="editing.row?.id || editing.kind"
+      inline :doc="editing.row" :kind="editing.kind" :initial-values="editing.initialValues" @close="editing = null" />
+    <CrmRowModal v-else-if="editing" :key="`${editing.table}:${editing.row?.id || 'new'}`"
+      inline :coll="editing.table" :record="editing.row" :initial-values="editing.initialValues" @close="editing = null" />
     <section v-if="record" class="panel record">
       <div class="record-head">
         <h2>{{ crmTitle(record) }}</h2>
@@ -244,7 +246,6 @@ async function remove(row) {
       <span>{{ page }} / {{ pageCount }}</span>
       <button class="btn slim" :disabled="page === pageCount" @click="page++">Дальше</button>
     </div>
-    <CrmRowModal v-if="editing" :coll="editing.table" :record="editing.row" :initial-values="editing.initialValues" @close="editing = null" />
   </section>
 </template>
 

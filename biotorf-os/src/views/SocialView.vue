@@ -10,10 +10,8 @@ import BackendBadge from '@/components/ui/BackendBadge.vue';
 
 import CrmRowModal from '@/components/CrmRowModal.vue';
 import ManualLink from '@/components/ui/ManualLink.vue';
-const rowColl = ref('social');
-const rowOpen = ref(false);
-const editRec = ref(null);
-function openEdit(rec) { editRec.value = rec; rowOpen.value = true; }
+const editor = ref(null);
+function openEditor(record = null) { editor.value = { record }; }
 
 const db = useDbStore();
 const ui = useUiStore();
@@ -36,8 +34,17 @@ const STATUSES = computed(() => ['Все', ...statusOptions('social', db.social 
       </div>
       <BackendBadge collection="social" />
     
-      <button class="btn primary slim" @click="rowOpen = true" title="Добавить запись вручную">＋ Добавить</button>
+      <button class="btn primary slim" @click="openEditor()" title="Добавить запись вручную">＋ Добавить</button>
     </div>
+
+    <CrmRowModal
+      v-if="editor"
+      inline
+      :key="editor.record?.id || 'new'"
+      coll="social"
+      :record="editor.record"
+      @close="editor = null"
+    />
 
     <div class="note">В v0.9 публикации в Instagram автоматически не отправляются; результаты пилотов публикуются только после проверки агрономом и согласия хозяйства.</div>
 
@@ -48,9 +55,8 @@ const STATUSES = computed(() => ['Все', ...statusOptions('social', db.social 
     <CrmDataTable coll="social" :rows="rows" empty="Публикаций нет.">
         <template #actions="{ row: s }">
           <button v-if="s.pilotId && s.pilotId !== 'Без привязки'" class="btn slim ghost" @click="ui.openRecord('pilot', s.pilotId)">Открыть пилот</button>
-          <button class="btn slim ghost" @click="openEdit(s)">Изменить</button>
+          <button class="btn slim ghost" @click="openEditor(s)">Изменить</button>
         </template>
       </CrmDataTable>
   </div>
-  <CrmRowModal v-if="rowOpen" :coll="rowColl" :record="editRec" @close="rowOpen = false; editRec = null" />
 </template>

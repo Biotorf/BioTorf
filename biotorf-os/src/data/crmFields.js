@@ -68,6 +68,23 @@ export const FIELD_RU = {
 
 export const REF_FIELD = { farmId: 'farms', dealId: 'deals', orderId: 'orders', invoiceId: 'invoices', leadId: 'leads', pilotId: 'pilots', sku: 'skus', skuId: 'skus', journeyId: 'journeys', quoteId: 'quotes', shipmentId: 'shipments', supplyId: 'logistics' };
 
+const dictionaryFields = {
+  region: 'regions', crop: 'crops', source: 'sources', owner: 'owners',
+  unit: 'unitPack', location: 'locations', warehouse: 'locations',
+  transport: 'transport', vehicle: 'transport', driver: 'drivers', plate: 'plates', carrier: 'carriers',
+  shift: 'shifts', operator: 'operators', platform: 'platforms',
+  product: 'products', priority: 'priorities', method: 'methods', category: 'categories',
+};
+
+export function crmDictionaryKey(coll, field) {
+  if (coll === 'farms' && field === 'status') return 'statuses';
+  if (coll === 'farms' && field === 'type') return 'types';
+  if (coll === 'clientDocs' && field === 'type') return 'documentTypes';
+  if (coll === 'skus' && field === 'line') return 'lines';
+  if (coll === 'applications' && field === 'method') return 'applicationMethods';
+  return Object.hasOwn(dictionaryFields, field) ? dictionaryFields[field] : undefined;
+}
+
 const legacyFields = {
   farms: { notes: 'note' },
   orders: { number: 'num' },
@@ -109,6 +126,10 @@ export function crmReferences(coll, record) {
 }
 
 export function crmFieldLabel(coll, key) {
+  if (coll === 'farms' && key === 'name') return 'Имя или название';
+  if (coll === 'farms' && key === 'type') return 'Тип клиента';
+  if (coll === 'clientDocs' && key === 'type') return 'Тип документа';
+  if (coll === 'applications' && key === 'method') return 'Способ обработки';
   if (coll === 'logistics' && key === 'kind') return 'Тип документа';
   if (coll === 'logistics' && key === 'vehicle') return 'Транспорт';
   if (coll === 'logistics' && key === 'lot') return 'Партия поставщика';

@@ -3,11 +3,13 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
 import { usePermissions } from '@/composables/usePermissions';
-import { CLIENT_TYPES, clientInitials, isPerson, phoneDigits, primaryContact } from '@/data/clientDesk';
+import { clientInitials, isPerson, phoneDigits, primaryContact } from '@/data/clientDesk';
 import { statusOptions } from '@/data/crmFields';
 import { useFormatters } from '@/composables/useFormatters';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
+import CrmDataTable from '@/components/CrmDataTable.vue';
 import CrmImportModal from '@/components/CrmImportModal.vue';
+import CrmSelectField from '@/components/CrmSelectField.vue';
 import StatusPill from '@/components/ui/StatusPill.vue';
 import ClientCardModal from '@/views/ClientCardModal.vue';
 
@@ -81,6 +83,7 @@ const customers = computed(() => {
 });
 const page = ref(1);
 const pageSize = 36;
+const clientColumns = ['name', 'type', 'region', 'phone', 'email', 'owner', 'next', 'status'];
 const pageCount = computed(() => Math.ceil(customers.value.length / pageSize));
 const shownCustomers = computed(() => customers.value.slice((page.value - 1) * pageSize, page.value * pageSize));
 watch([category, owner, status, sortBy, () => ui.search], () => { page.value = 1; });
@@ -172,12 +175,7 @@ async function createClient() {
           <label class="field">Имя или название
             <input v-model="detail.name" required class="input" placeholder="Например, ОсОО «Агро Плюс»" />
           </label>
-          <label class="field">Тип клиента
-            <select v-model="detail.type" class="select" aria-label="Тип нового клиента">
-              <option value="">Выбрать позже</option>
-              <option v-for="type in CLIENT_TYPES" :key="type">{{ type }}</option>
-            </select>
-          </label>
+          <CrmSelectField v-model="detail.type" label="Тип клиента" :options="db.optionsFor('types', 'farms', 'type')" list-key="types" />
           <label class="field">Телефон
             <input v-model="detail.phone" type="tel" autocomplete="tel" class="input" placeholder="+996" />
           </label>
@@ -186,10 +184,10 @@ async function createClient() {
           <summary>Дополнительные данные</summary>
           <div class="create-fields">
             <label class="field">E-mail <input v-model="detail.email" class="input" type="email" autocomplete="email" /></label>
-            <label class="field">Регион <input v-model="detail.region" class="input" /></label>
+            <CrmSelectField v-model="detail.region" label="Регион" :options="db.optionsFor('regions', 'farms', 'region')" list-key="regions" />
             <label class="field">ИНН <input v-model="detail.taxId" class="input" inputmode="numeric" /></label>
             <label class="field">Адрес <input v-model="detail.address" class="input" autocomplete="street-address" /></label>
-            <label class="field">Источник <input v-model="detail.source" class="input" placeholder="Например, рекомендация" /></label>
+            <CrmSelectField v-model="detail.source" label="Источник" :options="db.optionsFor('sources', 'farms', 'source')" list-key="sources" />
             <label class="field">Связаться <input v-model="detail.next" class="input" type="date" /></label>
             <label class="field detailed-note">Заметки <textarea v-model="detail.notes" class="input" rows="2" /></label>
           </div>
@@ -205,7 +203,7 @@ async function createClient() {
       <section class="customer-directory" data-tour="client-directory" aria-label="Фильтры клиентов">
         <div class="client-list-tools">
           <input v-model="ui.search" type="search" class="input" aria-label="Поиск клиентов" placeholder="Имя, компания, телефон, e-mail…" />
-          <select v-model="category" class="select" aria-label="Тип клиента">
+          <select v-model="category" class="select" aria-label="Фильтр по типу клиента">
             <option value="all">Все типы</option>
             <option value="company">Компании и хозяйства</option>
             <option value="person">Частные лица</option>
@@ -259,24 +257,20 @@ async function createClient() {
           </a>
         </li>
       </ul>
-      <div v-else-if="customers.length" class="table-wrap directory-table">
-        <table class="table">
-          <thead><tr><th>Клиент</th><th>Связь</th><th>Менеджер</th><th>Следующий контакт</th><th>Статус</th></tr></thead>
-          <tbody>
-            <tr v-for="client in shownCustomers" :key="client.id">
-              <td><a :href="clientLink(client.id)" class="client-name">{{ client.name || client.id }}</a><small>{{ [client.type, client.region].filter(Boolean).join(' · ') }}</small></td>
-              <td>
-                <a v-if="clientInfo.get(client.id).phone" :href="'tel:' + clientInfo.get(client.id).phone">{{ clientInfo.get(client.id).phone }}</a>
-                <small v-if="clientInfo.get(client.id).email"><a :href="'mailto:' + clientInfo.get(client.id).email">{{ clientInfo.get(client.id).email }}</a></small>
-                <span v-if="!clientInfo.get(client.id).phone && !clientInfo.get(client.id).email">—</span>
-              </td>
-              <td>{{ client.owner || '—' }}</td>
-              <td>{{ client.next ? day(client.next) : '—' }}</td>
-              <td><StatusPill v-if="client.status" :status="client.status" /><span v-else>—</span></td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+      <CrmDataTable v-else-if="customers.length" coll="farms" :rows="shownCustomers" :columns="clientColumns">
+        <template #name="{ row: client }">
+          <a :href="clientLink(client.id)" class="client-name">{{ client.name || client.id }}</a>
+        </template>
+        <template #phone="{ row: client }">
+          <a v-if="clientInfo.get(client.id).phone" :href="'tel:' + clientInfo.get(client.id).phone">{{ clientInfo.get(client.id).phone }}</a>
+          <span v-else>—</span>
+        </template>
+        <template #email="{ row: client }">
+          <a v-if="clientInfo.get(client.id).email" :href="'mailto:' + clientInfo.get(client.id).email">{{ clientInfo.get(client.id).email }}</a>
+          <span v-else>—</span>
+        </template>
+        <template #next="{ row: client }">{{ client.next ? day(client.next) : '—' }}</template>
+      </CrmDataTable>
       <div v-else class="empty">
         {{ ui.search || category !== 'all' || owner || status ? 'По выбранным условиям клиентов нет.' : 'Пока нет клиентов.' }}
       </div>
@@ -317,7 +311,6 @@ async function createClient() {
 .more-client-fields summary { cursor: pointer; color: #286749; margin-bottom: 8px; }
 .detailed-note { grid-column: 1 / -1; }
 .duplicate-hint { background: #fff8e9; color: #7b5a1b; border-radius: 8px; padding: 8px; }
-.directory-table small { display: block; color: #52665b; }
 .client-name { text-decoration: none; font-weight: 700; }
 .client-list-tools .input { max-width: 330px; }
 .client-table-tools { margin-top: 17px; }

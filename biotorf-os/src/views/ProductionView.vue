@@ -41,6 +41,15 @@ function canPost(row) {
       </div>
       <button v-if="canEditCollection('production')" class="btn primary" data-tour="production-create" @click="rowOpen = { record: null }">Новая партия</button>
     </div>
+    <CrmRowModal
+      v-if="rowOpen"
+      inline
+      :key="rowOpen.record?.id || 'new'"
+      coll="production"
+      :record="rowOpen.record"
+      @close="rowOpen = null"
+    />
+
     <p v-if="receiptError" class="danger-text" role="alert">{{ receiptError }}</p>
     <div class="toolbar">
       <label>Статус
@@ -69,7 +78,6 @@ function canPost(row) {
       <summary>Таблица производства</summary>
       <CrmDataTable coll="production" :rows="rows" empty="Партий нет." />
     </details>
-    <CrmRowModal v-if="rowOpen" coll="production" :record="rowOpen.record" @close="rowOpen = null" />
   </section>
 </template>
 

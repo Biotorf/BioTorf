@@ -5,9 +5,9 @@ import StatusPill from '@/components/ui/StatusPill.vue';
 import CrmDataTable from '@/components/CrmDataTable.vue';
 // Раздел «Логистика»: реестры ПОСТАВОК (приход) и ВЫГРУЗОК (отгрузка) товара.
 // Таблицы в стиле Excel: итоговые карточки, поиск, фильтр по статусу,
-// редактирование позиций в модалке, экспорт всего реестра в .xls/.csv,
+// редактирование позиций на странице, экспорт всего реестра в .xls/.csv,
 // печать реестра и создание актов приёма-передачи под каждый документ.
-import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
 import { useFormatters } from '@/composables/useFormatters';
@@ -17,10 +17,18 @@ import { toCsv, toXmlSpreadsheet, downloadBlob, printHtml, escapeHtml } from '@/
 
 import CrmRowModal from '@/components/CrmRowModal.vue';
 import ManualLink from '@/components/ui/ManualLink.vue';
-const rowColl = ref('shipments');
 const rowOpen = ref(false);
 const editRec = ref(null);
-function editShipment(record) { editRec.value = record; rowOpen.value = true; }
+const shipmentForm = ref(null);
+const logisticsForm = ref(null);
+const logisticsEditor = ref(null);
+
+async function editShipment(record) {
+  editRec.value = record;
+  rowOpen.value = true;
+  await nextTick();
+  shipmentForm.value?.scrollIntoView({ block: 'start' });
+}
 
 const db = useDbStore();
 const trainingActive = inject('trainingActive', ref(false));
@@ -75,13 +83,10 @@ const itemsSummary = (d) => {
   return names.length <= 2 ? names.join(', ') : `${names[0]} +${names.length - 1} поз.`;
 };
 
-function openEditor(doc = null) {
-  ui.openModal(
-    doc ? `Документ ${doc.kind === 'supply' ? 'поставки' : 'выгрузки'} ${doc.number}`
-        : (tab.value === 'supply' ? 'Новая поставка' : 'Новая выгрузка (отгрузка)'),
-    LogisticsDocEditor,
-    { doc, kind: tab.value },
-  );
+async function openEditor(doc = null) {
+  logisticsEditor.value = { doc, kind: doc?.kind || tab.value };
+  await nextTick();
+  logisticsForm.value?.scrollIntoView({ block: 'start' });
 }
 
 async function removeDoc(d) {
@@ -123,10 +128,14 @@ function printRegistry() {
   printHtml(label, body);
 }
 
-// быстрый переход к документу для создания акта прямо из таблицы
 function canPostReceipt(doc) {
   return canEdit('warehouse') && doc.kind === 'supply' && doc.status === 'Принят' &&
     doc.items?.some((item) => item.material === 'powder' && item.qcStatus === 'Пройден');
+}
+
+function canPostDispatch(doc) {
+  return canEdit('warehouse') && doc.kind === 'dispatch' && doc.items?.some((item) => item.skuId) &&
+    !['Черновик', 'Отменён', 'Отменен', 'Отменена', 'Отменено'].includes(doc.status);
 }
 
 </script>
@@ -164,6 +173,11 @@ function canPostReceipt(doc) {
       <span v-if="syncing" class="mini right">синхронизация…</span>
     </div>
 
+    <div v-if="logisticsEditor" ref="logisticsForm" class="logistics-form">
+      <LogisticsDocEditor :key="logisticsEditor.doc?.id || logisticsEditor.kind"
+        inline :doc="logisticsEditor.doc" :kind="logisticsEditor.kind" @close="logisticsEditor = null" />
+    </div>
+
     <div class="stats">
       <div class="stat"><div class="label">Документов</div><div class="val">{{ stats.count }}</div><div class="foot">{{ tab === 'supply' ? 'поставок' : 'выгрузок' }} в реестре</div></div>
       <div class="stat"><div class="label">Сумма реестра</div><div class="val">{{ money(stats.total) }}</div><div class="foot">по позициям документов</div></div>
@@ -189,6 +203,7 @@ function canPostReceipt(doc) {
         <div class="actionbar">
           <button class="btn slim" @click="openEditor(doc)">Открыть документ</button>
           <a v-if="canPostReceipt(doc)" :href="inventoryLink('receipt_powder', 'logistics', doc.id)">Провести приёмку</a>
+          <a v-if="canPostDispatch(doc)" :href="inventoryLink('dispatch', 'logistics', doc.id, doc.orderId)">Со склада</a>
         </div>
       </article>
     </div>
@@ -198,6 +213,8 @@ function canPostReceipt(doc) {
       <CrmDataTable coll="logistics" :rows="filtered" empty="Документов нет.">
         <template #actions="{ row: doc }">
           <button class="btn slim ghost" @click="openEditor(doc)">Открыть</button>
+          <a v-if="canPostReceipt(doc)" :href="inventoryLink('receipt_powder', 'logistics', doc.id)">Провести приёмку</a>
+          <a v-if="canPostDispatch(doc)" :href="inventoryLink('dispatch', 'logistics', doc.id, doc.orderId)">Со склада</a>
           <button v-if="canEdit('shipments')" class="btn slim ghost danger-text" @click="removeDoc(doc)">Удалить</button>
         </template>
       </CrmDataTable>
@@ -205,6 +222,9 @@ function canPostReceipt(doc) {
     <details v-if="tab === 'dispatch'" class="panel logistics-extra">
       <summary>Заказы к отгрузке</summary>
       <button v-if="canEditCollection('shipments')" class="btn slim" @click="editShipment(null)">Добавить отгрузку заказа</button>
+      <div v-if="rowOpen" ref="shipmentForm" class="logistics-form">
+        <CrmRowModal :key="editRec?.id || 'new'" inline coll="shipments" :record="editRec" @close="rowOpen = false; editRec = null" />
+      </div>
       <CrmDataTable coll="shipments" :rows="db.data.shipments || []" empty="Отгрузок CRM нет.">
         <template #actions="{ row: s }">
           <button v-if="canEditCollection('shipments')" class="btn slim ghost" @click="editShipment(s)">Изменить</button>
@@ -214,7 +234,6 @@ function canPostReceipt(doc) {
       </CrmDataTable>
     </details>
   </div>
-  <CrmRowModal v-if="rowOpen" :coll="rowColl" :record="editRec" @close="rowOpen = false; editRec = null" />
 </template>
 
 <style scoped>
@@ -224,5 +243,6 @@ function canPostReceipt(doc) {
 .logistics-extra { margin-top: 14px; }
 .logistics-extra summary { cursor: pointer; font-weight: 650; }
 .logistics-extra .table-wrap, .logistics-extra .actionbar { margin-top: 12px; }
+.logistics-form { margin-block: 12px; scroll-margin-top: 70px; }
 .export-tools { margin: 0 0 12px; padding: 10px 15px; }
 </style>

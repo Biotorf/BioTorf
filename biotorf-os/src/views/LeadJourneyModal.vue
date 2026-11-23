@@ -1,5 +1,6 @@
 <script setup>
 import { computed, ref } from 'vue';
+import CrmSelectField from '@/components/CrmSelectField.vue';
 import StatusPill from '@/components/ui/StatusPill.vue';
 import { useFormatters } from '@/composables/useFormatters';
 import { usePermissions } from '@/composables/usePermissions';
@@ -31,18 +32,13 @@ function edit() {
 }
 
 function createTask() {
-  form.value = { title: '', owner: lead.value.owner || ui.name || '', due: lead.value.next || '' };
-  editor.value = 'task';
+  ui.closeModal();
+  ui.go('tasks', { new: '1', lead: props.leadId });
 }
 
 function save() {
-  if (editor.value === 'lead') {
-    if (!form.value.name.trim()) return;
-    db.editEntity('lead', props.leadId, { ...form.value });
-  } else {
-    if (!form.value.title.trim()) return;
-    db.addTask({ ...form.value, due: form.value.due || null, priority: 'Средний', refKind: 'lead', refId: props.leadId });
-  }
+  if (!form.value.name.trim()) return;
+  db.editEntity('lead', props.leadId, { ...form.value });
   editor.value = null;
 }
 </script>
@@ -81,18 +77,13 @@ function save() {
     </template>
 
     <form v-else class="lead-form" @submit.prevent="save">
-      <div v-if="editor === 'lead'" class="formgrid">
+      <div class="formgrid">
         <label class="field full">Тема заявки<input v-model.trim="form.name" class="input" required /></label>
         <label class="field">Контактное лицо<input v-model="form.contactName" class="input" /></label>
         <label class="field">Телефон<input v-model="form.phone" class="input" type="tel" /></label>
-        <label class="field">Ответственный<input v-model="form.owner" class="input" /></label>
-        <label class="field">Источник<input v-model="form.source" class="input" /></label>
+        <CrmSelectField v-model="form.owner" label="Ответственный" :options="db.optionsFor('owners', 'leads', 'owner')" list-key="owners" />
+        <CrmSelectField v-model="form.source" label="Источник" :options="db.optionsFor('sources', 'leads', 'source')" list-key="sources" />
         <label class="field">Дата следующего контакта<input v-model="form.next" class="input" type="date" /></label>
-      </div>
-      <div v-else class="formgrid">
-        <label class="field full">Что нужно сделать<input v-model.trim="form.title" class="input" required /></label>
-        <label class="field">Ответственный<input v-model="form.owner" class="input" /></label>
-        <label class="field">Срок<input v-model="form.due" class="input" type="date" /></label>
       </div>
       <div class="actionbar lead-actions">
         <button type="submit" class="btn primary">Сохранить</button>

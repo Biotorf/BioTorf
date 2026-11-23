@@ -5,6 +5,7 @@ import { useUiStore } from '@/stores/ui';
 import { usePermissions } from '@/composables/usePermissions';
 import { commsApi } from '@/api/commsClient';
 import { INBOX_STATES, isResponseOverdue } from '@/data/commsInbox';
+import CrmSelectField from '@/components/CrmSelectField.vue';
 
 const props = defineProps({
   chat: { type: Object, required: true },
@@ -29,8 +30,6 @@ const owner = computed(() => props.staff.items.find((person) => person.login ===
 const dueText = computed(() => work.value.responseDue
   ? new Date(work.value.responseDue).toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' })
   : '');
-const clientTypes = ['Частный покупатель', 'Компания', 'Агропроизводитель', 'Розничный магазин',
-  'Оптовая база', 'Дилер', 'Дистрибьютор', 'Другой'];
 const clientDraft = ref(null);
 const clientMode = ref('new');
 const clientMatches = ref([]);
@@ -74,7 +73,7 @@ async function openClientForm() {
       revision: data.revision,
       source: data.source,
       clientId: linkedClient.value?.id || (clientMatches.value.length === 1 ? clientMatches.value[0].id : ''),
-      name: data.name || '', type: '', phone: data.phone || '', contactName: data.contactName || '',
+      name: data.name || '', type: '', region: '', phone: data.phone || '', contactName: data.contactName || '',
       assignee: work.value.assignee || props.staff.login || '',
     };
   } catch (err) { error.value = err.message; }
@@ -166,10 +165,8 @@ async function createLead() {
       <div class="capture-fields">
         <template v-if="clientMode === 'new'">
           <label>Имя или название<input v-model="clientDraft.name" class="input" required maxlength="200" /></label>
-          <label>Тип клиента<select v-model="clientDraft.type" class="select">
-            <option value="">Выбрать позже</option>
-            <option v-for="kind in clientTypes" :key="kind">{{ kind }}</option>
-          </select></label>
+          <CrmSelectField v-model="clientDraft.type" label="Тип клиента" :options="db.optionsFor('types', 'farms', 'type')" list-key="types" />
+          <CrmSelectField v-model="clientDraft.region" label="Регион" :options="db.optionsFor('regions', 'farms', 'region')" list-key="regions" />
           <label>Контактное лицо<input v-model="clientDraft.contactName" class="input" maxlength="200" /></label>
           <label>Телефон<input v-model="clientDraft.phone" type="tel" class="input" maxlength="60" /></label>
         </template>

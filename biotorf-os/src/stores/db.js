@@ -4,6 +4,10 @@ import { acceptCrmState, captureChanges, crmPayload, hasCrmChanges, loadCrmSync,
 import { commsApi, apiEnabled, checkApi } from '@/api/commsClient';
 import { logisticsApi } from '@/api/logisticsClient';
 import { crmApi } from '@/api/crmClient';
+import {
+  DICTIONARY_FIELDS, DEFAULT_LISTS, KYRGYZSTAN_REGIONS, OLD_REGION_PRESETS,
+  defaultDictionaries, dictionaryKey, mergeDictionaryValues,
+} from '@/data/crmDictionary';
 
 // apiEnabled — функция (см. commsClient.js); вызываем как функцию
 const apiOn = () => typeof apiEnabled === 'function' ? apiEnabled() : !!apiEnabled;
@@ -21,19 +25,7 @@ function emptyState() {
     clientNotes: [], applications: [], payments: [], media: [], social: [],
     knowledge: [], skus: [], warehouse: [], production: [], clientDocs: [],
     comms: [], logistics: [], marketingAttributions: [], preferences: {},
-    // Справочники для выпадающих списков (значение + кнопка «＋» в модалке).
-    // Значения собираются автоматически из записей, сюда добавляются вручную.
-    lists: {
-      regions: ['Краснодарский край', 'Ростовская область', 'Ставропольский край', 'Алтайский край'],
-      crops: ['пшеница озимая', 'кукуруза', 'подсолнечник', 'соя', 'сахарная свёкла'],
-      sources: ['выставка', 'сайт', 'телеграм', 'реферал', 'холодный звонок'],
-      owners: [],
-      statuses: ['активное'],
-      types: ['агрохолдинг', 'КФХ', 'ИП'],
-      unitPack: ['5 л', '10 л', '200 мл', '1 л'],
-      locations: ['склад А', 'склад Б'],
-      transport: [], drivers: [], plates: [], shifts: [], operators: [], platforms: [],
-    },
+    lists: defaultDictionaries(),
     stages: ['Новый лид', 'Связаться', 'Контакт установлен', 'Квалификация',
       'Потенциальный клиент', 'Агрономическая диагностика', 'Предложен пилот',
       'Пилот согласован', 'Пилот идет', 'Результат получен', 'Экономика рассчитана',
@@ -79,11 +71,8 @@ function load() {
     parsed.quotes ??= [];
     parsed.comms ??= [];
     parsed.logistics ??= [];
-    // миграция v3 → v4: справочники выпадающих списков (данные пользователя сохраняются)
-    if (!parsed.lists || !parsed.lists.regions) {
-      parsed.lists = emptyState().lists;
-      parsed.version = 4;
-    }
+    // Актуальные варианты дополняют уже сохранённые значения справочников.
+    parsed.lists = defaultDictionaries(parsed.lists);
     // миграция v2 → v3: связанные с маршрутами поля и реестры документов
     if (!parsed.version || parsed.version < 3) {
       for (const d of parsed.deals || []) { d.journeyId ??= null; }
@@ -108,6 +97,7 @@ export const useDbStore = defineStore('db', {
       commsSyncError: null,
       crmSyncError: null,
       serverOnline: false,
+      editableDictionaries: null,
     };
   },
   getters: {
@@ -765,39 +755,65 @@ export const useDbStore = defineStore('db', {
       return this.importCollection(coll, this.csvToRecords(text), mode);
     },
     async refreshListOptions() {
+      if (this._listOptionsLoad) return this._listOptionsLoad;
+      this._listOptionsLoad = this.loadListOptions();
+      try {
+        return await this._listOptionsLoad;
+      } finally {
+        this._listOptionsLoad = null;
+      }
+    },
+    async loadListOptions() {
       if (!apiOn() && !(await checkApi())) return;
-      const shared = await crmApi.getOptions();
-      const defaults = emptyState().lists;
+      const result = await crmApi.getOptions();
+      const shared = Array.isArray(result.editable) ? result.values : result;
+      const editable = Array.isArray(result.editable) ? new Set(result.editable) : null;
+      this.editableDictionaries = editable;
       const pending = {};
       for (const [key, values] of Object.entries(this.data.lists || {})) {
-        const known = new Set([...(defaults[key] || []), ...(shared[key] || [])].map((v) => v.toLowerCase()));
-        const local = values.filter((v) => v.trim() && v.length <= 500 && !known.has(v.trim().toLowerCase()));
+        if (!Object.hasOwn(DEFAULT_LISTS, key) || (editable && !editable.has(key))) continue;
+        const defaults = key === 'regions' ? [...DEFAULT_LISTS.regions, ...OLD_REGION_PRESETS] : DEFAULT_LISTS[key];
+        const known = new Set(mergeDictionaryValues(defaults, shared[key]).map(dictionaryKey));
+        const local = mergeDictionaryValues(values).filter((value) => value.length <= 500 && !known.has(dictionaryKey(value)));
         if (local.length) pending[key] = local;
       }
-      this.mergeListOptions(Object.keys(pending).length ? await crmApi.addOptions(pending) : shared);
+      // Читать общий справочник можно независимо от права на загрузку старых локальных значений.
+      this.mergeListOptions(shared);
+      if (!Object.keys(pending).length) return;
+      try {
+        this.mergeListOptions(await crmApi.addOptions(pending));
+      } catch (error) {
+        if (error.status !== 403) throw error;
+      }
+    },
+    canAddListItem(listKey) {
+      return Object.hasOwn(DEFAULT_LISTS, listKey)
+        && (this.editableDictionaries === null || this.editableDictionaries.has(listKey));
     },
     async addListItem(listKey, value) {
+      const label = String(value ?? '').trim();
+      if (!label) throw new Error('Введите значение для справочника.');
       if (!apiOn() && !(await checkApi())) throw new Error('Сервер недоступен. Значение не сохранено в общем справочнике.');
-      const shared = await crmApi.addOptions({ [listKey]: [value] });
+      const shared = await crmApi.addOptions({ [listKey]: [label] });
       this.mergeListOptions(shared);
-      return shared[listKey].find((v) => v.toLowerCase() === value.toLowerCase()) || value;
+      return (shared[listKey] || []).find((v) => dictionaryKey(v) === dictionaryKey(label)) || label;
     },
     mergeListOptions(shared) {
       this.data.lists ??= {};
       for (const [key, values] of Object.entries(shared)) {
-        const merged = new Map([...(this.data.lists[key] || []), ...values].map((v) => [v.toLowerCase(), v]));
-        this.data.lists[key] = [...merged.values()];
+        if (!Array.isArray(values)) continue;
+        this.data.lists[key] = mergeDictionaryValues(values, this.data.lists[key]);
       }
       try { localStorage.setItem(KEY, JSON.stringify(this.data)); } catch { /* noop */ }
     },
-    // Список для модалки: справочник + все уникальные значения из существующих записей
     optionsFor(listKey, coll, field) {
-      const set = new Set(this.data.lists?.[listKey] || []);
-      for (const rec of this.data[coll] || []) {
-        const v = rec?.[field];
-        if (typeof v === 'string' && v.trim()) set.add(v.trim());
-      }
-      return [...set].sort((a, b) => a.localeCompare(b, 'ru'));
+      const sources = [...(DICTIONARY_FIELDS[listKey] || [])];
+      if (coll && field && !sources.some(([table, key]) => table === coll && key === field)) sources.push([coll, field]);
+      const recorded = sources.flatMap(([table, key]) => (this.data[table] || [])
+        .filter((record) => listKey !== 'suppliers' || table !== 'logistics' || record.kind === 'supply')
+        .map((record) => record?.[key]));
+      const values = mergeDictionaryValues(this.data.lists?.[listKey], recorded).sort((a, b) => a.localeCompare(b, 'ru'));
+      return listKey === 'regions' ? mergeDictionaryValues(KYRGYZSTAN_REGIONS, values) : values;
     },
     async wipeCollection(coll) {
       if (!SYNC_COLLECTIONS.includes(coll)) throw new Error('Неизвестная таблица: ' + coll);
@@ -864,6 +880,7 @@ export const useDbStore = defineStore('db', {
           acceptCrmState(this.crmSync, this.data, state, SYNC_COLLECTIONS);
           this.crmSyncError = null;
           this.persistCrmCache();
+          this.refreshListOptions().catch(() => {});
           if (!discardPending) this.queueCrmSync();
           return true;
         } catch (error) {
