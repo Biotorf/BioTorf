@@ -58,6 +58,7 @@ onMounted(() => window.addEventListener('hashchange', onHashChange));
 onBeforeUnmount(() => window.removeEventListener('hashchange', onHashChange));
 
 const views = {
+  automation: markRaw(defineAsyncComponent(() => import('@/views/AutomationView.vue'))),
   dashboard: markRaw(defineAsyncComponent(() => import('@/views/DashboardView.vue'))),
   registry: markRaw(defineAsyncComponent(() => import('@/views/RegistryView.vue'))),
   crm: markRaw(defineAsyncComponent(() => import('@/views/CrmView.vue'))),

@@ -24,6 +24,7 @@ import json
 import os
 import re
 import sqlite3
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -92,6 +93,10 @@ CREATE TABLE IF NOT EXISTS comms_work (
     response_due TEXT,
     lead_id      TEXT,
     revision     TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS comms_client_links (
+    peer_key TEXT PRIMARY KEY,
+    farm_id  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_comms_peer_ts ON comms (peer_key, ts DESC);
 """
@@ -283,11 +288,44 @@ COL_MAP = {
 }
 
 
+def lock_client_peer(tx, peer_key: str) -> None:
+    """Serialize message insertion and whole-conversation client linking."""
+    if IS_POSTGRES:
+        tx.execute("SELECT pg_advisory_xact_lock(hashtextextended(?, 1))", (peer_key,))
+
+
+def linked_client(tx, peer_key: str) -> str | None:
+    row = tx.execute(
+        "SELECT l.farm_id FROM comms_client_links l "
+        "JOIN crm_records f ON f.coll='farms' AND f.id=l.farm_id "
+        "WHERE l.peer_key=?", (peer_key,)
+    ).fetchone()
+    return row["farm_id"] if row else None
+
+
+def _message_transaction(conn):
+    if IS_POSTGRES:
+        return conn.transaction()
+    conn.execute("BEGIN IMMEDIATE")
+    return nullcontext(conn)
+
+
 def insert(item: dict) -> dict:
     if "peerKey" not in item or not item.get("peerKey"):
         pk = compute_peer_key(item)
         if pk:
             item = {**item, "peerKey": pk}
+    with connect() as conn, _message_transaction(conn) as tx:
+        peer_key = item.get("peerKey")
+        if peer_key:
+            lock_client_peer(tx, peer_key)
+            farm_id = linked_client(tx, peer_key)
+            if farm_id:
+                item = {**item, "farmId": farm_id}
+        return _insert_message(tx, item)
+
+
+def _insert_message(tx, item: dict) -> dict:
     cols, vals = [], []
     for f in FIELDS:
         if f in item and item[f] is not None:
@@ -313,24 +351,23 @@ def insert(item: dict) -> dict:
             f"INSERT OR IGNORE INTO comms ({', '.join(cols)}) "
             f"VALUES ({', '.join('?' for _ in cols)})"
         )
-    with connect() as conn:
-        cur = conn.execute(sql, vals)
-        if cur.rowcount == 0:
-            # дубликат webhook-события — возвращаем существующую запись
-            row = conn.execute(
-                "SELECT * FROM comms WHERE source=? AND external_id=?",
-                (item.get("source"), item.get("externalId")),
-            ).fetchone()
-            return to_dict(row)
-        if item.get("peerKey") and item["dir"] == "in" and (item.get("source") or "").startswith("webhook:"):
-            # Новый ответ клиента возвращает завершённый или ожидающий чат в очередь.
-            conn.execute(
-                "UPDATE comms_work SET state='new', response_due=NULL, revision=? "
-                "WHERE peer_key=? AND state IN ('waiting','closed')",
-                (item["id"], item["peerKey"]),
-            )
-        row = conn.execute("SELECT * FROM comms WHERE id=?", (item["id"],)).fetchone()
+    cur = tx.execute(sql, vals)
+    if cur.rowcount == 0:
+        # дубликат webhook-события — возвращаем существующую запись
+        row = tx.execute(
+            "SELECT * FROM comms WHERE source=? AND external_id=?",
+            (item.get("source"), item.get("externalId")),
+        ).fetchone()
         return to_dict(row)
+    if item.get("peerKey") and item["dir"] == "in" and (item.get("source") or "").startswith("webhook:"):
+        # Новый ответ клиента возвращает завершённый или ожидающий чат в очередь.
+        tx.execute(
+            "UPDATE comms_work SET state='new', response_due=NULL, revision=? "
+            "WHERE peer_key=? AND state IN ('waiting','closed')",
+            (item["id"], item["peerKey"]),
+        )
+    row = tx.execute("SELECT * FROM comms WHERE id=?", (item["id"],)).fetchone()
+    return to_dict(row)
 
 
 def get(comm_id: str) -> dict | None:

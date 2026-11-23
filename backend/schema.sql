@@ -54,6 +54,10 @@ CREATE TABLE IF NOT EXISTS comms_work (
     lead_id      TEXT,
     revision     TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS comms_client_links (
+    peer_key TEXT PRIMARY KEY,
+    farm_id  TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_comms_peer_ts ON comms (peer_key, ts DESC);
 
 CREATE TABLE IF NOT EXISTS channels (

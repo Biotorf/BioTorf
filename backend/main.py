@@ -41,7 +41,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
-from pydantic import AwareDatetime, BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, Field, StrictBool
 
 import auth
 import farms_index
@@ -54,6 +54,7 @@ import inventory
 import channels
 import chat_inbox
 import crm
+import crm_automation
 import users
 import whatsapp_client
 import whatsapp_templates
@@ -188,7 +189,7 @@ def _ensure_schema():
 
 
 # таблицы, которые ОБЯЗАНЫ существовать после успешной инициализации схемы
-_PG_SCHEMA_TABLES = ("comms", "chat_drafts", "comms_work", "channels", "channel_accounts",
+_PG_SCHEMA_TABLES = ("comms", "chat_drafts", "comms_work", "comms_client_links", "channels", "channel_accounts",
                      "crm_records", "logistics_docs", "users", "whatsapp_receipts")
 
 
@@ -759,6 +760,31 @@ class ChatWorkIn(ChatWorkRevision):
     leadId: str | None = Field(max_length=320)
 
 
+class ChatClientIn(ChatWorkRevision):
+    clientId: str | None = Field(default=None, max_length=320)
+    name: str = Field(default="", max_length=200)
+    type: str = Field(default="", max_length=100)
+    contactName: str = Field(default="", max_length=200)
+    phone: str = Field(default="", max_length=60)
+    assignee: str | None = Field(default=None, max_length=320)
+
+
+@app.get("/api/chat/{peer_key}/client")
+def chat_client_context(peer_key: str, request: Request):
+    try:
+        return chat_inbox.client_context(peer_key, request.state.user, request.state.role)
+    except chat_inbox.InboxError as exc:
+        raise HTTPException(exc.status, exc.detail) from exc
+
+
+@app.post("/api/chat/{peer_key}/client")
+def chat_client_save(peer_key: str, body: ChatClientIn, request: Request):
+    try:
+        return chat_inbox.save_client(peer_key, body.model_dump(), request.state.user, request.state.role)
+    except chat_inbox.InboxError as exc:
+        raise HTTPException(exc.status, exc.detail) from exc
+
+
 @app.put("/api/chat/{peer_key}/work")
 def chat_work_update(peer_key: str, body: ChatWorkIn, request: Request):
     try:
@@ -1106,12 +1132,20 @@ def mark_read(comm_id: str):
 
 @app.post("/api/comms/{comm_id}/link")
 def link_comm(comm_id: str, farmId: str = Query(...)):
-    with store.connect() as conn:
-        if not crm.get_record(conn, "farms", farmId):
-            raise HTTPException(404, "Хозяйство не найдено")
-    item = store.update(comm_id, {"farmId": farmId})
-    if not item:
-        raise HTTPException(404, "Коммуникация не найдена")
+    with store.connect() as conn, crm.write_transaction(conn) as tx:
+        if not crm.get_record(tx, "farms", farmId):
+            raise HTTPException(404, "Клиент не найден")
+        row = tx.execute("SELECT * FROM comms WHERE id=?", (comm_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Коммуникация не найдена")
+        item = store.to_dict(row)
+        if item["peerKey"]:
+            store.lock_client_peer(tx, item["peerKey"])
+            linked = store.linked_client(tx, item["peerKey"])
+            if linked and linked != farmId:
+                raise HTTPException(409, "Весь диалог уже связан с другим клиентом")
+        tx.execute("UPDATE comms SET farm_id=? WHERE id=?", (farmId, comm_id))
+        item["farmId"] = farmId
     try:
         with store.connect() as conn:
             crm.register_comm(conn, item)
@@ -1263,7 +1297,7 @@ def crm_seed(body: dict, request: Request):
                 continue
             for rec in items:
                 if rec.get("id"):
-                    crm.upsert(conn, coll, rec, rec["id"])
+                    crm.upsert(conn, coll, rec, rec["id"], actor=request.state.user, allow_new_automation=False)
                     loaded += 1
     return {"loaded": loaded}
 
@@ -1276,7 +1310,7 @@ def crm_put_state(body: dict, request: Request):
             raise HTTPException(403, f"Роль не может изменять таблицу «{coll}»")
     try:
         with closing(store.connect()) as conn:
-            return crm.put_state(conn, body)
+            return crm.put_state(conn, body, actor=request.state.user)
     except crm.ConflictError as e:
         raise _crm_conflict(e)
     except ValueError as e:
@@ -1294,6 +1328,26 @@ def _crm_conflict(error: crm.ConflictError) -> HTTPException:
 def _require_crm_admin(request: Request) -> None:
     if not auth.can_write(request.state.role, "admin"):
         raise HTTPException(403, "Заменить или очистить таблицу может руководитель")
+
+
+class AutomationRuleUpdate(BaseModel):
+    enabled: StrictBool
+
+
+@app.get("/api/automation/rules")
+def automation_rules(request: Request):
+    with closing(store.connect()) as conn:
+        return crm_automation.state(conn, auth.can_write(request.state.role, "admin"))
+
+
+@app.put("/api/automation/rules/{rule_id}")
+def automation_rule_update(rule_id: str, body: AutomationRuleUpdate, request: Request):
+    if not auth.can_write(request.state.role, "admin"):
+        raise HTTPException(403, "Изменять правила автоматизации может руководитель")
+    with closing(store.connect()) as conn:
+        if not crm_automation.configure(conn, rule_id, body.enabled, request.state.user):
+            raise HTTPException(404, "Правило автоматизации не найдено")
+        return crm_automation.state(conn, True)
 
 
 @app.get("/api/crm/journeys/{journey_id}/process")
@@ -1332,7 +1386,7 @@ def crm_import(coll: str, body: dict, request: Request):
         _require_crm_admin(request)
     try:
         with closing(store.connect()) as conn:
-            return crm.import_collection(conn, coll, records, mode)
+            return crm.import_collection(conn, coll, records, mode, actor=request.state.user, manual=body.get("manual") is True)
     except crm.ConflictError as e:
         raise _crm_conflict(e)
     except ValueError as e:
@@ -1345,16 +1399,16 @@ def crm_wipe(coll: str, request: Request):
     _check_coll(coll)
     _require_crm_admin(request)
     with closing(store.connect()) as conn:
-        removed = crm.wipe_collection(conn, coll)
+        removed = crm.wipe_collection(conn, coll, actor=request.state.user)
     return {"coll": coll, "removed": removed}
 
 
 @app.post("/api/crm/{coll}", status_code=201)
-def crm_create(coll: str, body: dict):
+def crm_create(coll: str, body: dict, request: Request):
     _check_coll(coll)
     try:
         with closing(store.connect()) as conn:
-            return crm.upsert(conn, coll, {**body, "_expectedRev": None})
+            return crm.upsert(conn, coll, {**body, "_expectedRev": None}, actor=request.state.user)
     except crm.ConflictError as e:
         raise _crm_conflict(e)
     except ValueError as e:
@@ -1362,11 +1416,11 @@ def crm_create(coll: str, body: dict):
 
 
 @app.put("/api/crm/{coll}/{rid}")
-def crm_update(coll: str, rid: str, body: dict):
+def crm_update(coll: str, rid: str, body: dict, request: Request):
     _check_coll(coll)
     try:
         with closing(store.connect()) as conn:
-            result = crm.upsert(conn, coll, body, rid, merge=True, require_existing=True)
+            result = crm.upsert(conn, coll, body, rid, merge=True, require_existing=True, actor=request.state.user)
     except crm.ConflictError as e:
         raise _crm_conflict(e)
     except ValueError as e:
@@ -1377,11 +1431,11 @@ def crm_update(coll: str, rid: str, body: dict):
 
 
 @app.delete("/api/crm/{coll}/{rid}", status_code=204)
-def crm_delete(coll: str, rid: str, revision: str | None = None):
+def crm_delete(coll: str, rid: str, request: Request, revision: str | None = None):
     _check_coll(coll)
     try:
         with closing(store.connect()) as conn:
-            if not crm.delete(conn, coll, rid, revision):
+            if not crm.delete(conn, coll, rid, revision, actor=request.state.user):
                 raise HTTPException(404, "Запись не найдена")
     except crm.ConflictError as e:
         raise _crm_conflict(e)
@@ -2249,6 +2303,7 @@ def reset():
     store.init_db()
     with store.connect() as conn:
         conn.execute("DELETE FROM comms")
+        conn.execute("DELETE FROM comms_client_links")
     return {"ok": True}
 
 
@@ -2272,7 +2327,9 @@ def dev_wipe(body: dict = {}):
             removed[coll] = crm.wipe_collection(store.connect(), coll)
         with store.connect() as conn:
             cur = conn.execute("DELETE FROM comms")
-        removed["comms"] = cur.rowcount
+            deleted_comms = cur.rowcount
+            conn.execute("DELETE FROM comms_client_links")
+        removed["comms"] = deleted_comms
     elif isinstance(colls, list):
         for coll in colls:
             if coll == "comms":

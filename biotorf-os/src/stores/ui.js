@@ -4,7 +4,7 @@ import { defineAsyncComponent, markRaw } from 'vue';
 // ── hash-роутинг: активный раздел живёт в URL (#/comms), поэтому при
 // обновлении страницы пользователь остаётся там же, а не сбрасывается в «Обзор»
 const VALID_VIEWS = [
-  'dashboard', 'registry', 'crm', 'comms', 'pipeline', 'pilots', 'knowledge', 'social',
+  'dashboard', 'automation', 'registry', 'crm', 'comms', 'pipeline', 'pilots', 'knowledge', 'social',
   'products', 'orders', 'production', 'warehouse', 'shipments', 'finance',
   'tasks', 'analytics', 'journey', 'calendar', 'media', 'notifications', 'employees', 'channels',
 ];

@@ -5,6 +5,7 @@ import CrmDataTable from '@/components/CrmDataTable.vue';
 // таблица сделок; клик — карточка сделки (§5), переход в сквозной процесс.
 import { computed, ref } from 'vue';
 import { useDbStore } from '@/stores/db';
+import { usePermissions } from '@/composables/usePermissions';
 import { useUiStore } from '@/stores/ui';
 import { useFormatters } from '@/composables/useFormatters';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
@@ -18,15 +19,20 @@ const importColl = ref('');   // непусто — открыта модалк�
 
 const db = useDbStore();
 const ui = useUiStore();
-const { money, num } = useFormatters();
-
-const deals = computed(() =>
-  db.deals.filter((d) => {
-    const q = ui.search.toLowerCase();
-    if (!q) return true;
-    return [d.title, d.owner, d.stage].join(' ').toLowerCase().includes(q);
-  })
-);
+const { money, num, day } = useFormatters();
+const { canEditCollection, canSeeFarm } = usePermissions();
+const mode = ref('board');
+const owner = ref('');
+const availableDeals = computed(() => db.deals.filter((deal) => {
+  const client = db.farmById(deal.farmId);
+  return !client || canSeeFarm(client);
+}));
+const owners = computed(() => [...new Set(availableDeals.value.map(({ owner }) => owner).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ru')));
+const deals = computed(() => {
+  const query = ui.search.trim().toLowerCase();
+  return availableDeals.value.filter((deal) => (!owner.value || deal.owner === owner.value) &&
+    (!query || [deal.title, deal.owner, dealStage(deal.stage), db.farmById(deal.farmId)?.name].join(' ').toLowerCase().includes(query)));
+});
 
 const columns = computed(() => {
   const byStage = new Map(DEAL_STAGES.map((stage) => [stage, []]));
@@ -35,7 +41,10 @@ const columns = computed(() => {
     if (!byStage.has(stage)) byStage.set(stage, []);
     byStage.get(stage).push(row);
   }
-  return [...byStage].map(([stage, items]) => ({ stage, items }));
+  return [...byStage].filter(([, items]) => items.length).map(([stage, items]) => ({
+    stage, items: items.slice().sort((a, b) => String(a.next || '9999').localeCompare(String(b.next || '9999'))),
+    amount: items.reduce((sum, item) => sum + (Number(item.amount) || 0), 0),
+  }));
 });
 
 const totalPipeline = computed(() =>
@@ -43,7 +52,7 @@ const totalPipeline = computed(() =>
 );
 
 function move(d, dir) {
-  if (d.journeyId) return;
+  if (d.journeyId || !canEditCollection('deals')) return;
   const i = DEAL_STAGES.indexOf(dealStage(d.stage));
   const stage = i < 0 ? DEAL_STAGES[0] : DEAL_STAGES[i + dir];
   if (stage) db.editEntity('deal', d.id, { stage });
@@ -59,36 +68,48 @@ function move(d, dir) {
         <div class="subtitle">Открытая воронка: {{ money(totalPipeline) }} · сделок: {{ deals.length }}</div>
       <BackendBadge collection="deals" />
       </div>
-      <input :value="ui.search" @input="ui.search = $event.target.value" class="input" style="max-width:260px" placeholder="Поиск по сделкам…" />
-      <button class="btn slim" @click="importColl = 'deals'" title="Загрузить сделки из CSV/JSON">⇪ Импорт</button>
-      <button class="btn primary slim" @click="rowModal = { coll: 'deals' }">＋ Сделка</button>
-    </div>
-
-    <!-- Канбан -->
-    <div class="kanban">
-      <div v-for="c in columns" :key="c.stage" class="kcol" v-show="c.items.length">
-        <div class="khead"><b>{{ c.stage }}</b><span class="mini">{{ c.items.length }}</span></div>
-        <div v-for="d in c.items" :key="d.id" class="kcard" @click="ui.openRecord('deal', d.id)">
-          <b>{{ d.title }}</b>
-          <div class="mini">{{ num(d.volumeL) }} л · {{ money(d.amount) }} · {{ d.owner }}</div>
-          <div style="display:flex;gap:6px;margin-top:4px">
-            <button v-if="!d.journeyId" class="btn slim" aria-label="Предыдущий этап" @click.stop="move(d, -1)">←</button>
-            <button v-if="!d.journeyId" class="btn slim" aria-label="Следующий этап" @click.stop="move(d, 1)">→</button>
-            <button v-if="d.journeyId" class="btn slim" @click.stop="ui.openJourney(d.journeyId)">Процесс</button>
-          </div>
-        </div>
+      <div v-if="canEditCollection('deals')" class="actionbar">
+        <button type="button" class="btn slim" @click="importColl = 'deals'">Импорт</button>
+        <button type="button" class="btn primary slim" @click="rowModal = { coll: 'deals' }">＋ Сделка</button>
       </div>
-      <div v-if="!deals.length" class="empty" style="width:100%">Сделок нет. Создайте лид → квалификацию → сделку в «Сквозном процессе».</div>
     </div>
 
-    <!-- Таблица -->
-    <section class="panel" style="margin-top:14px">
+    <div class="toolbar deal-tools">
+      <input v-model="ui.search" class="input" type="search" placeholder="Название, клиент, этап" aria-label="Поиск сделки" />
+      <select v-model="owner" class="select" aria-label="Ответственный">
+        <option value="">Все ответственные</option>
+        <option v-for="name in owners" :key="name">{{ name }}</option>
+      </select>
+      <div class="actionbar" aria-label="Вид сделок">
+        <button class="btn slim" :class="{ primary: mode === 'board' }" :aria-pressed="mode === 'board'" @click="mode = 'board'">Доска</button>
+        <button class="btn slim" :class="{ primary: mode === 'list' }" :aria-pressed="mode === 'list'" @click="mode = 'list'">Список</button>
+      </div>
+    </div>
+    <!-- Канбан -->
+    <div v-if="mode === 'board'" class="kanban" tabindex="0" aria-label="Доска по этапам">
+      <div v-for="c in columns" :key="c.stage" class="kcol">
+        <div class="khead"><strong>{{ c.stage }}</strong><span class="mini">{{ c.items.length }} · {{ money(c.amount) }}</span></div>
+        <article v-for="d in c.items" :key="d.id" class="kcard">
+          <a v-if="d.journeyId" :href="'#/journey?id=' + encodeURIComponent(d.journeyId)">{{ d.title }}</a>
+          <button v-else type="button" class="open-deal" @click="ui.openRecord('deal', d.id)">{{ d.title }}</button>
+          <div class="mini">{{ num(d.volumeL) }} л · {{ money(d.amount) }} · {{ d.owner }}</div>
+          <div v-if="d.next" class="mini">Следующий контакт {{ day(d.next) }}</div>
+          <div v-if="canEditCollection('deals') && !d.journeyId" class="actionbar" style="margin-top:4px">
+            <button class="btn slim" aria-label="Предыдущий этап" @click.stop="move(d, -1)">←</button>
+            <button class="btn slim" aria-label="Следующий этап" @click.stop="move(d, 1)">→</button>
+          </div>
+        </article>
+      </div>
+      <div v-if="!deals.length" class="empty" style="width:100%">Сделок по этим условиям нет.</div>
+    </div>
+
+    <section v-else class="panel">
       <div class="panel-head"><div class="panel-title">Реестр сделок</div></div>
       <CrmDataTable coll="deals" :rows="deals" empty="Нет сделок по текущему фильтру.">
         <template #actions="{ row: d }">
           <button class="btn slim ghost" @click="ui.openRecord('deal', d.id)">Открыть</button>
           <button v-if="d.journeyId" class="btn slim ghost" @click="ui.openJourney(d.journeyId)">Процесс</button>
-          <button class="btn slim ghost" @click="rowModal = { coll: 'deals', record: d }">Изменить</button>
+          <button v-if="canEditCollection('deals')" class="btn slim ghost" @click="rowModal = { coll: 'deals', record: d }">Изменить</button>
         </template>
       </CrmDataTable>
     </section>
@@ -101,9 +122,11 @@ function move(d, dir) {
 <style scoped>
 .kanban { display: flex; gap: 10px; overflow-x: auto; align-items: flex-start; }
 .kcol { min-width: 220px; max-width: 260px; background: #f3f4f6; border-radius: 8px; padding: 8px; }
-.khead { display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 13px; }
-.kcard { background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; padding: 8px; margin-bottom: 6px; cursor: pointer; font-size: 13px; }
+.khead { display: grid; margin-bottom: 8px; gap: 3px; font-size: 13px; }
+.kcard { background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; padding: 8px; margin-bottom: 6px; font-size: 13px; }
 .kcard:hover { border-color: #1f7a3f; }
-.row-click { cursor: pointer; }
-.row-click:hover td { background: rgba(31, 122, 63, 0.06); }
+.deal-tools { justify-content: flex-start; }
+.deal-tools .select { max-width: 215px; }
+.kcard > a, .open-deal { font-weight: 720; display: inline-block; margin-bottom: 3px; }
+.open-deal { background: transparent; border: 0; padding: 0; color: var(--green); text-align: start; }
 </style>

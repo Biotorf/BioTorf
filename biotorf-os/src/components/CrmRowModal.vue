@@ -252,7 +252,9 @@ async function save() {
       if (props.coll === 'orders' && rec.amount == null) rec.amount = total;
     }
     if (props.record?._updatedAt) rec._expectedRev = props.record._updatedAt;
-    const result = await db.importCollection(props.coll, [rec], 'merge');
+    const isInvoice = props.coll === 'invoices';
+    const result = await db.importCollection(props.coll, [rec], 'merge', isInvoice);
+    if (isInvoice && db.serverOnline) await db.pullCrmState();
     const options = {};
     for (const k of fields.value) {
       const key = listKeyFor(k);
@@ -308,6 +310,7 @@ async function removeRecord() {
   error.value = ''; busy.value = true;
   try {
     await db.deleteRow(props.coll, props.record.id);
+    if (props.coll === 'invoices' && db.serverOnline) await db.pullCrmState();
     emit('deleted', props.record.id);
     emit('close');
   } catch (e) {

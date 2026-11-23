@@ -36,7 +36,7 @@ export const crmApi = {
   },
   journeyProcess: (journeyId) => req(`/api/crm/journeys/${journeyId}/process`),
   // массовая загрузка таблицы (CSV-импорт): mode = merge | replace
-  importCollection: (coll, records, mode = 'merge') =>
-    req(`/api/crm/${coll}/import`, { method: 'POST', body: JSON.stringify({ records, mode }) }),
+  importCollection: (coll, records, mode = 'merge', manual = false) =>
+    req(`/api/crm/${coll}/import`, { method: 'POST', body: JSON.stringify({ records, mode, manual }) }),
   wipeCollection: (coll) => req(`/api/crm/${coll}`, { method: 'DELETE' }),
 };

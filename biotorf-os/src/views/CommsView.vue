@@ -25,6 +25,18 @@ function applyInboxWork(key, work) {
   if (chat) chat.work = work;
 }
 
+async function applySavedClient(key, { client, work }) {
+  ++loadVersion;
+  const chat = chatList.value.find((row) => row.key === key);
+  if (chat) {
+    chat.farmId = client.id;
+    chat.work = work;
+    for (const message of chat.messages || []) message.farmId = client.id;
+  }
+  await Promise.allSettled([db.pullCrmState(), db.syncComms(true)]);
+  if (activeKey.value === key) await loadChats(true, key);
+}
+
 // фильтр сети (канала) прямо в списке чатов
 const chatKindFilter = ref(localStorage.getItem('biotorf_chat_kind') || 'all');
 function setChatKind(k) { chatKindFilter.value = k; localStorage.setItem('biotorf_chat_kind', k); }
@@ -40,8 +52,6 @@ const newChatOpen = ref(false);
 const templateMode = ref(false);
 const newChat = ref({ kind: 'telegram', handle: '', phone: '', contact: '', text: '' });
 const newChatError = ref('');
-const linkFarmId = ref('');
-const linkBusy = ref(false);
 
 // ── динамические каналы (реестр бэкенда: Instagram, VK, Авито и т.д.) ──
 import { channelsApi } from '../api/channelsClient';
@@ -191,7 +201,6 @@ async function openChat(chat, doRead = true) {
   if (activeKey.value !== chat.key) {
     activeKey.value = chat.key;
     sendKind.value = '';
-    linkFarmId.value = '';
     chatInput.value = getDraft(chat.key);
     chatError.value = '';
     chatNotice.value = '';
@@ -352,25 +361,6 @@ function deliveryLabel(status) {
     'В очереди': 'В очереди',
     'Ошибка доставки': 'Ошибка доставки',
   })[status] || '';
-}
-
-function chatGoClient(c) {
-  if (c.farmId) ui.openClient(c.farmId);
-}
-
-async function linkChat() {
-  const chat = activeChat.value;
-  const farmId = linkFarmId.value;
-  if (!online.value || !farmId || !chat?.lastMessage?.id || linkBusy.value) return;
-  linkBusy.value = true;
-  chatError.value = '';
-  try {
-    await commsApi.link(chat.lastMessage.id, farmId);
-    await db.syncComms(true);
-    await loadChats(true, chat.key);
-    linkFarmId.value = '';
-  } catch (error) { chatError.value = error.message; }
-  finally { linkBusy.value = false; }
 }
 
 const KIND_META = {
@@ -656,7 +646,7 @@ onBeforeUnmount(() => {
           <template v-if="activeChat">
             <header class="chat-head">
               <div>
-                <div class="chat-head-name" :class="{ 'txt-link': !!activeChat.farmId }" @click="chatGoClient(activeChat)">
+                <div class="chat-head-name">
                   {{ peerTitle(activeChat) }}
                 </div>
                 <div class="mini">{{ channelMeta[activeChat.kind]?.label || activeChat.kind }} · {{ peerSub(activeChat) || 'диалог' }}</div>
@@ -674,14 +664,7 @@ onBeforeUnmount(() => {
               </span>
             </header>
             <CommsInboxWork v-if="online && activeChat.work" :key="activeChat.key" :chat="activeChat"
-                            :staff="inboxStaff" @updated="applyInboxWork" />
-            <div v-if="online && !activeChat.farmId && !activeChat.lastMessage?.id?.startsWith('C-local-')" class="chat-link">
-              <select v-model="linkFarmId" class="select" aria-label="Клиент для привязки">
-                <option value="">Выберите клиента</option>
-                <option v-for="farm in db.farms" :key="farm.id" :value="farm.id">{{ farm.name }}</option>
-              </select>
-              <button class="btn slim" :disabled="!linkFarmId || linkBusy" @click="linkChat">Привязать</button>
-            </div>
+                            :staff="inboxStaff" @updated="applyInboxWork" @client-saved="applySavedClient" />
             <div ref="msgBox" class="chat-messages">
               <template v-for="(m, i) in chatMessages" :key="m.seq ?? m.id">
                 <div v-if="dayGap(chatMessages, i)" class="day-divider"><span>{{ fmtDay(m.ts) }}</span></div>
@@ -777,8 +760,6 @@ onBeforeUnmount(() => {
 .chat-window { flex:1; display:flex; flex-direction:column; min-width:0; background:#eef3ee; }
 .chat-head { display:flex; align-items:center; justify-content:space-between; padding:10px 16px; background:#fff; border-bottom:1px solid #e7ece8; }
 .chat-head-name { font-weight:800; font-size:14.5px; }
-.chat-link { display:flex; gap:8px; padding:8px 16px; background:#fff; }
-.chat-link .select { max-width:320px; }
 .chat-messages { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:6px; }
 .day-divider { text-align:center; margin:10px 0 6px; }
 .day-divider span { background:#dfe8df; color:#5b6b60; font-size:11px; font-weight:700; padding:3px 10px; border-radius:10px; }

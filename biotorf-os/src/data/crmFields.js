@@ -1,5 +1,5 @@
 const SCHEMAS = {
-  farms:      ['id', 'name', 'type', 'region', 'crop', 'area', 'owner', 'status', 'next', 'phone', 'source', 'notes'],
+  farms:      ['id', 'name', 'type', 'region', 'crop', 'area', 'owner', 'status', 'next', 'phone', 'email', 'address', 'taxId', 'source', 'notes'],
   leads:      ['id', 'name', 'contactName', 'phone', 'company', 'farmId', 'region', 'source', 'owner', 'status', 'next'],
   deals:      ['id', 'title', 'farmId', 'journeyId', 'stage', 'volumeL', 'amount', 'owner', 'next'],
   orders:     ['id', 'number', 'farmId', 'dealId', 'journeyId', 'quoteId', 'date', 'sku', 'product', 'qty', 'unit', 'items', 'amount', 'status', 'owner'],
@@ -34,7 +34,7 @@ export const COLL_RU = {
 };
 
 export const FIELD_RU = {
-  id: 'ID', name: 'Название', contactName: 'Контактное лицо', phone: 'Телефон',
+  id: 'ID', name: 'Название', address: 'Адрес', taxId: 'ИНН', contactName: 'Контактное лицо', phone: 'Телефон',
   company: 'Компания', region: 'Регион', source: 'Источник', owner: 'Ответственный',
   status: 'Статус', next: 'Следующее действие', notes: 'Заметки', type: 'Тип',
   crop: 'Культура', area: 'Площадь', title: 'Название / тема', farmId: 'Клиент',

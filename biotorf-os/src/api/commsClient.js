@@ -50,8 +50,12 @@ async function req(path, options = {}) {
     const raw = await resp.text();
     let detail;
     try { detail = JSON.parse(raw).detail; } catch { /* ответ прокси может быть не JSON */ }
-    throw new Error(typeof detail === 'string' && resp.status !== 401 && resp.status !== 403
-      ? detail : `Comms API ${resp.status}: ${raw}`);
+    const message = typeof detail === 'string' ? detail : detail?.message;
+    const error = new Error(message && resp.status !== 401 && resp.status !== 403
+      ? message : `Comms API ${resp.status}: ${raw}`);
+    error.status = resp.status;
+    error.detail = detail;
+    throw error;
   }
   if (resp.status === 204) return null;
   return resp.json();
@@ -102,6 +106,8 @@ export const commsApi = {
   assignees: () => req('/api/chat-assignees'),
   updateWork: (peerKey, work) => req(`/api/chat/${encodeURIComponent(peerKey)}/work`, { method: 'PUT', body: JSON.stringify(work) }),
   createLead: (peerKey, revision) => req(`/api/chat/${encodeURIComponent(peerKey)}/lead`, { method: 'POST', body: JSON.stringify({ revision }) }),
+  clientContext: (peerKey) => req(`/api/chat/${encodeURIComponent(peerKey)}/client`),
+  saveClient: (peerKey, body) => req(`/api/chat/${encodeURIComponent(peerKey)}/client`, { method: 'POST', body: JSON.stringify(body) }),
   markChatRead: (peerKey) => req(`/api/chat/${encodeURIComponent(peerKey)}/read`, { method: 'POST' }),
   saveDraft: (peerKey, draft) => req(`/api/chat/${encodeURIComponent(peerKey)}/draft`, { method: 'PUT', body: JSON.stringify({ draft }) }),
   sendToChat: (peerKey, text, kind = null) => req(`/api/chat/${encodeURIComponent(peerKey)}/send`, { method: 'POST', body: JSON.stringify({ text, kind }) }),

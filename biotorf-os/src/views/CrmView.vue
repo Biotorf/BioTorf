@@ -3,6 +3,8 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
 import { usePermissions } from '@/composables/usePermissions';
+import { CLIENT_TYPES, clientInitials, isPerson, phoneDigits, primaryContact } from '@/data/clientDesk';
+import { statusOptions } from '@/data/crmFields';
 import { useFormatters } from '@/composables/useFormatters';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 import CrmImportModal from '@/components/CrmImportModal.vue';
@@ -14,22 +16,24 @@ const ui = useUiStore();
 const { day } = useFormatters();
 const { canSeeFarm, canEditCollection } = usePermissions();
 
-function clientIdFromUrl() {
-  return new URLSearchParams(location.hash.split('?')[1]).get('client');
-}
-
-const selected = ref(clientIdFromUrl());
-function readClientId() { selected.value = clientIdFromUrl(); }
-onMounted(() => window.addEventListener('hashchange', readClientId));
-onUnmounted(() => window.removeEventListener('hashchange', readClientId));
+function routeQuery() { return new URLSearchParams(location.hash.split('?')[1]); }
+const selected = ref(routeQuery().get('client'));
 function clientLink(id) { return '#/crm?' + new URLSearchParams({ client: id }); }
 
 const category = ref('all');
-const clientTypes = [
-  'Частный покупатель', 'Компания', 'Агропроизводитель', 'Розничный магазин',
-  'Оптовая база', 'Дилер', 'Дистрибьютор', 'Другой',
-];
-const personTypes = new Set(['частный покупатель', 'физическое лицо', 'физлицо', 'частное лицо']);
+const owner = ref('');
+const status = ref('');
+const sortBy = ref('next');
+const SEARCH_MODE_KEY = 'biotorf.clients.layout';
+let storedMode;
+try { storedMode = localStorage.getItem(SEARCH_MODE_KEY); } catch { /* storage disabled */ }
+const mode = ref(storedMode === 'list' ? 'list' : 'cards');
+watch(mode, (value) => {
+  try { localStorage.setItem(SEARCH_MODE_KEY, value); } catch { /* storage disabled */ }
+});
+const visibleClients = computed(() => db.farms.filter(canSeeFarm));
+const owners = computed(() => [...new Set(visibleClients.value.map((client) => client.owner).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b), 'ru')));
+const statuses = computed(() => statusOptions('farms', visibleClients.value));
 const contactsByClient = computed(() => {
   const result = new Map();
   for (const contact of db.data.contacts || []) {
@@ -39,59 +43,98 @@ const contactsByClient = computed(() => {
   }
   return result;
 });
-function customerPhone(client) {
-  const contacts = contactsByClient.value.get(client.id) || [];
-  return client.phone || contacts.find((contact) => contact.primary && contact.phone)?.phone ||
-    contacts.find((contact) => contact.phone)?.phone;
-}
+const clientInfo = computed(() => {
+  const profiles = new Map();
+  for (const client of visibleClients.value) {
+    const contacts = contactsByClient.value.get(client.id) || [];
+    const primary = primaryContact(contacts);
+    const phone = client.phone || primary?.phone || contacts.find((contact) => contact.phone)?.phone;
+    profiles.set(client.id, { contacts, primary, phone, email: client.email || primary?.email });
+  }
+  return profiles;
+});
 const customers = computed(() => {
   const query = ui.search.trim().toLowerCase();
-  const digits = query.replace(/\D/g, '');
-  return db.farms.filter(canSeeFarm).filter((client) => {
-    const type = String(client.type || '').trim().toLowerCase();
-    const person = personTypes.has(type);
+  const digits = phoneDigits(query);
+  const includesQuery = (value) => String(value || '').toLowerCase().includes(query);
+  return visibleClients.value.filter((client) => {
+    const person = isPerson(client.type);
     if (category.value === 'person' && !person) return false;
-    if (category.value === 'company' && (person || !type)) return false;
-    const contacts = contactsByClient.value.get(client.id) || [];
-    const phone = customerPhone(client);
-    return !query ||
-      [client.name, client.owner, client.region, client.type, phone, ...contacts.map((c) => c.name)]
-        .some((value) => String(value || '').toLowerCase().includes(query)) ||
-      (digits.length >= 3 && [phone, ...contacts.map((c) => c.phone)]
-        .some((value) => String(value || '').replace(/\D/g, '').includes(digits)));
+    if (category.value === 'company' && (person || !client.type)) return false;
+    if (owner.value && client.owner !== owner.value) return false;
+    if (status.value && client.status !== status.value) return false;
+    if (!query) return true;
+    const { phone, email, contacts } = clientInfo.value.get(client.id);
+    return [client.name, client.owner, client.region, client.type, client.taxId, phone, email]
+      .some(includesQuery) || contacts.some((contact) =>
+      [contact.name, contact.phone, contact.email].some(includesQuery)) ||
+      (digits.length >= 3 && [phone, ...contacts.map((contact) => contact.phone)]
+        .some((value) => phoneDigits(value).includes(digits)));
   }).sort((first, second) => {
-    const dateOrder = String(first.next || '9999').localeCompare(String(second.next || '9999'));
-    return dateOrder || String(first.name || first.id).localeCompare(String(second.name || second.id), 'ru');
+    const nameOrder = String(first.name || first.id).localeCompare(String(second.name || second.id), 'ru');
+    if (sortBy.value === 'name') return nameOrder;
+    if (sortBy.value === 'updated') {
+      return String(second._updatedAt || second.createdAt || '').localeCompare(String(first._updatedAt || first.createdAt || '')) || nameOrder;
+    }
+    return String(first.next || '9999').localeCompare(String(second.next || '9999')) || nameOrder;
   });
 });
 const page = ref(1);
 const pageSize = 36;
 const pageCount = computed(() => Math.ceil(customers.value.length / pageSize));
 const shownCustomers = computed(() => customers.value.slice((page.value - 1) * pageSize, page.value * pageSize));
-watch([category, () => ui.search], () => { page.value = 1; });
+watch([category, owner, status, sortBy, () => ui.search], () => { page.value = 1; });
 watch(pageCount, (value) => { if (page.value > value) page.value = Math.max(1, value); });
 
 const importing = ref('');
 const creating = ref(false);
 const saving = ref(false);
 const createError = ref('');
-const detail = ref({ name: '', type: '', phone: '' });
+const detail = ref({});
 function openCreate() {
-  detail.value = { name: '', type: '', phone: '' };
+  if (!canEditCollection('farms') || creating.value) return;
+  detail.value = { name: '', type: '', phone: '', email: '', region: '', address: '', taxId: '', source: '', notes: '', next: '' };
   createError.value = '';
   creating.value = true;
 }
+function readRoute() {
+  const route = routeQuery();
+  selected.value = route.get('client');
+  if (!selected.value && route.get('new') === '1') openCreate();
+  else creating.value = false;
+}
+onMounted(() => {
+  readRoute();
+  window.addEventListener('hashchange', readRoute);
+});
+onUnmounted(() => window.removeEventListener('hashchange', readRoute));
+function startCreate() { location.hash = '#/crm?new=1'; }
+function cancelCreate() { location.hash = '#/crm'; }
+
+const match = computed(() => {
+  const phone = phoneDigits(detail.value.phone);
+  const email = detail.value.email?.trim().toLowerCase();
+  if (phone.length < 7 && !email) return null;
+  return visibleClients.value.find((client) => {
+    const profile = clientInfo.value.get(client.id);
+    return (phone.length >= 7 && [profile.phone, ...profile.contacts.map((contact) => contact.phone)]
+      .some((value) => phoneDigits(value) === phone)) ||
+      (email && [profile.email, ...profile.contacts.map((contact) => contact.email)]
+        .some((value) => String(value || '').trim().toLowerCase() === email));
+  });
+});
 async function createClient() {
-  if (saving.value) return;
+  if (saving.value || !canEditCollection('farms')) return;
   const name = detail.value.name.trim();
   if (!name) return;
   saving.value = true;
   createError.value = '';
   try {
     const id = db.uid('F');
+    const values = Object.fromEntries(Object.entries(detail.value).map(([key, value]) => [key, value.trim()])
+      .filter(([, value]) => value));
     await db.importCollection('farms', [{
-      id, name, type: detail.value.type, phone: detail.value.phone.trim(),
-      owner: ui.name || ui.login, status: 'Активный',
+      ...values, id, name, owner: ui.name || ui.login, status: 'Активный', createdAt: new Date().toISOString(),
     }], 'merge');
     creating.value = false;
     location.hash = clientLink(id);
@@ -100,10 +143,6 @@ async function createClient() {
   } finally {
     saving.value = false;
   }
-}
-
-function initials(name) {
-  return String(name || '').trim().split(/\s+/).slice(0, 2).map((part) => part[0]).join('').toUpperCase() || 'К';
 }
 </script>
 
@@ -123,7 +162,7 @@ function initials(name) {
         </div>
         <div class="actionbar">
           <BackendBadge collection="farms" />
-          <button v-if="canEditCollection('farms')" class="btn primary" @click="openCreate">＋ Новый клиент</button>
+          <button v-if="canEditCollection('farms')" class="btn primary" @click="startCreate">＋ Новый клиент</button>
         </div>
       </header>
 
@@ -136,41 +175,80 @@ function initials(name) {
           <label class="field">Тип клиента
             <select v-model="detail.type" class="select" aria-label="Тип нового клиента">
               <option value="">Выбрать позже</option>
-              <option v-for="type in clientTypes" :key="type">{{ type }}</option>
+              <option v-for="type in CLIENT_TYPES" :key="type">{{ type }}</option>
             </select>
           </label>
           <label class="field">Телефон
             <input v-model="detail.phone" type="tel" autocomplete="tel" class="input" placeholder="+996" />
           </label>
         </div>
+        <details class="more-client-fields">
+          <summary>Дополнительные данные</summary>
+          <div class="create-fields">
+            <label class="field">E-mail <input v-model="detail.email" class="input" type="email" autocomplete="email" /></label>
+            <label class="field">Регион <input v-model="detail.region" class="input" /></label>
+            <label class="field">ИНН <input v-model="detail.taxId" class="input" inputmode="numeric" /></label>
+            <label class="field">Адрес <input v-model="detail.address" class="input" autocomplete="street-address" /></label>
+            <label class="field">Источник <input v-model="detail.source" class="input" placeholder="Например, рекомендация" /></label>
+            <label class="field">Связаться <input v-model="detail.next" class="input" type="date" /></label>
+            <label class="field detailed-note">Заметки <textarea v-model="detail.notes" class="input" rows="2" /></label>
+          </div>
+        </details>
+        <p v-if="match" class="duplicate-hint">Похожий контакт уже есть. <a :href="clientLink(match.id)">{{ match.name }}</a></p>
         <p v-if="createError" role="alert" class="danger-text">{{ createError }}</p>
         <div class="actionbar">
-          <button type="button" class="btn ghost" :disabled="saving" @click="creating = false">Отмена</button>
+          <button type="button" class="btn ghost" :disabled="saving" @click="cancelCreate">Отмена</button>
           <button class="btn primary" :disabled="saving || !detail.name.trim()">{{ saving ? 'Сохраняем…' : 'Создать карточку' }}</button>
         </div>
       </form>
 
-      <div class="client-list-tools">
-        <input v-model="ui.search" type="search" class="input" aria-label="Поиск клиентов" placeholder="Имя, компания, телефон…" />
-        <select v-model="category" class="select" aria-label="Тип клиента">
-          <option value="all">Все клиенты</option>
-          <option value="company">Компании и хозяйства</option>
-          <option value="person">Частные лица</option>
-        </select>
-      </div>
+      <section class="customer-directory" aria-label="Фильтры клиентов">
+        <div class="client-list-tools">
+          <input v-model="ui.search" type="search" class="input" aria-label="Поиск клиентов" placeholder="Имя, компания, телефон, e-mail…" />
+          <select v-model="category" class="select" aria-label="Тип клиента">
+            <option value="all">Все типы</option>
+            <option value="company">Компании и хозяйства</option>
+            <option value="person">Частные лица</option>
+          </select>
+          <select v-model="owner" class="select" aria-label="Менеджер">
+            <option value="">Все менеджеры</option>
+            <option v-for="name in owners" :key="name">{{ name }}</option>
+          </select>
+          <select v-model="status" class="select" aria-label="Статус клиента">
+            <option value="">Все статусы</option>
+            <option v-for="value in statuses" :key="value">{{ value }}</option>
+          </select>
+        </div>
+        <div class="directory-tools">
+          <span class="mini" aria-live="polite">Найдено {{ customers.length }} из {{ visibleClients.length }}</span>
+          <div class="view-tools">
+            <select v-model="sortBy" class="select sort" aria-label="Сортировка">
+              <option value="next">По дате контакта</option>
+              <option value="name">По имени</option>
+              <option value="updated">Недавно изменённые</option>
+            </select>
+            <div class="display-choice" aria-label="Вид списка">
+              <button type="button" :aria-pressed="mode === 'cards'" @click="mode = 'cards'">Карточки</button>
+              <button type="button" :aria-pressed="mode === 'list'" @click="mode = 'list'">Список</button>
+            </div>
+          </div>
+        </div>
+      </section>
 
-      <ul v-if="customers.length" class="customer-grid" aria-label="Карточки клиентов">
+      <ul v-if="customers.length && mode === 'cards'" class="customer-grid" aria-label="Карточки клиентов">
         <li v-for="client in shownCustomers" :key="client.id">
           <a :href="clientLink(client.id)" class="customer-tile">
             <div class="customer-tile-head">
-              <span class="customer-avatar" aria-hidden="true">{{ initials(client.name) }}</span>
+              <span class="customer-avatar" aria-hidden="true">{{ clientInitials(client.name) }}</span>
               <div>
                 <h2>{{ client.name || client.id }}</h2>
-                <p>{{ [client.type, client.region].filter(Boolean).join(' · ') || 'Карточка клиента' }}</p>
+                <p v-if="client.type || client.region">{{ [client.type, client.region].filter(Boolean).join(' · ') }}</p>
               </div>
             </div>
             <dl class="customer-info">
-              <div v-if="customerPhone(client)"><dt>Телефон</dt><dd>{{ customerPhone(client) }}</dd></div>
+              <div v-if="clientInfo.get(client.id).phone"><dt>Телефон</dt><dd>{{ clientInfo.get(client.id).phone }}</dd></div>
+              <div v-if="clientInfo.get(client.id).email"><dt>E-mail</dt><dd>{{ clientInfo.get(client.id).email }}</dd></div>
+              <div v-if="clientInfo.get(client.id).primary?.name"><dt>Контакт</dt><dd>{{ clientInfo.get(client.id).primary.name }}</dd></div>
               <div v-if="client.owner"><dt>Менеджер</dt><dd>{{ client.owner }}</dd></div>
               <div v-if="client.next"><dt>Следующий контакт</dt><dd>{{ day(client.next) }}</dd></div>
             </dl>
@@ -181,8 +259,26 @@ function initials(name) {
           </a>
         </li>
       </ul>
+      <div v-else-if="customers.length" class="table-wrap directory-table">
+        <table class="table">
+          <thead><tr><th>Клиент</th><th>Связь</th><th>Менеджер</th><th>Следующий контакт</th><th>Статус</th></tr></thead>
+          <tbody>
+            <tr v-for="client in shownCustomers" :key="client.id">
+              <td><a :href="clientLink(client.id)" class="client-name">{{ client.name || client.id }}</a><small>{{ [client.type, client.region].filter(Boolean).join(' · ') }}</small></td>
+              <td>
+                <a v-if="clientInfo.get(client.id).phone" :href="'tel:' + clientInfo.get(client.id).phone">{{ clientInfo.get(client.id).phone }}</a>
+                <small v-if="clientInfo.get(client.id).email"><a :href="'mailto:' + clientInfo.get(client.id).email">{{ clientInfo.get(client.id).email }}</a></small>
+                <span v-if="!clientInfo.get(client.id).phone && !clientInfo.get(client.id).email">—</span>
+              </td>
+              <td>{{ client.owner || '—' }}</td>
+              <td>{{ client.next ? day(client.next) : '—' }}</td>
+              <td><StatusPill v-if="client.status" :status="client.status" /><span v-else>—</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
       <div v-else class="empty">
-        {{ ui.search || category !== 'all' ? 'По выбранным условиям клиентов нет.' : 'Пока нет клиентов.' }}
+        {{ ui.search || category !== 'all' || owner || status ? 'По выбранным условиям клиентов нет.' : 'Пока нет клиентов.' }}
       </div>
       <nav v-if="pageCount > 1" class="customer-pagination" aria-label="Страницы списка клиентов">
         <button class="btn slim" :disabled="page === 1" @click="page -= 1">Назад</button>
@@ -209,13 +305,26 @@ function initials(name) {
 .create-client { padding: 16px; margin-bottom: 16px; }
 .create-client h2 { margin: 0 0 12px; font-size: 17px; }
 .create-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 12px; }
-.client-list-tools { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 16px; }
+
+.customer-directory { background: #fff; border: 1px solid #dce9de; border-radius: 14px; padding: 12px; margin-bottom: 14px; }
+.client-list-tools, .directory-tools, .view-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.directory-tools { justify-content: space-between; border-top: 1px solid #edf2ef; margin-top: 12px; padding-top: 8px; }
+.view-tools .sort { width: auto; font-size: 13px; max-width: 100%; }
+.display-choice { display: flex; border: 1px solid #dce9de; border-radius: 9px; padding: 2px; }
+.display-choice button { border: 0; border-radius: 6px; padding: 5px 9px; color: #52665b; background: #fff; font-size: 13px; }
+.display-choice button[aria-pressed="true"] { color: #176548; background: #e6f3eb; font-weight: 650; }
+.more-client-fields { margin: 0 0 12px; }
+.more-client-fields summary { cursor: pointer; color: #286749; margin-bottom: 8px; }
+.detailed-note { grid-column: 1 / -1; }
+.duplicate-hint { background: #fff8e9; color: #7b5a1b; border-radius: 8px; padding: 8px; }
+.directory-table small { display: block; color: #52665b; }
+.client-name { text-decoration: none; font-weight: 700; }
 .client-list-tools .input { max-width: 330px; }
 .client-table-tools { margin-top: 17px; }
 .client-table-tools summary { cursor: pointer; color: #52665b; margin-bottom: 8px; }
 .client-list-tools .select { width: auto; }
 .customer-pagination { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 14px; }
-.customer-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 12px; margin: 0; padding: 0; list-style: none; }
+.customer-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 265px), 1fr)); gap: 12px; margin: 0; padding: 0; list-style: none; }
 .customer-tile { display: flex; flex-direction: column; gap: 14px; height: 100%; padding: 16px; text-decoration: none; color: inherit; background: #fff; border: 1px solid #dce9de; border-radius: 14px; box-shadow: 0 1px 2px #122a1d0a; }
 .customer-tile:hover, .customer-tile:focus-visible { border-color: #5aa978; }
 .customer-tile-head, .customer-tile-foot { display: flex; gap: 10px; align-items: center; }
@@ -228,4 +337,10 @@ function initials(name) {
 .customer-info div { display: flex; flex-wrap: wrap; gap: 4px 8px; justify-content: space-between; }
 .customer-info dt { color: #52665b; }
 .customer-info dd { margin: 0; overflow-wrap: anywhere; }
+
+@media (max-width: 600px) {
+  .client-list-tools .input { max-width: none; flex-basis: 100%; }
+  .client-list-tools .select { flex: 1; min-width: 110px; }
+  .directory-tools { align-items: flex-start; }
+}
 </style>

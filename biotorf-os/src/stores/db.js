@@ -704,7 +704,7 @@ export const useDbStore = defineStore('db', {
         return Object.fromEntries(headers.map((h, i) => [h, r[i].trim()]));
       }).filter((o) => Object.values(o).some((v) => v !== ''));
     },
-    async importCollection(coll, records, mode = 'merge') {
+    async importCollection(coll, records, mode = 'merge', manual = false) {
       if (!SYNC_COLLECTIONS.includes(coll)) throw new Error('Неизвестная таблица: ' + coll);
       if (!Array.isArray(records) || !records.length) throw new Error('Пустой набор данных для импорта');
       const prepared = records.map((raw) => {
@@ -723,7 +723,7 @@ export const useDbStore = defineStore('db', {
         if (apiOn() && (mode === 'replace' ? pending.size : prepared.some((row) => pending.has(row.id)))) {
           await this.flushCrmChanges();
         }
-        const response = apiOn() ? await crmApi.importCollection(coll, prepared, mode) : null;
+        const response = apiOn() ? await crmApi.importCollection(coll, prepared, mode, manual) : null;
         const rows = new Map((mode === 'replace' ? [] : this.data[coll] || []).map((row) => [String(row.id), row]));
         let created = 0, updated = 0;
         for (const row of response?.records || prepared) {

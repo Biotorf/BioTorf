@@ -173,7 +173,20 @@ def _write(tx, coll: str, rec: dict, rid: str) -> dict:
     return {**rec, "_updatedAt": stamp}
 
 
-def upsert(conn, coll: str, rec: dict, rid: str | None = None, *, merge=False, require_existing=False) -> dict | None:
+def _invoice_automation(tx, coll, rid, current, saved, *, actor, allow_new=True):
+    if coll == "invoices":
+        import crm_automation
+        crm_automation.invoice_changed(tx, rid, current, saved, actor=actor, allow_new=allow_new)
+
+
+def _write_crm_record(tx, coll, document, rid, current, *, actor, allow_new_automation=True):
+    saved = _write(tx, coll, document, rid)
+    _invoice_automation(tx, coll, rid, current, saved, actor=actor, allow_new=allow_new_automation)
+    return saved
+
+
+def upsert(conn, coll: str, rec: dict, rid: str | None = None, *, merge=False, require_existing=False,
+           actor: str = "CRM", allow_new_automation: bool = True) -> dict | None:
     rid = _row_id(rid or rec.get("id"), coll)
     expected = rec.get("_expectedRev", _NO_REVISION)
     with write_transaction(conn) as tx:
@@ -187,7 +200,8 @@ def upsert(conn, coll: str, rec: dict, rid: str | None = None, *, merge=False, r
         document = _record_data({**current, **rec} if merge and current else rec, rid)
         if current and document == _record_data(current, rid):
             return current
-        return _write(tx, coll, document, rid)
+        return _write_crm_record(tx, coll, document, rid, current, actor=actor,
+                                 allow_new_automation=allow_new_automation)
 
 
 def _remember_deletions(tx, coll: str, rid: str | None = None):
@@ -201,7 +215,7 @@ def _remember_deletions(tx, coll: str, rid: str | None = None):
     )
 
 
-def delete(conn, coll: str, rid: str, expected_revision=None) -> bool:
+def delete(conn, coll: str, rid: str, expected_revision=None, *, actor: str = "CRM") -> bool:
     with write_transaction(conn) as tx:
         current = get_record(tx, coll, rid)
         if current is None:
@@ -210,6 +224,7 @@ def delete(conn, coll: str, rid: str, expected_revision=None) -> bool:
             raise ConflictError(coll, rid)
         _remember_deletions(tx, coll, rid)
         tx.execute("DELETE FROM crm_records WHERE coll=? AND id=?", (coll, rid))
+        _invoice_automation(tx, coll, rid, current, None, actor=actor)
         return True
 
 
@@ -239,7 +254,7 @@ def get_state(conn) -> dict:
     return state
 
 
-def put_state(conn, payload: dict) -> dict:
+def put_state(conn, payload: dict, *, actor: str = "CRM") -> dict:
     """Save changed rows only and detect conflicts using server revisions.
 
     Old clients may still send complete snapshots. Only apply their rows when a
@@ -264,6 +279,7 @@ def put_state(conn, payload: dict) -> dict:
             incoming.append((coll, rid, rec))
 
     conflicts = 0
+    invoice_changes = []
     with write_transaction(conn) as tx:
         for coll, rid, rec in incoming:
             current = get_record(tx, coll, rid)
@@ -274,6 +290,8 @@ def put_state(conn, payload: dict) -> dict:
                     raise ConflictError(coll, rid)
                 _remember_deletions(tx, coll, rid)
                 tx.execute("DELETE FROM crm_records WHERE coll=? AND id=?", (coll, rid))
+                if coll == "invoices":
+                    invoice_changes.append((rid, current, None))
                 continue
             document = _record_data(rec, rid)
             if current and document == _record_data(current, rid):
@@ -286,18 +304,25 @@ def put_state(conn, payload: dict) -> dict:
                     raise ConflictError(coll, rid)
                 conflicts += 1
                 continue
-            _write(tx, coll, document, rid)
+            saved = _write(tx, coll, document, rid)
+            if coll == "invoices":
+                invoice_changes.append((rid, current, saved))
+        for rid, before, after in invoice_changes:
+            _invoice_automation(tx, "invoices", rid, before, after, actor=actor)
         return {**get_state(tx), "conflicts": conflicts, "_delta": delta}
 
 
 # ── Массовые операции над таблицами (импорт CSV / сброс данных) ─────
 
-def import_collection(conn, coll: str, records: list, mode: str = "merge") -> dict:
+def import_collection(conn, coll: str, records: list, mode: str = "merge", *,
+                      actor: str = "CRM", manual: bool = False) -> dict:
     """Apply the whole file or roll back the entire import."""
     if coll not in COLLECTIONS or mode not in ("merge", "replace"):
         raise ValueError("Неизвестная таблица или режим импорта")
     if not records:
         raise ValueError("Пустой файл: импортировать нечего")
+    if manual and (mode != "merge" or len(records) != 1):
+        raise ValueError("Ручное сохранение поддерживает только одну запись")
 
     validated = []
     seen = set()
@@ -312,7 +337,10 @@ def import_collection(conn, coll: str, records: list, mode: str = "merge") -> di
 
     with write_transaction(conn) as tx:
         removed = 0
+        replaced_invoices = {}
         if mode == "replace":
+            if coll == "invoices":
+                replaced_invoices = {row["id"]: row for row in list_records(tx, coll)}
             _remember_deletions(tx, coll)
             removed = tx.execute("DELETE FROM crm_records WHERE coll=?", (coll,)).rowcount
         created = updated = 0
@@ -328,16 +356,23 @@ def import_collection(conn, coll: str, records: list, mode: str = "merge") -> di
             else:
                 created += 1
             affected.append(current if current and document == _record_data(current, rid)
-                            else _write(tx, coll, document, rid))
+                            else _write_crm_record(tx, coll, document, rid, current or replaced_invoices.get(rid),
+                                                   actor=actor, allow_new_automation=manual))
+        for rid, previous in replaced_invoices.items():
+            if rid not in seen:
+                _invoice_automation(tx, coll, rid, previous, None, actor=actor)
         total = tx.execute("SELECT count(*) FROM crm_records WHERE coll=?", (coll,)).fetchone()[0]
         return {"created": created, "updated": updated, "removed": removed,
                 "total": total, "records": affected}
 
 
-def wipe_collection(conn, coll: str) -> int:
+def wipe_collection(conn, coll: str, *, actor: str = "CRM") -> int:
     if coll not in COLLECTIONS:
         raise ValueError(f"Неизвестная коллекция: {coll}")
     with write_transaction(conn) as tx:
+        if coll == "invoices":
+            for row in list_records(tx, coll):
+                _invoice_automation(tx, coll, row["id"], row, None, actor=actor)
         _remember_deletions(tx, coll)
         return tx.execute("DELETE FROM crm_records WHERE coll=?", (coll,)).rowcount
 
@@ -364,9 +399,10 @@ def build_process(conn, journey_id: str) -> dict | None:
     out["invoice"] = strip(get_record(conn, "invoices", inv_id)) if inv_id else None
     sh_id = j.get("shipmentId")
     out["shipment"] = strip(get_record(conn, "shipments", sh_id)) if sh_id else None
-    # связанные задачи (refKind journey/pilots/deal/farm этого маршрута)
-    tasks = [t for t in list_records(conn, "tasks")
-             if t.get("refId") in {j.get("id"), j.get("dealId"), j.get("pilotId"), j.get("farmId")} - {None}]
+    # Задачи могут ссылаться на маршрут или отдельный документ.
+    task_refs = {j.get("id"), j.get("leadId"), j.get("farmId"), j.get("dealId"), j.get("pilotId"),
+                 j.get("quoteId"), j.get("orderId"), inv_id, sh_id} - {None}
+    tasks = [t for t in list_records(conn, "tasks") if t.get("refId") in task_refs]
     out["tasks"] = [strip(t) for t in tasks]
     # коммуникации по хозяйству — из ленты comms (схема: колонки, не JSON)
     if j.get("farmId"):
