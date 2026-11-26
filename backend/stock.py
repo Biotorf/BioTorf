@@ -201,9 +201,34 @@ def put_catalog(tx, kind, raw, rid=None):
     return catalog_row(tx, kind, row["id"])
 
 
+def guard_source(tx, collection, record_id=None):
+    if collection not in {"logistics", "production", "shipments", "orders"}:
+        return
+    predicate = " AND source_id=?" if record_id else ""
+    args = (collection, record_id) if record_id else (collection,)
+    if tx.execute("SELECT 1 FROM stock_documents WHERE status='conducted' AND source_collection=?"
+                  + predicate + " LIMIT 1", args).fetchone():
+        fail("Запись связана с проведённым складским документом. Сначала сделайте сторно в разделе «Склад».", 409)
+
+
 def document(tx, rid):
     return {**present(get(tx, "stock_documents", rid)),
             "items": list_items(tx, "stock_document_items", "document_id", rid)}
+
+
+def validate_source(tx, row):
+    kind = row["doc_type"]
+    source_kind = {("production", "production"), ("purchase", "logistics"),
+                   ("sale", "logistics"), ("sale", "shipments"), ("sale", "orders")}
+    if row["source_id"] or row["source_collection"]:
+        if not row["source_id"] or (kind, row["source_collection"]) not in source_kind:
+            fail("Некорректный вид документа-основания.")
+        if row["source_collection"] == "logistics":
+            exists = tx.execute("SELECT 1 FROM logistics_docs WHERE id=?", (row["source_id"],)).fetchone()
+        else:
+            exists = crm.get_record(tx, row["source_collection"], row["source_id"])
+        if not exists:
+            fail("Документ-основание не найден.")
 
 
 def put_document(tx, raw, actor, rid=None):
@@ -221,17 +246,7 @@ def put_document(tx, raw, actor, rid=None):
     for field, coll in (("order_id", "orders"), ("counterparty_id", "farms")):
         if row[field] and not crm.get_record(tx, coll, row[field]):
             fail("Связанная запись CRM не найдена.")
-    source_kind = {("production", "production"), ("purchase", "logistics"),
-                   ("sale", "logistics"), ("sale", "shipments"), ("sale", "orders")}
-    if row["source_id"] or row["source_collection"]:
-        if not row["source_id"] or (kind, row["source_collection"]) not in source_kind:
-            fail("Некорректный вид документа-основания.")
-        if row["source_collection"] == "logistics":
-            exists = tx.execute("SELECT 1 FROM logistics_docs WHERE id=?", (row["source_id"],)).fetchone()
-        else:
-            exists = crm.get_record(tx, row["source_collection"], row["source_id"])
-        if not exists:
-            fail("Документ-основание не найден.")
+    validate_source(tx, row)
     source, target = row["warehouse_from_id"], row["warehouse_to_id"]
     if kind in {"sale", "move", "writeoff"} and not source or kind in {"purchase", "return", "move", "production", "inventory"} and not target:
         fail("Выберите склады документа.")
@@ -322,6 +337,7 @@ def transition(tx, rid, action):
         return document(tx, rid)
     if status != "draft":
         fail("Провести можно только черновик.", 409)
+    validate_source(tx, doc)
     kind, source, target = doc["doc_type"], doc["warehouse_from_id"], doc["warehouse_to_id"]
     lines = tx.execute("SELECT * FROM stock_document_items WHERE document_id=?", (rid,)).fetchall()
     if kind == "production":
@@ -420,6 +436,11 @@ def remove_catalog(kind: str, rid: str, request: Request):
     table = catalog_table(kind)
     def run(tx):
         get(tx, table, rid)
+        if kind == "warehouses":
+            import logistics
+            related = (*crm.list_records(tx, "production"), *crm.list_records(tx, "shipments"), *logistics.list_docs(tx))
+            if any(record.get("warehouseId") == rid for record in related):
+                fail("Склад указан в производстве, поставке или отгрузке. Сначала измените эти записи.", 409)
         tx.execute(f"DELETE FROM {table} WHERE id=?", (rid,))
         return {"deleted": True}
     return mutation(request, run)
@@ -440,9 +461,14 @@ def can_produce(rid: str):
 
 
 @router.get("/stock/documents")
-def documents():
+def documents(warehouse_id: str | None = None):
+    where = (" WHERE warehouse_from_id=? OR warehouse_to_id=? OR EXISTS "
+             "(SELECT 1 FROM stock_recipe_items i WHERE i.recipe_id=stock_documents.recipe_id "
+             "AND i.warehouse_id=?)") if warehouse_id else ""
+    args = (warehouse_id,) * 3 if warehouse_id else ()
     with closing(db.connect()) as conn:
-        return [present(row) for row in conn.execute("SELECT * FROM stock_documents ORDER BY conducted_at DESC,number")]
+        return [present(row) for row in conn.execute(
+            "SELECT * FROM stock_documents" + where + " ORDER BY conducted_at DESC,number", args)]
 
 
 @router.get("/stock/documents/{rid}")
@@ -462,6 +488,18 @@ def update_document(rid: str, body: dict, request: Request):
         previous = get(tx, "stock_documents", rid)
         write_allowed(request, production=previous["doc_type"] == body.get("doc_type") == "production")
         return put_document(tx, body, request.state.user, rid)
+    return mutation(request, run, production=True)
+
+
+@router.delete("/stock/documents/{rid}")
+def delete_document(rid: str, request: Request):
+    def run(tx):
+        doc = get(tx, "stock_documents", rid)
+        write_allowed(request, production=doc["doc_type"] == "production")
+        if doc["status"] != "draft":
+            fail("Удалить можно только черновик. Для проведённого документа используйте сторно.", 409)
+        tx.execute("DELETE FROM stock_documents WHERE id=?", (rid,))
+        return {"deleted": True}
     return mutation(request, run, production=True)
 
 
@@ -529,17 +567,32 @@ def turnover(warehouse_id: str | None = None, product_id: str | None = None,
 
 
 @router.get("/stock/reservations")
-def reservations():
+def reservations(warehouse_id: str | None = None):
     with closing(db.connect()) as conn:
         pairs = conn.execute("SELECT DISTINCT warehouse_id,product_id FROM stock_reservations WHERE expires_at>?", (now(),)).fetchall()
-        return [{**present(row), "remaining": decimal(row["remaining"])}
-                for w, p in ((row[0], row[1]) for row in pairs)
+        return [{**present(row), "remaining": decimal(row["remaining"]),
+                 "editable": not bool(conn.execute(
+                     "SELECT 1 FROM stock_reservation_usage WHERE reservation_id=? LIMIT 1", (row["id"],)
+                 ).fetchone())}
+                for w, p in ((row[0], row[1]) for row in pairs if not warehouse_id or row[0] == warehouse_id)
                 for row in reservation_rows(conn, w, p) if row["remaining"] > 0]
 
 
 @router.post("/stock/reservations", status_code=201)
 def reserve(body: dict, request: Request):
+    return save_reservation(body, request)
+
+
+@router.put("/stock/reservations/{rid}")
+def update_reservation(rid: str, body: dict, request: Request):
+    return save_reservation(body, request, rid)
+
+
+def save_reservation(body, request, rid=None):
     def run(tx):
+        previous = get(tx, "stock_reservations", rid) if rid else None
+        if previous and tx.execute("SELECT 1 FROM stock_reservation_usage WHERE reservation_id=? LIMIT 1", (rid,)).fetchone():
+            fail("Этот резерв уже участвовал в проведении. Снимите остаток резерва и создайте новый.", 409)
         product = stock_product(tx, body.get("product_id"))["id"]
         warehouse = get(tx, "stock_warehouses", body.get("warehouse_id"))["id"]
         order = required(body.get("order_id"), "Заказ")
@@ -552,11 +605,13 @@ def reserve(body: dict, request: Request):
                 raise ValueError()
         except (TypeError, ValueError):
             fail("Укажите будущий срок резерва с часовым поясом.")
-        if not qty or qty > totals(tx, warehouse, product)[0] - reserved(tx, warehouse, product):
+        reclaimed = (previous["qty"] if previous and previous["expires_at"] > now() and
+             previous["warehouse_id"] == warehouse and previous["product_id"] == product else 0)
+        if not qty or qty > totals(tx, warehouse, product)[0] - reserved(tx, warehouse, product) + reclaimed:
             fail("Для резерва недостаточно доступного остатка.", 409)
-        row = dict(id=uuid4().hex, product_id=product, warehouse_id=warehouse, order_id=order, qty=qty,
+        row = dict(id=rid or uuid4().hex, product_id=product, warehouse_id=warehouse, order_id=order, qty=qty,
                    expires_at=expiry.astimezone(timezone.utc).isoformat())
-        save(tx, "stock_reservations", row)
+        save(tx, "stock_reservations", row, bool(previous))
         return present(row)
     return mutation(request, run)
 

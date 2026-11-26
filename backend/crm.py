@@ -213,6 +213,10 @@ def _invoice_automation(tx, coll, rid, current, saved, *, actor, allow_new=True)
 
 
 def _write_crm_record(tx, coll, document, rid, current, *, actor, allow_new_automation=True):
+    from stock import get as get_stock, guard_source
+    guard_source(tx, coll, rid)
+    if coll in {"production", "shipments"} and document.get("warehouseId"):
+        get_stock(tx, "stock_warehouses", document["warehouseId"])
     saved = _write(tx, coll, document, rid)
     _invoice_automation(tx, coll, rid, current, saved, actor=actor, allow_new=allow_new_automation)
     return saved
@@ -255,6 +259,8 @@ def delete(conn, coll: str, rid: str, expected_revision=None, *, actor: str = "C
             return False
         if expected_revision is not None and expected_revision != current["_updatedAt"]:
             raise ConflictError(coll, rid)
+        from stock import guard_source
+        guard_source(tx, coll, rid)
         _remember_deletions(tx, coll, rid)
         tx.execute("DELETE FROM crm_records WHERE coll=? AND id=?", (coll, rid))
         _invoice_automation(tx, coll, rid, current, None, actor=actor)
@@ -321,6 +327,8 @@ def put_state(conn, payload: dict, *, actor: str = "CRM") -> dict:
                     continue
                 if rec["_expectedRev"] != current["_updatedAt"]:
                     raise ConflictError(coll, rid)
+                from stock import guard_source
+                guard_source(tx, coll, rid)
                 _remember_deletions(tx, coll, rid)
                 tx.execute("DELETE FROM crm_records WHERE coll=? AND id=?", (coll, rid))
                 if coll == "invoices":
@@ -372,6 +380,8 @@ def import_collection(conn, coll: str, records: list, mode: str = "merge", *,
         removed = 0
         replaced_invoices = {}
         if mode == "replace":
+            from stock import guard_source
+            guard_source(tx, coll)
             if coll == "invoices":
                 replaced_invoices = {row["id"]: row for row in list_records(tx, coll)}
             previous_ids = [row[0] for row in tx.execute("SELECT id FROM crm_records WHERE coll=?", (coll,)).fetchall()]
@@ -407,6 +417,8 @@ def wipe_collection(conn, coll: str, *, actor: str = "CRM") -> int:
     if coll not in COLLECTIONS:
         raise ValueError(f"Неизвестная коллекция: {coll}")
     with write_transaction(conn) as tx:
+        from stock import guard_source
+        guard_source(tx, coll)
         if coll == "invoices":
             for row in list_records(tx, coll):
                 _invoice_automation(tx, coll, row["id"], row, None, actor=actor)

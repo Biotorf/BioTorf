@@ -4,11 +4,14 @@
 // записей). Сохранение идёт через db.importCollection(coll, [rec], 'merge') —
 // тот же путь, что и CSV-импорт: сервер + локальный кэш.
 import { ref, computed, watch, onMounted, nextTick, useId } from 'vue';
+import { useStockWarehouses } from '@/composables/useStockWarehouses';
 import CrmSelectField from '@/components/CrmSelectField.vue';
 import { usePermissions } from '@/composables/usePermissions';
 import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
 import { COLL_RU, crmDictionaryKey, crmFieldLabel, REF_FIELD, REF_KINDS, crmFields, crmTitle, crmValue, DEAL_STAGES, dealStage, statusOptions } from '@/data/crmFields';
+
+const { warehouses: stockWarehouses } = useStockWarehouses();
 
 const props = defineProps({
   coll: { type: String, required: true },     // farms, leads, deals…
@@ -90,9 +93,10 @@ function referenceRows(key) {
   });
 }
 function isSelectField(key) {
-  return BOOL_FIELDS.has(key) || Object.hasOwn(ENUM_FIELD, key) || key === 'refId' || !!referenceTable(key) || !!listKeyFor(key);
+  return key === 'warehouseId' || BOOL_FIELDS.has(key) || Object.hasOwn(ENUM_FIELD, key) || key === 'refId' || !!referenceTable(key) || !!listKeyFor(key);
 }
 function selectOptions(key) {
+  if (key === 'warehouseId') return stockWarehouses.value.map(({id,name}) => ({ value:id, label:name }));
   if (BOOL_FIELDS.has(key)) return boolOptions;
   if (referenceTable(key)) {
     return referenceRows(key).map((r) => ({ value: String(r.id), label: `${crmTitle(r)} · ${r.id}` }));
@@ -161,7 +165,7 @@ const form = ref({});
 const showExtraFields = ref(false);
 const coreFields = {
   skus: ['id', 'name', 'line', 'pack', 'price', 'recipeVersion', 'powderKgPerL', 'lossPct'],
-  production: ['date', 'sku', 'lot', 'qty', 'unit', 'plannedVolumeL', 'plannedPowderKg', 'status',
+  production: ['date', 'warehouseId', 'sku', 'lot', 'qty', 'unit', 'plannedVolumeL', 'plannedPowderKg', 'status',
     'supplyId', 'inputLot', 'powderUsedKg', 'pasteUsedKg', 'actualQty', 'qcStatus'],
 };
 const visibleFields = computed(() => fields.value.filter((key) => key !== 'items' &&

@@ -5,6 +5,7 @@
 // Кнопки: добавить/удалить строку, сохранить, создать акт (печать + сохранение в документе),
 // скачать .xls / .csv всего реестра — в ShipmentsView.
 import { computed, onMounted, reactive, ref, useId } from 'vue';
+import { useStockWarehouses } from '@/composables/useStockWarehouses';
 import CrmSelectField from '@/components/CrmSelectField.vue';
 import { useDbStore } from '@/stores/db';
 import { crmFieldLabel, LOGISTICS_KINDS } from '@/data/crmFields';
@@ -51,6 +52,7 @@ const form = reactive({
   farmId: source?.farmId || '',
   orderId: source?.orderId || '',
   warehouse: source?.warehouse || '',
+  warehouseId: source?.warehouseId || '',
   vehicle: source?.vehicle || '',
   driver: source?.driver || '',
   base: source?.base || '',
@@ -87,6 +89,15 @@ const orders = computed(() => db.orders.filter((order) => {
   value: order.id,
   label: [order.number || order.num || order.id, db.farmById(order.farmId)?.name].filter(Boolean).join(' · '),
 })));
+const { warehouses: stockWarehouses } = useStockWarehouses();
+const selectedWarehouse = computed({
+  get: () => form.warehouseId || stockWarehouses.value.find((row) => row.name === form.warehouse)?.id || '',
+  set: (id) => {
+    form.warehouseId = id;
+    form.warehouse = stockWarehouses.value.find((row) => row.id === id)?.name || '';
+  },
+});
+const warehouseChoices = computed(() => stockWarehouses.value.map(({ id, name }) => ({ value:id, label:name })));
 const warehouses = computed(() => [...new Set([
   ...db.warehouse.map((row) => row.warehouse || row.location),
   ...db.logistics.map((row) => row.warehouse),
@@ -187,7 +198,8 @@ const docPayload = () => ({
   party: form.party.trim(),
   farmId: form.farmId || null,
   orderId: form.orderId || null,
-  warehouse: form.warehouse.trim(),
+  warehouse: stockWarehouses.value.find(({id}) => id === selectedWarehouse.value)?.name || form.warehouse.trim(),
+  warehouseId: selectedWarehouse.value || null,
   vehicle: form.vehicle.trim(),
   driver: form.driver.trim(),
   base: form.base.trim(),
@@ -360,7 +372,9 @@ function exportCsv() {
       </template>
       <CrmSelectField v-else v-model="form.party" class="field" :label="label('party')" :options="suppliers"
         list-key="suppliers" searchable placeholder="Выберите поставщика" @busy-change="setListBusy('suppliers', $event)" />
-      <CrmSelectField v-model="form.warehouse" class="field" :label="label('warehouse')" :options="warehouses"
+      <CrmSelectField v-if="warehouseChoices.length" v-model="selectedWarehouse" class="field" :label="label('warehouse')"
+        :options="warehouseChoices" searchable :placeholder="form.warehouse || 'Выберите склад'" />
+      <CrmSelectField v-else v-model="form.warehouse" class="field" :label="label('warehouse')" :options="warehouses"
         list-key="locations" searchable placeholder="Выберите склад" @busy-change="setListBusy('locations', $event)" />
       <div class="field">
         <label :for="fieldId('base')">{{ label('base') }}</label>

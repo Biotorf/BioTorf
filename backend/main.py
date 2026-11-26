@@ -1249,6 +1249,7 @@ class LogisticsIn(BaseModel):
     farmId: str | None = None
     orderId: str | None = None
     warehouse: str | None = None
+    warehouseId: str | None = None
     vehicle: str | None = None
     driver: str | None = None
     base: str | None = None
@@ -1275,30 +1276,36 @@ def create_logistics(body: LogisticsIn):
         prefix = "SUP" if body.kind == "supply" else "DSP"
         doc_id = prefix + "-" + body.clientId.removeprefix("LOC-")
     try:
-        with closing(store.connect()) as conn:
-            return logistics.upsert_doc(conn, body.model_dump(), doc_id, create_only=True)
+        with closing(store.connect()) as conn, crm.write_transaction(conn) as tx:
+            if body.warehouseId:
+                stock.get(tx, "stock_warehouses", body.warehouseId)
+            return logistics.upsert_doc(tx, body.model_dump(), doc_id, create_only=True, commit=False)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
 
 
 @app.put("/api/logistics/{doc_id}")
 def update_logistics(doc_id: str, body: LogisticsIn):
-    with store.connect() as conn:
-        existing = logistics.get_doc(conn, doc_id)
+    with closing(store.connect()) as conn, crm.write_transaction(conn) as tx:
+        stock.guard_source(tx, "logistics", doc_id)
+        if body.warehouseId:
+            stock.get(tx, "stock_warehouses", body.warehouseId)
+        existing = logistics.get_doc(tx, doc_id)
         if not existing:
             raise HTTPException(404, "Документ не найден")
         if body.kind != existing["kind"]:
             raise HTTPException(422, "Тип существующего документа менять нельзя")
         try:
-            return logistics.upsert_doc(conn, body.model_dump(), doc_id)
+            return logistics.upsert_doc(tx, body.model_dump(), doc_id, commit=False)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
 
 
 @app.delete("/api/logistics/{doc_id}", status_code=204)
 def delete_logistics(doc_id: str):
-    with closing(store.connect()) as conn:
-        if not logistics.delete_doc(conn, doc_id):
+    with closing(store.connect()) as conn, crm.write_transaction(conn) as tx:
+        stock.guard_source(tx, "logistics", doc_id)
+        if not logistics.delete_doc(tx, doc_id, commit=False):
             raise HTTPException(404, "Документ не найден")
 
 

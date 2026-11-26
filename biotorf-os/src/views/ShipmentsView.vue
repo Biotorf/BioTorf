@@ -1,4 +1,5 @@
 <script setup>
+import { useStockWarehouses } from '@/composables/useStockWarehouses';
 import { inventoryLink } from '@/utils/inventoryLink';
 import { usePermissions } from '@/composables/usePermissions';
 import StatusPill from '@/components/ui/StatusPill.vue';
@@ -50,14 +51,19 @@ onMounted(async () => {
   syncing.value = false;
 });
 
-const docs = computed(() => db.logistics.filter((d) => d.kind === tab.value));
+const { warehouses, warehouseFilter, warehouseOptions, matchesWarehouse } = useStockWarehouses(
+  () => [...db.logistics, ...(db.data.shipments || [])],
+);
+const docs = computed(() => db.logistics.filter((d) => d.kind === tab.value && matchesWarehouse(d)));
+const warehouseName = (row) => warehouses.value.find(w => w.id === row.warehouseId)?.name || row.warehouse;
+const shipmentRows = computed(() => (db.data.shipments || []).filter(matchesWarehouse));
 
 const filtered = computed(() => {
   const q = ui.search.toLowerCase();
   return docs.value.filter((d) => {
     if (ui.filter !== 'Все' && d.status !== ui.filter) return false;
     if (!q) return true;
-    return [d.number, d.party, d.warehouse, d.base, d.driver, d.vehicle, d.status,
+    return [d.number, d.party, warehouseName(d), d.base, d.driver, d.vehicle, d.status,
       (d.items || []).map((i) => [i.name, i.lot].filter(Boolean).join(' ')).join(' '),
       d.act ? `акт ${d.act.number} ${d.act.type}` : 'без акта',
     ].join(' ').toLowerCase().includes(q);
@@ -93,9 +99,18 @@ async function removeDoc(d) {
   if (!confirm(`Удалить документ ${d.number} (${d.party || '—'})?`)) return;
   try {
     await db.removeLogistics(d.id);
+    if (logisticsEditor.value?.doc?.id === d.id) logisticsEditor.value = null;
   } catch (error) {
     alert(error.message);
   }
+}
+
+async function removeShipment(row) {
+  if (!confirm(`Удалить отгрузку «${row.number || row.id}»?`)) return;
+  try {
+    await db.deleteRow('shipments', row.id);
+    if (editRec.value?.id === row.id) { rowOpen.value = false; editRec.value = null; }
+  } catch (error) { alert(error.message); }
 }
 
 // ── экспорт / печать всего реестра ──────────────────────────────────
@@ -104,8 +119,8 @@ function registryRows() {
     ? ['Номер', 'Дата', 'Поставщик', 'Склад', 'Основание', 'Позиции', 'Кол-во', 'Сумма, сом', 'Статус', 'Акт']
     : ['Номер', 'Дата', 'Клиент/получатель', 'Склад', 'Транспорт', 'Водитель', 'Основание', 'Позиции', 'Кол-во', 'Сумма, сом', 'Статус', 'Акт'];
   const rows = filtered.value.map((d) => tab.value === 'supply'
-    ? [d.number, d.date, d.party, d.warehouse, d.base, itemsSummary(d), qtyOf(d), Math.round(sumOf(d)), d.status, d.act ? `${d.act.type} №${d.act.number}` : 'нет']
-    : [d.number, d.date, d.party, d.warehouse, d.vehicle, d.driver, d.base, itemsSummary(d), qtyOf(d), Math.round(sumOf(d)), d.status, d.act ? `${d.act.type} №${d.act.number}` : 'нет']);
+    ? [d.number, d.date, d.party, warehouseName(d), d.base, itemsSummary(d), qtyOf(d), Math.round(sumOf(d)), d.status, d.act ? `${d.act.type} №${d.act.number}` : 'нет']
+    : [d.number, d.date, d.party, warehouseName(d), d.vehicle, d.driver, d.base, itemsSummary(d), qtyOf(d), Math.round(sumOf(d)), d.status, d.act ? `${d.act.type} №${d.act.number}` : 'нет']);
   rows.push(['ИТОГО', '', '', '', '', '', '', Math.round(filtered.value.reduce((s, d) => s + sumOf(d), 0)), '', '']);
   return [head, ...rows];
 }
@@ -186,6 +201,10 @@ function canPostDispatch(doc) {
     </div>
 
     <div class="toolbar">
+      <label>Склад <select v-model="warehouseFilter" class="select" aria-label="Фильтр по складу">
+        <option value="">Все склады</option>
+        <option v-for="option in warehouseOptions" :key="option.value" :value="option.value">{{option.label}}</option>
+      </select></label>
       <input v-model="ui.search" class="input" :placeholder="`Поиск по ${tab === 'supply' ? 'поставкам' : 'выгрузкам'}: номер, клиент, товар, акт…`">
       <select v-model="ui.filter" class="select" style="max-width:220px">
         <option v-for="s in statusOptions" :key="s">{{ s }}</option>
@@ -198,10 +217,11 @@ function canPostDispatch(doc) {
           <h2>{{ doc.number }}</h2>
           <StatusPill :status="doc.status" />
         </header>
-        <p class="subtitle">{{ [doc.party, doc.date, doc.warehouse].filter(Boolean).join(' · ') }}</p>
+        <p class="subtitle">{{ [doc.party, doc.date, warehouseName(doc)].filter(Boolean).join(' · ') }}</p>
         <p>{{ itemsSummary(doc) }}</p>
         <div class="actionbar">
-          <button class="btn slim" @click="openEditor(doc)">Открыть документ</button>
+          <button class="btn slim" @click="openEditor(doc)">{{ canEdit('shipments') ? 'Изменить' : 'Открыть документ' }}</button>
+          <button v-if="canEdit('shipments')" class="btn slim ghost danger-text" @click="removeDoc(doc)">Удалить</button>
           <a v-if="canPostReceipt(doc)" :href="inventoryLink('receipt_powder', 'logistics', doc.id)">Провести приёмку</a>
           <a v-if="canPostDispatch(doc)" :href="inventoryLink('dispatch', 'logistics', doc.id, doc.orderId)">Со склада</a>
         </div>
@@ -211,8 +231,9 @@ function canPostDispatch(doc) {
     <details class="panel logistics-extra">
       <summary>Таблица документов</summary>
       <CrmDataTable coll="logistics" :rows="filtered" empty="Документов нет.">
+        <template #warehouse="{row}">{{warehouseName(row) || '—'}}</template>
         <template #actions="{ row: doc }">
-          <button class="btn slim ghost" @click="openEditor(doc)">Открыть</button>
+          <button class="btn slim ghost" @click="openEditor(doc)">{{ canEdit('shipments') ? 'Изменить' : 'Открыть' }}</button>
           <a v-if="canPostReceipt(doc)" :href="inventoryLink('receipt_powder', 'logistics', doc.id)">Провести приёмку</a>
           <a v-if="canPostDispatch(doc)" :href="inventoryLink('dispatch', 'logistics', doc.id, doc.orderId)">Со склада</a>
           <button v-if="canEdit('shipments')" class="btn slim ghost danger-text" @click="removeDoc(doc)">Удалить</button>
@@ -225,9 +246,11 @@ function canPostDispatch(doc) {
       <div v-if="rowOpen" ref="shipmentForm" class="logistics-form">
         <CrmRowModal :key="editRec?.id || 'new'" inline coll="shipments" :record="editRec" @close="rowOpen = false; editRec = null" />
       </div>
-      <CrmDataTable coll="shipments" :rows="db.data.shipments || []" empty="Отгрузок CRM нет.">
+      <CrmDataTable coll="shipments" :rows="shipmentRows" empty="Отгрузок CRM нет.">
+        <template #warehouseId="{row}">{{warehouseName(row) || '—'}}</template>
         <template #actions="{ row: s }">
           <button v-if="canEditCollection('shipments')" class="btn slim ghost" @click="editShipment(s)">Изменить</button>
+          <button v-if="canEditCollection('shipments')" class="btn slim ghost danger-text" @click="removeShipment(s)">Удалить</button>
           <a v-if="canEdit('warehouse') && s.orderId" :href="inventoryLink('dispatch', 'shipments', s.id, s.orderId)">Со склада</a>
           <button v-if="s.journeyId" class="btn slim ghost" @click="ui.openJourney(s.journeyId)">Процесс</button>
         </template>

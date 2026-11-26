@@ -120,6 +120,21 @@ class StockTest(unittest.TestCase):
         self.conduct(self.draft("purchase", self.finished, 2, 7, warehouse_to_id="finished"))
         self.assertEqual(stock.totals(self.conn, "finished", self.finished), (10000, 70000))
 
+    def test_source_edit_and_delete_require_reversal(self):
+        with crm.write_transaction(self.conn) as tx:
+            crm._write(tx, "shipments", {"id": "dispatch"}, "dispatch")
+        self.conduct(self.draft("purchase", self.finished, 3, 4, warehouse_to_id="finished"))
+        sale = self.draft("sale", self.finished, 1, warehouse_from_id="finished",
+                          source_collection="shipments", source_id="dispatch")
+        self.conduct(sale)
+        with self.assertRaises(HTTPException) as error:
+            crm.upsert(self.conn, "shipments", {"status": "Отменена"}, "dispatch", merge=True)
+        self.assertEqual(error.exception.status_code, 409)
+        with self.assertRaises(HTTPException):
+            crm.delete(self.conn, "shipments", "dispatch")
+        self.conduct(sale, "cancel")
+        self.assertTrue(crm.delete(self.conn, "shipments", "dispatch"))
+
     def test_inventory_adjusts_actual_value(self):
         self.conduct(self.draft("inventory", self.raw, 3, 4, warehouse_to_id="raw"))
         self.conduct(self.draft("inventory", self.raw, 1, warehouse_to_id="raw"))

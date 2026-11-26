@@ -3,6 +3,7 @@ import { computed, inject, onMounted, ref } from 'vue';
 import { useDbStore } from '@/stores/db';
 import { usePermissions } from '@/composables/usePermissions';
 import { useFormatters } from '@/composables/useFormatters';
+import { useStockWarehouses } from '@/composables/useStockWarehouses';
 import { inventoryLink } from '@/utils/inventoryLink';
 import { crmPhotoLink } from '@/utils/crmPhotoLink';
 import { statusOptions } from '@/data/crmFields';
@@ -25,8 +26,16 @@ onMounted(async () => {
 });
 const statusFilter = ref('Все');
 const source = computed(() => db.data.production || []);
+const { warehouses, warehouseFilter, warehouseOptions, matchesWarehouse } = useStockWarehouses(source);
 const statuses = computed(() => ['Все', ...statusOptions('production', source.value)]);
-const rows = computed(() => source.value.filter((row) => statusFilter.value === 'Все' || row.status === statusFilter.value));
+const rows = computed(() => source.value.filter((row) => matchesWarehouse(row) && (statusFilter.value === 'Все' || row.status === statusFilter.value)));
+async function removeBatch(row) {
+  if (!confirm(`Удалить партию «${row.lot || row.id}»?`)) return;
+  try {
+    await db.deleteRow('production', row.id);
+    if (rowOpen.value?.record?.id === row.id) rowOpen.value = null;
+  } catch(error) { receiptError.value = error.message; }
+}
 function canPost(row) {
   return canEditCollection('production') && row.status === 'Завершено' && row.powderUsedKg > 0 &&
     !!row.inputLot && !!row.lot && ['Пройден', 'Отклонён'].includes(row.qcStatus);
@@ -53,6 +62,10 @@ function canPost(row) {
 
     <p v-if="receiptError" class="danger-text" role="alert">{{ receiptError }}</p>
     <div class="toolbar">
+      <label>Склад выпуска <select v-model="warehouseFilter" class="select" aria-label="Фильтр по складу">
+        <option value="">Все склады</option>
+        <option v-for="option in warehouseOptions" :key="option.value" :value="option.value">{{option.label}}</option>
+      </select></label>
       <label>Статус
         <select v-model="statusFilter" class="select"><option v-for="status in statuses" :key="status">{{ status }}</option></select>
       </label>
@@ -64,12 +77,13 @@ function canPost(row) {
           <h2>{{ row.product || db.skuById(row.sku)?.name || row.id }}</h2>
           <StatusPill :status="row.status" />
         </header>
-        <p class="subtitle">{{ [row.lot || row.batch, row.date ? day(row.date) : '', row.orderId ? 'Под заказ' : ''].filter(Boolean).join(' · ') }}</p>
+        <p class="subtitle">{{ [row.lot || row.batch, warehouses.find(w => w.id === row.warehouseId)?.name || row.warehouse, row.date ? day(row.date) : '', row.orderId ? 'Под заказ' : ''].filter(Boolean).join(' · ') }}</p>
         <p v-if="row.qty || row.plannedVolumeL"><strong>План</strong> {{ row.qty ?? '—' }} {{ row.unit || 'шт.' }} <span v-if="row.plannedVolumeL">· {{ row.plannedVolumeL }} л</span></p>
         <p v-if="row.plannedPowderKg != null"><strong>Порошок по рецептуре {{ row.recipeVersion }}</strong> {{ row.plannedPowderKg }} кг</p>
         <p v-if="row.actualQty != null"><strong>Выпуск</strong> {{ row.actualQty }} {{ row.unit || 'шт.' }} · {{ row.qcStatus || 'Контроль ожидается' }}</p>
         <div class="actionbar">
-          <button v-if="canEditCollection('production')" class="btn slim" @click="rowOpen = { record: row }">{{ row.status === 'Завершено' ? 'Открыть партию' : 'Заполнить партию' }}</button>
+          <button v-if="canEditCollection('production')" class="btn slim" @click="rowOpen = { record: row }">Изменить</button>
+          <button v-if="canEditCollection('production')" class="btn slim ghost danger-text" @click="removeBatch(row)">Удалить</button>
           <a class="btn slim ghost" :href="crmPhotoLink('production', row.id)">Фото партии</a>
           <a v-if="canPost(row)" :href="inventoryLink('production', 'production', row.id)">Провести на складе</a>
         </div>
@@ -78,7 +92,13 @@ function canPost(row) {
     <p v-else class="empty">Партий по этому фильтру пока нет.</p>
     <details class="panel full-table">
       <summary>Таблица производства</summary>
-      <CrmDataTable coll="production" :rows="rows" empty="Партий нет." />
+      <CrmDataTable coll="production" :rows="rows" empty="Партий нет.">
+        <template #warehouseId="{row}">{{warehouses.find(w => w.id === row.warehouseId)?.name || row.warehouse || '—'}}</template>
+        <template #actions="{row}">
+          <button v-if="canEditCollection('production')" class="btn slim" @click="rowOpen={record:row}">Изменить</button>
+          <button v-if="canEditCollection('production')" class="btn slim ghost danger-text" @click="removeBatch(row)">Удалить</button>
+        </template>
+      </CrmDataTable>
     </details>
   </section>
 </template>

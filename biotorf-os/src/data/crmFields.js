@@ -5,12 +5,12 @@ const SCHEMAS = {
   orders:     ['id', 'number', 'farmId', 'dealId', 'journeyId', 'quoteId', 'date', 'sku', 'product', 'qty', 'unit', 'items', 'amount', 'status', 'owner'],
   invoices:   ['id', 'number', 'orderId', 'dealId', 'farmId', 'journeyId', 'date', 'due', 'amount', 'paid', 'status'],
   payments:   ['id', 'invoiceId', 'orderId', 'date', 'amount', 'method', 'comment'],
-  shipments:  ['id', 'number', 'orderId', 'farmId', 'journeyId', 'date', 'planDate', 'carrier', 'vehicle', 'transport', 'driver', 'plate', 'route', 'items', 'amount', 'status', 'received'],
+  shipments:  ['id', 'number', 'warehouseId', 'orderId', 'farmId', 'journeyId', 'date', 'planDate', 'carrier', 'vehicle', 'transport', 'driver', 'plate', 'route', 'items', 'amount', 'status', 'received'],
   tasks:      ['id', 'title', 'owner', 'due', 'priority', 'status', 'refKind', 'refId'],
   contacts:   ['id', 'farmId', 'name', 'role', 'phone', 'whatsapp', 'telegram', 'email', 'primary'],
   skus:       ['id', 'name', 'line', 'pack', 'recipe', 'recipeVersion', 'powderKgPerL', 'lossPct', 'status', 'category', 'unit', 'price', 'stock', 'notes'],
   warehouse:  ['id', 'sku', 'batch', 'qty', 'reserved', 'unit', 'warehouse', 'expiry', 'status', 'orderId'],
-  production: ['id', 'date', 'sku', 'product', 'lot', 'qty', 'unit', 'plannedVolumeL', 'recipeVersion', 'plannedPowderKg', 'status', 'supplyId', 'inputLot', 'powderUsedKg', 'actualQty', 'qcStatus', 'shift', 'operator', 'notes', 'orderId'],
+  production: ['id', 'date', 'warehouseId', 'sku', 'product', 'lot', 'qty', 'unit', 'plannedVolumeL', 'recipeVersion', 'plannedPowderKg', 'status', 'supplyId', 'inputLot', 'powderUsedKg', 'actualQty', 'qcStatus', 'shift', 'operator', 'notes', 'orderId'],
   pilots:     ['id', 'title', 'farmId', 'dealId', 'journeyId', 'crop', 'area', 'startDate', 'endDate', 'nextCheck', 'control', 'goal', 'status', 'owner', 'result'],
   quotes:     ['id', 'number', 'dealId', 'farmId', 'journeyId', 'date', 'items', 'terms', 'total', 'status'],
   journeys:   ['id', 'leadId', 'farmId', 'dealId', 'pilotId', 'quoteId', 'orderId', 'invoiceId', 'shipmentId', 'stage', 'owner', 'next', 'qualification', 'history'],
@@ -126,6 +126,7 @@ export function crmReferences(coll, record) {
 }
 
 export function crmFieldLabel(coll, key) {
+  if (key === 'warehouseId') return coll === 'production' ? 'Склад выпуска' : 'Склад';
   if (coll === 'farms' && key === 'name') return 'Имя или название';
   if (coll === 'farms' && key === 'type') return 'Тип клиента';
   if (coll === 'clientDocs' && key === 'type') return 'Тип документа';

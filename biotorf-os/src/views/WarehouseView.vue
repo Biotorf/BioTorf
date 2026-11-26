@@ -50,6 +50,7 @@ async function refresh() {
     if (['balances','movements','turnover'].includes(selected)) {
       for (const [key, value] of Object.entries(filters.value)) if (value) query.set(key, value);
     }
+    if (['documents','reservations'].includes(selected) && filters.value.warehouse_id) query.set('warehouse_id', filters.value.warehouse_id);
     if (selected === 'movements') {
       query.set('limit', pageLength);
       query.set('offset', movementPage.value * pageLength);
@@ -73,17 +74,23 @@ function navigate(key) {
 }
 function refreshFilters() { movementPage.value = 0; return refresh(); }
 function emptyDraft(key) {
+  const chosen = filters.value.warehouse_id;
   if (key === 'products') return { sku:'', name:'', type:'finished', unit:'шт', min_stock_alert:'0' };
   if (key === 'warehouses') return { name:'', is_virtual:false, allow_negative:false };
   if (key === 'recipes') return { output_product_id:'', version:'1', output_qty_per_batch:'1', is_active:true, items:[component()] };
-  if (key === 'reservations') return { product_id:'', warehouse_id:'finished', order_id:'', qty:'', expires_at:'' };
-  return { doc_type:productionOnly.value ? 'production' : 'purchase', number:'', warehouse_from_id:'', warehouse_to_id:productionOnly.value ? 'finished' : 'raw', recipe_id:'',
+  if (key === 'reservations') return { product_id:'', warehouse_id:chosen || 'finished', order_id:'', qty:'', expires_at:'' };
+  return { doc_type:productionOnly.value ? 'production' : 'purchase', number:'', warehouse_from_id:'', warehouse_to_id:chosen || (productionOnly.value ? 'finished' : 'raw'), recipe_id:'',
     order_id:'', counterparty_id:'', items:[item()] };
 }
 function changeType() {
   const form = draft.value;
   form.warehouse_from_id = ['sale','move','writeoff'].includes(form.doc_type) ? 'finished' : '';
   form.warehouse_to_id = ({ purchase:'raw', return:'finished', production:'finished', inventory:'finished', move:'raw' })[form.doc_type] || '';
+  const chosen = filters.value.warehouse_id;
+  if (chosen && form.warehouse_from_id) form.warehouse_from_id = chosen;
+  if (chosen && form.warehouse_to_id) {
+    form.warehouse_to_id = chosen === form.warehouse_from_id ? '' : chosen;
+  }
   form.recipe_id = '';
 }
 function selectRecipe() {
@@ -115,6 +122,19 @@ function saveDraft() {
 async function openDocument(row) {
   await action(async () => { draft.value = await stock(path('documents') + '/' + row.id); });
 }
+function editReservation(row) {
+  const date = new Date(row.expires_at);
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  draft.value = {...row, expires_at:local.toISOString().slice(0,16)};
+}
+function deleteDocument(row) {
+  if (!confirm(`Удалить черновик «${row.number}»?`)) return;
+  action(async () => {
+    await stock(path('documents') + '/' + row.id, 'DELETE');
+    if (draft.value?.id === row.id) draft.value = null;
+    await refresh();
+  });
+}
 function operate(row, verb) {
   if (verb === 'cancel' && !confirm('Отменить документ? Для проведённого документа будет записано сторно.')) return;
   action(async () => {
@@ -132,7 +152,7 @@ function remove(row) {
   });
 }
 function productHistory(row) {
-  filters.value = { warehouse_id:'', product_id:row.product_id, date_from:'', date_to:'' };
+  filters.value = { warehouse_id:row.warehouse_id, product_id:row.product_id, date_from:'', date_to:'' };
   navigate('movements');
 }
 function openRecipe(row) {
@@ -171,6 +191,13 @@ async function routeDraft() {
     if (mode === 'reserve' && lines.length === 1) Object.assign(draft.value, lines[0]);
     if (mode === 'dispatch' && lines.length) draft.value.items = lines;
   }
+  const sourceWarehouse = source?.warehouseId || warehouses.value.find((row) => row.name === source?.warehouse)?.id;
+  if (sourceWarehouse) {
+    const field = mode === 'reserve' ? 'warehouse_id' : mode === 'dispatch' ? 'warehouse_from_id' : 'warehouse_to_id';
+    draft.value[field] = sourceWarehouse;
+    filters.value.warehouse_id = sourceWarehouse;
+    await refresh();
+  }
   draft.value.counterparty_id = source?.farmId || '';
   warning.value = basis ? 'Основание CRM: ' + basis + '. Сверьте товары, количества и склады перед проведением.' : '';
 }
@@ -191,10 +218,10 @@ onUnmounted(() => window.removeEventListener('hashchange', routeDraft));
     <p v-if="error" role="alert" class="danger-text">{{error}}</p>
     <p v-if="warning" class="note">{{warning}}</p>
     <p v-if="alerts.length" role="status" class="note">Ниже минимального остатка: {{alerts.map(row => row.product + ' · ' + row.warehouse).join(', ')}}</p>
-    <div v-if="['balances','movements','turnover'].includes(tab)" class="toolbar" data-tour="warehouse-balance">
-      <label>Склад <select v-model="filters.warehouse_id" class="select" @change="refreshFilters"><option value="">Все склады</option><option v-for="w in warehouses" :key="w.id" :value="w.id">{{w.name}}</option></select></label>
-      <label>Товар <select v-model="filters.product_id" class="select" @change="refreshFilters"><option value="">Все товары</option><option v-for="p in products" :key="p.id" :value="p.id">{{p.name}}</option></select></label>
-      <template v-if="tab !== 'balances'">
+    <div v-if="['balances','movements','turnover','documents','reservations'].includes(tab)" class="toolbar" data-tour="warehouse-balance">
+      <label>Склад <select aria-label="Фильтр по складу" v-model="filters.warehouse_id" class="select" @change="refreshFilters"><option value="">Все склады</option><option v-for="w in warehouses" :key="w.id" :value="w.id">{{w.name}}</option></select></label>
+      <label v-if="['balances','movements','turnover'].includes(tab)">Товар <select v-model="filters.product_id" class="select" @change="refreshFilters"><option value="">Все товары</option><option v-for="p in products" :key="p.id" :value="p.id">{{p.name}}</option></select></label>
+      <template v-if="['movements','turnover'].includes(tab)">
         <label>С даты <input v-model="filters.date_from" type="date" class="input" @change="refreshFilters" /></label>
         <label>До даты, исключая <input v-model="filters.date_to" type="date" class="input" @change="refreshFilters" /></label>
       </template>
@@ -263,7 +290,7 @@ onUnmounted(() => window.removeEventListener('hashchange', routeDraft));
       <table class="table">
         <thead><tr>
           <template v-if="tab==='balances'"><th>Товар</th><th>Склад</th><th>Остаток</th><th>Резерв</th><th>Доступно</th><th>Себестоимость за единицу</th></template>
-          <template v-else-if="tab==='documents'"><th>Номер</th><th>Тип</th><th>Статус</th><th>Действия</th></template>
+          <template v-else-if="tab==='documents'"><th>Номер</th><th>Тип</th><th>Со склада</th><th>На склад</th><th>Статус</th><th>Действия</th></template>
           <template v-else-if="tab==='movements'"><th>Дата</th><th>Товар</th><th>Склад</th><th>Количество</th><th>Себестоимость</th><th>Документ</th></template>
           <template v-else-if="tab==='turnover'"><th>Товар</th><th>Склад</th><th>Приход</th><th>Расход</th></template>
           <template v-else-if="tab==='reservations'"><th>Товар</th><th>Склад</th><th>Заказ</th><th>Осталось</th><th>Срок</th><th>Действия</th></template>
@@ -271,10 +298,10 @@ onUnmounted(() => window.removeEventListener('hashchange', routeDraft));
         </tr></thead>
         <tbody><tr v-for="row in rows" :key="row.id || row.warehouse_id+':'+row.product_id">
           <template v-if="tab==='balances'"><td><button class="btn slim ghost" @click="productHistory(row)">{{row.product}}</button></td><td>{{row.warehouse}}</td><td>{{row.qty}} {{row.unit}}</td><td>{{row.reserved}}</td><td :class="{'danger-text':row.low}">{{row.available}}</td><td>{{row.unit_cost}}</td></template>
-          <template v-else-if="tab==='documents'"><td><button class="btn slim ghost" @click="openDocument(row)">{{row.number}}</button></td><td>{{kinds[row.doc_type]}}</td><td>{{statuses[row.status]}}</td><td class="actionbar"><button v-if="canWriteDocument(row) && row.status==='draft'" class="btn primary slim" :disabled="pending || !!draft" @click="operate(row,'conduct')">Провести</button><button v-if="canWriteDocument(row) && row.status!=='cancelled'" class="btn slim" :disabled="pending" @click="operate(row,'cancel')">{{row.status==='conducted' ? 'Сторно' : 'Отменить'}}</button></td></template>
+          <template v-else-if="tab==='documents'"><td><button class="btn slim ghost" @click="openDocument(row)">{{row.number}}</button></td><td>{{kinds[row.doc_type]}}</td><td>{{label(warehouses,row.warehouse_from_id)}}</td><td>{{label(warehouses,row.warehouse_to_id)}}</td><td>{{statuses[row.status]}}</td><td class="actionbar"><button v-if="canWriteDocument(row) && row.status==='draft'" class="btn primary slim" :disabled="pending || !!draft" @click="operate(row,'conduct')">Провести</button><button v-if="canWriteDocument(row) && row.status!=='cancelled'" class="btn slim" :disabled="pending" @click="operate(row,'cancel')">{{row.status==='conducted' ? 'Сторно' : 'Отменить'}}</button><button v-if="canWriteDocument(row) && row.status==='draft'" class="btn slim" :disabled="pending" @click="openDocument(row)">Изменить</button><button v-if="canWriteDocument(row) && row.status==='draft'" class="btn slim ghost danger-text" :disabled="pending" @click="deleteDocument(row)">Удалить</button></td></template>
           <template v-else-if="tab==='movements'"><td>{{new Date(row.moved_at).toLocaleString('ru')}}</td><td>{{label(products,row.product_id)}}</td><td>{{label(warehouses,row.warehouse_id)}}</td><td>{{row.qty}}</td><td>{{row.unit_cost}}</td><td>{{row.reversal_of ? 'Сторно · ' : ''}}{{row.document_id}}</td></template>
           <template v-else-if="tab==='turnover'"><td>{{label(products,row.product_id)}}</td><td>{{label(warehouses,row.warehouse_id)}}</td><td>{{row.receipt}}</td><td>{{row.issue}}</td></template>
-          <template v-else-if="tab==='reservations'"><td>{{label(products,row.product_id)}}</td><td>{{label(warehouses,row.warehouse_id)}}</td><td>{{row.order_id}}</td><td>{{row.remaining}}</td><td>{{new Date(row.expires_at).toLocaleString('ru')}}</td><td><button v-if="writable" class="btn slim" @click="remove(row)">Снять</button></td></template>
+          <template v-else-if="tab==='reservations'"><td>{{label(products,row.product_id)}}</td><td>{{label(warehouses,row.warehouse_id)}}</td><td>{{row.order_id}}</td><td>{{row.remaining}}</td><td>{{new Date(row.expires_at).toLocaleString('ru')}}</td><td class="actionbar"><button v-if="writable && row.editable" class="btn slim" @click="editReservation(row)">Изменить</button><button v-if="writable" class="btn slim" @click="remove(row)">Снять</button></td></template>
           <template v-else><td>{{row.name || label(products,row.output_product_id)}}</td><td>{{row.sku ? row.sku+' · '+types[row.type]+' · '+row.unit : row.version ? 'Версия '+row.version+(row.is_active ? ' · действует' : '') : row.is_virtual ? 'Виртуальный' : 'Физический'}}</td>
             <td class="actionbar"><button v-if="tab==='recipes'" class="btn slim" @click="openRecipe(row)">Сколько можно выпустить</button><button v-if="writable" class="btn slim" @click="draft={...JSON.parse(JSON.stringify(row)),is_active:!!row.is_active,is_virtual:!!row.is_virtual,allow_negative:!!row.allow_negative}">Изменить</button><button v-if="writable" class="btn slim ghost" @click="remove(row)">Удалить</button></td></template>
         </tr></tbody>
