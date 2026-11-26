@@ -11,6 +11,7 @@ import BackendBadge from '@/components/ui/BackendBadge.vue';
 import CrmImportModal from '@/components/CrmImportModal.vue';
 import CrmRowModal from '@/components/CrmRowModal.vue';
 import ManualLink from '@/components/ui/ManualLink.vue';
+import DepartmentTasks from "@/components/DepartmentTasks.vue";
 
 const rowModal = ref(null);
 
@@ -96,6 +97,9 @@ onBeforeUnmount(() => window.removeEventListener('hashchange', readTaskRoute));
           <button class="btn slim" @click="importColl = 'tasks'" title="Загрузить задачи из CSV/JSON">⇪ Импорт</button>
           <button v-if="canEditCollection('tasks')" class="btn primary slim" data-tour="tasks-create" @click="newTask()">＋ Создать задачу</button>
         </div></div>
+
+    <DepartmentTasks />
+    <h2>Задачи CRM и напоминания</h2>
 
     <CrmRowModal
       v-if="rowModal"

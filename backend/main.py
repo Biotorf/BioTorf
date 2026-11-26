@@ -51,6 +51,7 @@ if store.IS_POSTGRES:
     from pg import check_connection as pg_check
 import logistics
 import inventory
+import department_tasks
 import channels
 import chat_inbox
 import crm
@@ -178,6 +179,7 @@ def media_path(media_id: str) -> Path | None:
 
 app = FastAPI(title="BIOTORF Business OS · Comms API", version="0.2.0")
 app.include_router(record_photos.router)
+app.include_router(department_tasks.router)
 
 
 def _ensure_channels_schema():
