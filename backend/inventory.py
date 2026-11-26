@@ -168,6 +168,8 @@ def _posting_source(tx, event: dict) -> tuple[dict | None, str | None]:
     kind = event["type"]
     if coll == "logistics" and record["kind"] != ("supply" if kind == "receipt_powder" else "dispatch"):
         raise ValueError("Тип документа логистики не подходит для этой операции")
+    if coll == "logistics" and kind in {"dispatch", "return"} and record.get("shipmentId"):
+        raise ValueError("Проведите складскую операцию по связанной отгрузке CRM.")
     source_order = record.get("orderId") or (rid if coll == "orders" else None)
     if source_order and kind in {"reserve", "release", "dispatch", "return"}:
         if event["orderId"] and event["orderId"] != source_order:

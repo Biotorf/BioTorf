@@ -34,7 +34,8 @@ const fieldId = (key) => `${formId}-${key}`;
 const label = (key) => crmFieldLabel('logistics', key);
 const savedDoc = ref(props.doc?.id && !String(props.doc.id).startsWith('NEW') ? props.doc : null);
 const isNew = computed(() => !savedDoc.value);
-const clientId = db.uid('LOC');
+const shipmentId = (props.doc || props.initialValues)?.shipmentId || '';
+const clientId = shipmentId ? `LOC-${shipmentId}` : db.uid('LOC');
 const saveError = ref('');
 const saving = ref(false);
 const busyLists = reactive(new Set());
@@ -182,6 +183,7 @@ function onSku(item, id) {
 
 const docPayload = () => ({
   kind: form.kind,
+  shipmentId: shipmentId || null,
   number: form.number.trim(),
   date: form.date,
   status: form.status,
@@ -222,6 +224,7 @@ function validatePayload(payload) {
 
 async function persist(payload) {
   validatePayload(payload);
+  if (payload.shipmentId || payload.issueAct) await db.pushCrmState();
   const document = isNew.value
     ? await db.addLogistics({ ...payload, clientId })
     : await db.updateLogistics(savedDoc.value.id, payload);
@@ -352,9 +355,9 @@ function exportCsv() {
         </select>
       </div>
       <template v-if="isDispatch">
-        <CrmSelectField v-model="form.farmId" class="field" :label="label('farmId')" :options="customers"
+        <CrmSelectField v-model="form.farmId" :disabled="!!shipmentId" class="field" :label="label('farmId')" :options="customers"
           searchable placeholder="Выберите клиента" @change="chooseFarm" />
-        <CrmSelectField v-model="form.orderId" class="field" :label="label('orderId')" :options="orders"
+        <CrmSelectField v-model="form.orderId" :disabled="!!shipmentId" class="field" :label="label('orderId')" :options="orders"
           searchable placeholder="Выберите заказ" @change="chooseOrder" />
         <div class="field">
           <label :for="fieldId('party')">{{ label('party') }}</label>

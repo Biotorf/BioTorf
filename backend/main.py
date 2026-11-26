@@ -1292,6 +1292,7 @@ class LogisticsAct(BaseModel):
 
 
 class LogisticsIn(BaseModel):
+    shipmentId: str | None = Field(None, max_length=100)
     clientId: str | None = Field(None, pattern="^LOC-[A-Za-z0-9-]{1,64}$")
     kind: str = Field(pattern="^(supply|dispatch)$")
     number: str | None = None
@@ -1312,6 +1313,17 @@ class LogisticsIn(BaseModel):
 
 def prepare_logistics_document(conn, body: LogisticsIn, existing: dict | None = None) -> dict:
     document = body.model_dump(exclude={"issueAct"})
+    if existing and body.shipmentId != existing.get("shipmentId"):
+        if body.shipmentId:
+            raise ValueError("Связь документа с отгрузкой менять нельзя.")
+        document["shipmentId"] = existing.get("shipmentId")
+    if shipment_id := document.get("shipmentId"):
+        shipment = crm.get_record(conn, "shipments", shipment_id)
+        if body.kind != "dispatch" or not shipment:
+            raise ValueError("Выберите существующую отгрузку CRM.")
+        order = crm.get_record(conn, "orders", shipment["orderId"]) if shipment.get("orderId") else None
+        document["orderId"] = shipment.get("orderId")
+        document["farmId"] = shipment.get("farmId") or (order or {}).get("farmId")
     if not body.issueAct:
         if existing:
             document["act"] = existing.get("act")
@@ -1327,7 +1339,8 @@ def prepare_logistics_document(conn, body: LogisticsIn, existing: dict | None = 
         raise ValueError("Заполните в настройках организации: " + ", ".join(missing) + ".")
 
     if body.kind == "dispatch":
-        client = crm.get_record(conn, "farms", body.farmId) if body.farmId else None
+        client_id = document.get("farmId")
+        client = crm.get_record(conn, "farms", client_id) if client_id else None
         if not client:
             raise ValueError("Выберите клиента из справочника и заполните его реквизиты в карточке.")
         counterparty = Requisites.model_validate({
@@ -1372,7 +1385,9 @@ def list_logistics(kind: str | None = Query(None, pattern="^(supply|dispatch)$")
 @app.post("/api/logistics", status_code=201)
 def create_logistics(body: LogisticsIn):
     doc_id = new_log_id(body.kind)
-    if body.clientId:
+    if body.shipmentId and body.kind == "dispatch":
+        doc_id = "DSP-SHIP-" + body.shipmentId
+    elif body.clientId:
         prefix = "SUP" if body.kind == "supply" else "DSP"
         doc_id = prefix + "-" + body.clientId.removeprefix("LOC-")
     try:

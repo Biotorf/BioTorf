@@ -107,10 +107,10 @@ const sourceRows = computed(() => {
   if (type === 'receipt_powder') return rows.filter((row) => row.kind === 'supply' && row.status === 'Принят'
     && row.items?.some((item) => item.material === 'powder' && item.qcStatus === 'Пройден'));
   if (type === 'production') return rows.filter((row) => row.status === 'Завершено' && ['Пройден', 'Отклонён'].includes(row.qcStatus));
-  if (table === 'logistics') return rows.filter((row) => row.kind === 'dispatch');
+  if (table === 'logistics') return rows.filter((row) => row.kind === 'dispatch' && !row.shipmentId);
   return rows;
 });
-const selectedSource = computed(() => sourceRows.value.find((row) => String(row.id) === form.value?.sourceId));
+const selectedSource = computed(() => sourceRows.value.find((row) => String(row.id) === (form.value?.collection === 'orders' ? form.value.orderId : form.value?.sourceId)));
 const sourceChoices = computed(() => sourceRows.value.map((row) => ({ value: String(row.id), label: crmTitle(row) })));
 const orderChoices = computed(() => db.orders.map((order) => ({
   value: String(order.id),
@@ -200,17 +200,23 @@ function prefillSource(record) {
     if (record.qcStatus === 'Пройден') {
       draft.lines.push(line(record.sku || '', warehouse, record.lot || '', String(record.actualQty ?? '')));
     }
-  } else if (['dispatch', 'return'].includes(draft.type)) {
+  } else if (draft.type === 'release') {
+    const reserved = balances.value.filter((row) => Number(row.reservations?.[draft.orderId]) > 0);
+    draft.lines = reserved.length ? reserved.map((row) => line(row.sku, row.warehouse, row.lot,
+      String(row.reservations[draft.orderId]))) : [line()];
+  } else if (['dispatch', 'reserve'].includes(draft.type)) {
     if (record.orderId) draft.orderId = record.orderId;
-    if (draft.type !== 'dispatch') return;
-    const items = Array.isArray(record.items) ? record.items : [];
+    const items = record.items?.length ? record.items : [record];
     const suggested = items.filter((item) => item.sku || item.skuId).map((item) => {
       const sku = item.sku || item.skuId;
       const packageUnit = !item.unit || ['шт.', 'шт', 'штук', 'упак'].includes(item.unit);
       const quantity = Number(item.packs ?? (packageUnit ? item.qty : 0));
       const matches = balances.value.filter((row) => row.sku === sku && (!record.warehouse || row.warehouse === record.warehouse)
-        && Number(row.available) + Number(row.reservations?.[draft.orderId] || 0) >= quantity);
-      const match = quantity > 0 && matches.length === 1 ? matches[0] : null;
+        && Number(row.available) + (draft.type === 'dispatch' ? Number(row.reservations?.[draft.orderId] || 0) : 0) >= quantity);
+      const reservedMatches = draft.type === 'dispatch' ? matches.filter((row) =>
+        Number(row.reservations?.[draft.orderId]) >= quantity) : [];
+      const candidates = reservedMatches.length ? reservedMatches : matches;
+      const match = quantity > 0 && candidates.length === 1 ? candidates[0] : null;
       return line(sku, match?.warehouse || record.warehouse || '', match?.lot || '', quantity > 0 ? String(quantity) : '');
     });
     if (suggested.length) draft.lines = suggested;
@@ -220,6 +226,11 @@ watch(selectedSource, (record) => {
   if (!busyWarehouses.size && form.value?.lines?.every((row) => !row.lot && !row.qty)) prefillSource(record);
 });
 function chooseSource() { prefillSource(selectedSource.value); }
+function chooseOrder() {
+  if (!orderRequired.value) return;
+  if (selectedSource.value) chooseSource();
+  else form.value.lines = [line()];
+}
 function showLinkedForm() {
   const hash = location.hash;
   if (hash.split('?')[0] !== '#/warehouse') return;
@@ -296,6 +307,7 @@ async function submit() {
   saving.value = true;
   try {
     const payload = toPayload();
+    if (payload.source && payload.source.collection !== 'logistics') await db.pushCrmState();
     const hash = JSON.stringify(payload);
     if (hash !== lastSubmission?.hash) lastSubmission = { hash, id: makeId() };
     accept(await inventoryApi.post({ id: lastSubmission.id, ...payload }));
@@ -367,14 +379,14 @@ onBeforeUnmount(() => window.removeEventListener('hashchange', showLinkedForm));
             :label="sourceTables[form.collection]" :options="sourceChoices" :disabled="busyWarehouses.size > 0"
             searchable placeholder="Выберите документ" @change="chooseSource" />
           <CrmSelectField v-if="orderVisible" v-model="form.orderId" class="field" label="Заказ" :options="orderChoices"
-            :required="orderRequired" searchable placeholder="Выберите заказ" />
+            :required="orderRequired" searchable placeholder="Выберите заказ" @change="chooseOrder" />
           <label>{{ form.reverseOf ? 'Причина сторно' : 'Основание' }}
             <input v-model="form.reference" class="input" maxlength="500" :required="!!form.reverseOf || ['opening', 'adjustment'].includes(form.type)" />
           </label>
         </div>
 
         <template v-if="!form.reverseOf">
-          <button v-if="selectedSource && ['receipt_powder', 'production', 'dispatch'].includes(form.type)" type="button"
+          <button v-if="selectedSource && ['receipt_powder', 'production', 'dispatch', 'reserve', 'release'].includes(form.type)" type="button"
             class="btn slim ghost prefill" :disabled="busyWarehouses.size > 0" @click="chooseSource">Заполнить из документа</button>
           <p v-if="form.type === 'production'" class="mini">Укажите расход порошка и фактический выпуск по партиям. При отклонении контроля качества укажите расход сырья.</p>
           <p v-if="form.type === 'adjustment'" class="mini">Укажите разницу между фактическим и учётным остатком. Уменьшение записывается со знаком минус.</p>

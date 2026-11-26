@@ -7,7 +7,7 @@ import CrmDataTable from '@/components/CrmDataTable.vue';
 // Таблицы в стиле Excel: итоговые карточки, поиск, фильтр по статусу,
 // редактирование позиций на странице, экспорт всего реестра в .xls/.csv,
 // печать реестра и создание актов приёма-передачи под каждый документ.
-import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
 import { useFormatters } from '@/composables/useFormatters';
@@ -36,13 +36,15 @@ const ui = useUiStore();
 const { canEdit, canEditCollection } = usePermissions();
 const { money, num } = useFormatters();
 
-const tabFromHash = () => new URLSearchParams(location.hash.split('?')[1]).get('kind') === 'supply' ? 'supply' : 'dispatch';
+const routeQuery = () => new URLSearchParams(location.hash.split('?')[1]);
+const targetShipment = ref(routeQuery().get('shipment'));
+const tabFromHash = () => routeQuery().get('kind') === 'supply' ? 'supply' : 'dispatch';
 const tab = ref(tabFromHash());
 function locationTab(kind) { location.hash = '#/shipments?kind=' + kind; }
-const readTab = () => { tab.value = tabFromHash(); ui.filter = 'Все'; };
+const readTab = () => { tab.value = tabFromHash(); targetShipment.value = routeQuery().get('shipment'); ui.filter = 'Все'; };
 onMounted(() => window.addEventListener('hashchange', readTab));
 onBeforeUnmount(() => window.removeEventListener('hashchange', readTab));
-const syncing = ref(false);
+const syncing = ref(true);
 
 onMounted(async () => {
   syncing.value = true;
@@ -83,11 +85,36 @@ const itemsSummary = (d) => {
   return names.length <= 2 ? names.join(', ') : `${names[0]} +${names.length - 1} поз.`;
 };
 
-async function openEditor(doc = null) {
-  logisticsEditor.value = { doc, kind: doc?.kind || tab.value };
+async function openEditor(doc = null, initialValues = undefined) {
+  logisticsEditor.value = { doc, kind: doc?.kind || tab.value, initialValues };
   await nextTick();
   logisticsForm.value?.scrollIntoView({ block: 'start' });
 }
+
+function openShipmentDocument(shipment) {
+  const existing = db.logistics.find((doc) => doc.shipmentId === shipment.id);
+  if (existing) return openEditor(existing);
+  const order = db.orderById(shipment.orderId);
+  const farmId = shipment.farmId || order?.farmId;
+  const items = shipment.items?.length ? shipment.items : order?.items?.length ? order.items : order?.sku ? [order] : [];
+  return openEditor(null, {
+    shipmentId: shipment.id, kind: 'dispatch', number: shipment.number, date: shipment.planDate || shipment.date,
+    status: 'Создан', farmId, orderId: shipment.orderId, party: db.farmById(farmId)?.name,
+    vehicle: shipment.vehicle, driver: shipment.driver,
+    base: order ? `Заказ ${order.number || order.num || order.id}` : '',
+    items: items.map((item) => {
+      const skuId = item.skuId || item.sku;
+      const sku = db.skuById(skuId);
+      return { skuId, name: item.name || sku?.name || skuId, qty: item.packs ?? item.qty,
+        unit: item.unit || 'шт.', price: item.price ?? sku?.price ?? 0, note: item.note || '' };
+    }),
+  });
+}
+
+watch(() => !syncing.value && canEdit('shipments') && targetShipment.value &&
+  db.shipments.find((shipment) => shipment.id === targetShipment.value), (shipment) => {
+  if (shipment) openShipmentDocument(shipment);
+});
 
 async function removeDoc(d) {
   if (!confirm(`Удалить документ ${d.number} (${d.party || '—'})?`)) return;
@@ -134,7 +161,7 @@ function canPostReceipt(doc) {
 }
 
 function canPostDispatch(doc) {
-  return canEdit('warehouse') && doc.kind === 'dispatch' && doc.items?.some((item) => item.skuId) &&
+  return canEdit('warehouse') && doc.kind === 'dispatch' && !doc.shipmentId && doc.items?.some((item) => item.skuId) &&
     !['Черновик', 'Отменён', 'Отменен', 'Отменена', 'Отменено'].includes(doc.status);
 }
 
@@ -175,7 +202,7 @@ function canPostDispatch(doc) {
 
     <div v-if="logisticsEditor" ref="logisticsForm" class="logistics-form">
       <LogisticsDocEditor :key="logisticsEditor.doc?.id || logisticsEditor.kind"
-        inline :doc="logisticsEditor.doc" :kind="logisticsEditor.kind" @close="logisticsEditor = null" />
+        inline :doc="logisticsEditor.doc" :kind="logisticsEditor.kind" :initial-values="logisticsEditor.initialValues" @close="logisticsEditor = null" />
     </div>
 
     <div class="stats">
@@ -228,6 +255,8 @@ function canPostDispatch(doc) {
       <CrmDataTable coll="shipments" :rows="db.data.shipments || []" empty="Отгрузок CRM нет.">
         <template #actions="{ row: s }">
           <button v-if="canEditCollection('shipments')" class="btn slim ghost" @click="editShipment(s)">Изменить</button>
+          <button v-if="canEdit('shipments') && s.orderId" class="btn slim ghost" :disabled="syncing"
+            @click="openShipmentDocument(s)">Документ и акт</button>
           <a v-if="canEdit('warehouse') && s.orderId" :href="inventoryLink('dispatch', 'shipments', s.id, s.orderId)">Со склада</a>
           <button v-if="s.journeyId" class="btn slim ghost" @click="ui.openJourney(s.journeyId)">Процесс</button>
         </template>

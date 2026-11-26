@@ -105,6 +105,7 @@ def normalize_doc(body: dict, doc_id: str) -> dict:
         "status": str(body.get("status") or "Черновик"),
         "party": str(body.get("party") or ""),          # поставщик / получатель
         "farmId": body.get("farmId") or None,           # привязка к хозяйству (для отгрузок)
+        "shipmentId": body.get("shipmentId") or None,
         "orderId": body.get("orderId") or None,         # привязка к заказу
         "warehouse": str(body.get("warehouse") or ""),
         "vehicle": str(body.get("vehicle") or ""),      # транспорт (отгрузка)

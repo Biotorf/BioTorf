@@ -1,4 +1,5 @@
 <script setup>
+import { inventoryLink } from '@/utils/inventoryLink';
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
 import CrmSelectField from '@/components/CrmSelectField.vue';
@@ -10,7 +11,7 @@ import { useUiStore } from '@/stores/ui';
 const db = useDbStore();
 const ui = useUiStore();
 const { day, money } = useFormatters();
-const { canEditCollection, canSeeFarm } = usePermissions();
+const { canEdit, canEditCollection, canSeeFarm } = usePermissions();
 const canWork = computed(() => canEditCollection('journeys'));
 const clientOptions = computed(() => db.farms.filter(canSeeFarm).map((row) => ({ value: row.id, label: [row.name || row.id, row.region, row.phone].filter(Boolean).join(' · ') })));
 const skuOptions = computed(() => db.skus.map((row) => ({ value: row.id, label: [row.name || row.id, row.pack ? `${row.pack} л` : ''].filter(Boolean).join(' · ') })));
@@ -396,6 +397,9 @@ function skuChanged(line) {
 
         <section v-if="journey && !editor" class="panel supporting">
           <div v-if="canWork || quote" class="actionbar supporting-actions">
+            <a v-if="order && canEdit('warehouse')" class="btn slim ghost" :href="inventoryLink('reserve', 'orders', order.id, order.id)">Резерв на складе</a>
+            <a v-if="shipment && canEdit('warehouse')" class="btn slim ghost" :href="inventoryLink('dispatch', 'shipments', shipment.id, shipment.orderId)">Списать со склада</a>
+            <a v-if="shipment && canEdit('shipments')" class="btn slim ghost" :href="'#/shipments?shipment=' + encodeURIComponent(shipment.id)">Документ и акт</a>
             <button v-if="quote && !order" type="button" class="btn slim ghost" @click="copyQuote">Скопировать КП</button>
             <button v-if="canWork" type="button" class="btn slim ghost" @click="openEditor('qualification')">Данные клиента</button>
             <button v-if="canWork && isAgro && deal && !pilot && !finished" type="button" class="btn slim ghost" @click="openEditor('pilot')">Добавить пилот</button>
