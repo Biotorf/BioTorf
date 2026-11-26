@@ -155,9 +155,9 @@ function printRegistry() {
   printHtml(label, body);
 }
 
-function canPostReceipt(doc) {
+function canPostReceipt(doc, material) {
   return canEdit('warehouse') && doc.kind === 'supply' && doc.status === 'Принят' &&
-    doc.items?.some((item) => item.material === 'powder' && item.qcStatus === 'Пройден');
+    doc.items?.some((item) => item.material === material && item.qcStatus === 'Пройден');
 }
 
 function canPostDispatch(doc) {
@@ -173,7 +173,7 @@ function canPostDispatch(doc) {
       <div>
         <h1 data-tour="supply-view">Поставки и отгрузки</h1>
         <ManualLink />
-        <div class="subtitle">Приёмка порошка и доставка готовой продукции.</div>
+        <div class="subtitle">Приёмка пасты и доставка готовой продукции.</div>
       <BackendBadge collection="shipments" />
       </div>
       <div v-if="canEdit('shipments')" class="actionbar">
@@ -229,7 +229,8 @@ function canPostDispatch(doc) {
         <p>{{ itemsSummary(doc) }}</p>
         <div class="actionbar">
           <button class="btn slim" @click="openEditor(doc)">Открыть документ</button>
-          <a v-if="canPostReceipt(doc)" :href="inventoryLink('receipt_powder', 'logistics', doc.id)">Провести приёмку</a>
+          <a v-if="canPostReceipt(doc, 'paste')" :href="inventoryLink('receipt_paste', 'logistics', doc.id)">Провести приёмку</a>
+          <a v-if="canPostReceipt(doc, 'powder')" :href="inventoryLink('receipt_powder', 'logistics', doc.id)">Приёмка порошка</a>
           <a v-if="canPostDispatch(doc)" :href="inventoryLink('dispatch', 'logistics', doc.id, doc.orderId)">Со склада</a>
         </div>
       </article>
@@ -240,7 +241,8 @@ function canPostDispatch(doc) {
       <CrmDataTable coll="logistics" :rows="filtered" empty="Документов нет.">
         <template #actions="{ row: doc }">
           <button class="btn slim ghost" @click="openEditor(doc)">Открыть</button>
-          <a v-if="canPostReceipt(doc)" :href="inventoryLink('receipt_powder', 'logistics', doc.id)">Провести приёмку</a>
+          <a v-if="canPostReceipt(doc, 'paste')" :href="inventoryLink('receipt_paste', 'logistics', doc.id)">Провести приёмку</a>
+          <a v-if="canPostReceipt(doc, 'powder')" :href="inventoryLink('receipt_powder', 'logistics', doc.id)">Приёмка порошка</a>
           <a v-if="canPostDispatch(doc)" :href="inventoryLink('dispatch', 'logistics', doc.id, doc.orderId)">Со склада</a>
           <button v-if="canEdit('shipments')" class="btn slim ghost danger-text" @click="removeDoc(doc)">Удалить</button>
         </template>

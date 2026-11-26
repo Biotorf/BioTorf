@@ -28,7 +28,7 @@ const source = computed(() => db.data.production || []);
 const statuses = computed(() => ['Все', ...statusOptions('production', source.value)]);
 const rows = computed(() => source.value.filter((row) => statusFilter.value === 'Все' || row.status === statusFilter.value));
 function canPost(row) {
-  return canEditCollection('production') && row.status === 'Завершено' && row.powderUsedKg > 0 &&
+  return canEditCollection('production') && row.status === 'Завершено' && (row.pasteUsedKg > 0 || row.powderUsedKg > 0) &&
     !!row.inputLot && !!row.lot && ['Пройден', 'Отклонён'].includes(row.qcStatus);
 }
 </script>
@@ -38,7 +38,7 @@ function canPost(row) {
     <div class="pagehead">
       <div>
         <h1 data-tour="production-view">Производство</h1>
-        <p class="subtitle">Планируйте выпуск по заказам и фиксируйте расход порошка и фактический выпуск.</p>
+        <p class="subtitle">Планируйте выпуск по заказам и фиксируйте расход пасты и фактический выпуск.</p>
       </div>
       <button v-if="canEditCollection('production')" class="btn primary" data-tour="production-create" @click="rowOpen = { record: null }">Новая партия</button>
     </div>
@@ -56,7 +56,7 @@ function canPost(row) {
       <label>Статус
         <select v-model="statusFilter" class="select"><option v-for="status in statuses" :key="status">{{ status }}</option></select>
       </label>
-      <a href="#/shipments?kind=supply">Поставки порошка</a>
+      <a href="#/shipments?kind=supply">Поставки пасты</a>
     </div>
     <div v-if="rows.length" class="batch-grid">
       <article v-for="row in rows" :key="row.id" class="panel batch">
@@ -66,6 +66,7 @@ function canPost(row) {
         </header>
         <p class="subtitle">{{ [row.lot || row.batch, row.date ? day(row.date) : '', row.orderId ? 'Под заказ' : ''].filter(Boolean).join(' · ') }}</p>
         <p v-if="row.qty || row.plannedVolumeL"><strong>План</strong> {{ row.qty ?? '—' }} {{ row.unit || 'шт.' }} <span v-if="row.plannedVolumeL">· {{ row.plannedVolumeL }} л</span></p>
+        <p v-if="row.plannedPasteKg != null"><strong>Паста по рецептуре {{ row.recipeVersion }}</strong> {{ row.plannedPasteKg }} кг</p>
         <p v-if="row.plannedPowderKg != null"><strong>Порошок по рецептуре {{ row.recipeVersion }}</strong> {{ row.plannedPowderKg }} кг</p>
         <p v-if="row.actualQty != null"><strong>Выпуск</strong> {{ row.actualQty }} {{ row.unit || 'шт.' }} · {{ row.qcStatus || 'Контроль ожидается' }}</p>
         <div class="actionbar">

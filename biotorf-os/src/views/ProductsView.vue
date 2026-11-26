@@ -91,10 +91,10 @@ function openPhotosForNewProduct(record) {
             <p class="subtitle">{{ [row.id, row.pack ? row.pack + ' л' : '', row.price != null && row.price !== '' ? money(row.price) : ''].filter(Boolean).join(' · ') }}</p>
           </div>
         </header>
-        <p v-if="row.recipeVersion && row.powderKgPerL > 0">
-          Рецептура {{ row.recipeVersion }} · {{ row.powderKgPerL }} кг порошка на 1 л · потери {{ row.lossPct }}%
+        <p v-if="row.recipeVersion && row.pasteKgPerL > 0">
+          Рецептура {{ row.recipeVersion }} · {{ row.pasteKgPerL }} кг пасты на 1 л · потери {{ row.lossPct }}%
         </p>
-        <p v-else class="subtitle">Норма расхода порошка ещё не задана.</p>
+        <p v-else class="subtitle">Норма расхода пасты ещё не задана.</p>
         <div class="actionbar">
           <a class="btn slim" :href="productPhotos(row.id)" data-tour="product-photos">Фото</a>
           <button v-if="canEditCollection('skus')" class="btn slim ghost" @click="editor = { record: row }">Изменить</button>

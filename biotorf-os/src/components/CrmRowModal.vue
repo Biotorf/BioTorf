@@ -29,7 +29,7 @@ const modalId = useId();
 const fieldId = (key) => `${modalId}-${key}`;
 const heading = ref(null);
 
-const NUM_FIELDS = new Set(['area', 'volumeL', 'amount', 'qty', 'price', 'stock', 'pack', 'reserved', 'total', 'version', 'plannedVolumeL', 'pasteUsedKg', 'powderUsedKg', 'actualQty', 'powderKgPerL', 'lossPct', 'plannedPowderKg']);
+const NUM_FIELDS = new Set(['area', 'volumeL', 'amount', 'qty', 'price', 'stock', 'pack', 'reserved', 'total', 'version', 'plannedVolumeL', 'pasteKgPerL', 'plannedPasteKg', 'pasteUsedKg', 'powderUsedKg', 'actualQty', 'powderKgPerL', 'lossPct', 'plannedPowderKg']);
 const BOOL_FIELDS = new Set(['paid', 'primary', 'received', 'public']);
 const LONG_FIELDS = new Set(['notes', 'text', 'route', 'result', 'tags', 'caption']);
 
@@ -46,10 +46,10 @@ function boolValue(value) {
   return /^(1|true|да|yes)$/i.test(String(value).trim());
 }
 
-function acceptedRawLots(doc, includeLegacy = false) {
+function acceptedRawLots(doc, includePowder = false) {
   if (doc?.kind !== 'supply' || doc.status !== 'Принят') return [];
   return [...new Set((Array.isArray(doc.items) ? doc.items : [])
-    .filter((item) => (item?.material === 'powder' || (includeLegacy && item?.material === 'paste')) && item.qcStatus === 'Пройден' && item.lot)
+    .filter((item) => (item?.material === 'paste' || (includePowder && item?.material === 'powder')) && item.qcStatus === 'Пройден' && item.lot)
     .map((item) => String(item.lot)))];
 }
 function rawLots() {
@@ -166,12 +166,13 @@ const fields = computed(() => props.requisitesOnly
 const form = ref({});
 const showExtraFields = ref(false);
 const coreFields = {
-  skus: ['id', 'name', 'line', 'pack', 'price', 'recipeVersion', 'powderKgPerL', 'lossPct'],
-  production: ['date', 'sku', 'lot', 'qty', 'unit', 'plannedVolumeL', 'plannedPowderKg', 'status',
-    'supplyId', 'inputLot', 'powderUsedKg', 'pasteUsedKg', 'actualQty', 'qcStatus'],
+  skus: ['id', 'name', 'line', 'pack', 'price', 'recipeVersion', 'pasteKgPerL', 'lossPct'],
+  production: ['date', 'sku', 'lot', 'qty', 'unit', 'plannedVolumeL', 'plannedPasteKg', 'status',
+    'supplyId', 'inputLot', 'pasteUsedKg', 'actualQty', 'qcStatus'],
 };
 const visibleFields = computed(() => fields.value.filter((key) => key !== 'items' && (!props.requisitesOnly || key !== 'id') &&
-  (!coreFields[props.coll] || showExtraFields.value || coreFields[props.coll].includes(key))));
+  (!coreFields[props.coll] || showExtraFields.value || coreFields[props.coll].includes(key) ||
+    (props.coll === 'production' && ['powderUsedKg', 'plannedPowderKg'].includes(key) && props.record?.[key] != null))));
 const extraFieldsCount = computed(() => coreFields[props.coll] ?
   fields.value.filter((key) => !coreFields[props.coll].includes(key)).length : 0);
 let initial = {};
@@ -272,9 +273,8 @@ async function save() {
     if (props.coll === 'production') {
       const { supplyId, inputLot, status, qcStatus, plannedVolumeL, actualQty, powderUsedKg, pasteUsedKg } = form.value;
       const linkedSupply = (db.data.logistics || []).find((row) => String(row.id) === supplyId);
-      const isLegacyLot = linkedSupply?.items?.some((item) => item.lot === inputLot && item.material === 'paste')
-        && !linkedSupply?.items?.some((item) => item.lot === inputLot && item.material === 'powder');
-      const actualUsed = isLegacyLot ? pasteUsedKg : powderUsedKg;
+      const isPasteLot = linkedSupply?.items?.some((item) => item.lot === inputLot && item.material === 'paste');;
+      const actualUsed = isPasteLot ? pasteUsedKg : powderUsedKg;
       const changed = (...keys) => !isEdit.value || keys.some((key) => form.value[key] !== initial[key]);
       const validLot = !!supplyId && !!inputLot && rawLots().includes(inputLot);
       if (changed('supplyId', 'inputLot') && (supplyId || inputLot) && !validLot) {
@@ -290,11 +290,12 @@ async function save() {
       }
     }
     if (props.coll === 'skus') {
-      const { recipeVersion, powderKgPerL, lossPct } = form.value;
-      if ((powderKgPerL !== '' || lossPct !== '') && (
-        !recipeVersion?.trim() || !(Number(powderKgPerL.replace(',', '.')) > 0) ||
+      const { recipeVersion, pasteKgPerL, powderKgPerL, lossPct } = form.value;
+      const norm = pasteKgPerL || powderKgPerL;
+      if ((norm !== '' || lossPct !== '') && (
+        !recipeVersion?.trim() || !(Number(norm.replace(',', '.')) > 0) ||
         lossPct === '' || !(Number(lossPct.replace(',', '.')) >= 0 && Number(lossPct.replace(',', '.')) < 100)
-      )) throw new Error('Для расчёта сырья укажите версию рецептуры, норму порошка больше нуля и потери от 0 до 100% (исключительно).');
+      )) throw new Error('Для расчёта сырья укажите версию рецептуры, норму пасты больше нуля и потери от 0 до 100% (исключительно).');
     }
     for (const k of fields.value) {
       if (k === 'items' || (k === 'stage' && props.coll === 'deals' && props.record?.journeyId)) continue;
@@ -389,7 +390,7 @@ async function removeRecord() {
             :disabled="busy || !!linkedDraft || (k === 'stage' && coll === 'deals' && !!record?.journeyId) || (k === 'refId' && !referenceTable(k))"
             @change="onChoiceChange(k)" @create-request="createReference(referenceTable(k), k)" @busy-change="setDictionaryBusy(k, $event)" />
           <textarea v-else-if="LONG_FIELDS.has(k) || isJsonField(k)" :id="fieldId(k)" v-model="form[k]" rows="3"></textarea>
-          <input v-else :id="fieldId(k)" v-model="form[k]" :readonly="(k === 'id' && isEdit) || (coll === 'production' && k === 'plannedPowderKg')" :placeholder="k === 'id' && !isEdit ? 'Можно оставить пустым' : undefined" :inputmode="NUM_FIELDS.has(k) ? 'decimal' : undefined" />
+          <input v-else :id="fieldId(k)" v-model="form[k]" :readonly="(k === 'id' && isEdit) || (coll === 'production' && ['plannedPasteKg', 'plannedPowderKg'].includes(k))" :placeholder="k === 'id' && !isEdit ? 'Можно оставить пустым' : undefined" :inputmode="NUM_FIELDS.has(k) ? 'decimal' : undefined" />
         </div>
         <div v-if="extraFieldsCount" class="wide">
           <button type="button" class="btn slim ghost" :disabled="addingBusy || !!linkedDraft" :aria-expanded="showExtraFields" @click="showExtraFields = !showExtraFields">

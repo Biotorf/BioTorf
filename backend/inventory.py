@@ -15,10 +15,11 @@ SOURCE_POSTINGS = "inventorySourcePostings"
 ORDER_STOCK = "inventoryOrderStock"
 CANCELLED = {"Отменён", "Отменен", "Отменена", "Отменено"}
 TYPES = frozenset({
-    "opening", "receipt_powder", "production", "reserve", "release",
+    "opening", "receipt_paste", "receipt_powder", "production", "reserve", "release",
     "dispatch", "return", "adjustment", "reversal",
 })
 SOURCE_TYPES = {
+    "receipt_paste": {"logistics"},
     "receipt_powder": {"logistics"},
     "production": {"production"},
     "reserve": {"orders"},
@@ -170,7 +171,7 @@ def _posting_source(tx, event: dict) -> tuple[dict | None, str | None]:
     if not record:
         raise ValueError("Документ-основание не найден")
     kind = event["type"]
-    if coll == "logistics" and record["kind"] != ("supply" if kind == "receipt_powder" else "dispatch"):
+    if coll == "logistics" and record["kind"] != ("supply" if kind in {"receipt_paste", "receipt_powder"} else "dispatch"):
         raise ValueError("Тип документа логистики не подходит для этой операции")
     if coll == "logistics" and kind in {"dispatch", "return"} and record.get("shipmentId"):
         raise ValueError("Проведите складскую операцию по связанной отгрузке CRM.")
@@ -179,7 +180,7 @@ def _posting_source(tx, event: dict) -> tuple[dict | None, str | None]:
         if event["orderId"] and event["orderId"] != source_order:
             raise ValueError("Заказ должен совпадать с заказом в документе")
         event["orderId"] = source_order
-    unique_source = kind in {"receipt_powder", "production", "dispatch"}
+    unique_source = kind in {"receipt_paste", "receipt_powder", "production", "dispatch"}
     return record, _hash([kind, coll, rid]) if unique_source else None
 
 
@@ -232,18 +233,19 @@ def _validate_event(tx, event: dict, source: dict | None) -> None:
         _check_document_lines(finished, _document_quantities(source))
     if kind in {"reserve", "release", "dispatch", "return"} and raw:
         raise ValueError("Резерв, отгрузка и возврат относятся к готовой продукции")
-    if kind == "receipt_powder":
-        if finished or any(row["sku"] != "POWDER" for row in raw):
-            raise ValueError("В приёмке порошка допускаются только партии POWDER в кг")
+    if kind in {"receipt_paste", "receipt_powder"}:
+        material = "paste" if kind == "receipt_paste" else "powder"
+        if finished or any(row["sku"] != material.upper() for row in raw):
+            raise ValueError("Тип сырья в строках должен совпадать с видом приёмки")
         if source:
             expected = {}
             if source.get("status") != "Принят":
                 raise ValueError("Приёмка возможна после подтверждения документа поставки")
             for item in source.get("items") or []:
-                if item.get("material") != "powder":
+                if item.get("material") != material:
                     continue
                 if item.get("qcStatus") != "Пройден" or item.get("unit") not in {"кг", "т"}:
-                    raise ValueError("Для порошка проверьте качество и единицу приёмки")
+                    raise ValueError("Для сырья проверьте качество и единицу приёмки")
                 lot = item["lot"]
                 qty = Decimal(str(item["qty"])) * (1000 if item["unit"] == "т" else 1)
                 expected[lot] = expected.get(lot, Decimal(0)) + _number(qty, "кг")
@@ -253,20 +255,28 @@ def _validate_event(tx, event: dict, source: dict | None) -> None:
                     raise ValueError("Склад должен совпадать со складом назначения в поставке")
                 actual[row["lot"]] = actual.get(row["lot"], Decimal(0)) + Decimal(row["qty"])
             if actual != expected:
-                raise ValueError("Партии и количество порошка должны совпадать с принятыми позициями поставки")
+                raise ValueError("Партии и количество сырья должны совпадать с принятыми позициями поставки")
     if kind == "production":
-        if not raw or any(row["sku"] != "POWDER" for row in raw):
-            raise ValueError("Для производства укажите расход порошка POWDER")
+        if not raw or len({row["sku"] for row in raw}) != 1:
+            raise ValueError("Для производства укажите расход одного вида сырья")
         rejected = source and source.get("qcStatus") == "Отклонён"
         if (rejected and finished) or (not rejected and not finished):
-            raise ValueError("Брак проводится только как расход порошка, успешная партия — с фактическим выпуском")
+            raise ValueError("Брак проводится только как расход сырья, успешная партия — с фактическим выпуском")
         if source:
             if source.get("status") != "Завершено" or source.get("qcStatus") not in {"Пройден", "Отклонён"}:
                 raise ValueError("Для проведения завершите производственную партию и подтвердите результат контроля")
+            raw_sku = raw[0]["sku"]
+            supply = logistics.get_doc(tx, source["supplyId"]) if source.get("supplyId") else None
+            if supply and not any(item.get("material") == raw_sku.lower()
+                                  and item.get("lot") == source.get("inputLot")
+                                  and item.get("qcStatus") == "Пройден"
+                                  for item in supply.get("items", [])):
+                raise ValueError("В поставке нет принятой партии выбранного вида сырья")
+            usage_field = "pasteUsedKg" if raw_sku == "PASTE" else "powderUsedKg"
             if any(row["lot"] != source.get("inputLot") for row in raw) or (
-                sum(Decimal(row["qty"]) for row in raw) != _number(source.get("powderUsedKg"), "кг")
+                sum(Decimal(row["qty"]) for row in raw) != _number(source.get(usage_field), "кг")
             ):
-                raise ValueError("Входящая партия и расход порошка должны совпадать с производственным документом")
+                raise ValueError("Входящая партия и расход сырья должны совпадать с производственным документом")
             if not rejected and (
                 any(row["lot"] != source.get("lot") or row["sku"] != source.get("sku") for row in finished)
                 or sum(Decimal(row["qty"]) for row in finished) != _number(source.get("actualQty"), "шт.")
@@ -280,7 +290,7 @@ def _effect(event: dict, row: dict, balance: dict | None) -> dict:
     stock, reserve = qty, Decimal(0)
     if kind in {"reserve", "release"}:
         stock, reserve = Decimal(0), qty if kind == "reserve" else -qty
-    elif kind == "production" and row["sku"] == "POWDER":
+    elif kind == "production" and row["sku"] in RAW_SKUS:
         stock = -qty
     elif kind == "dispatch":
         stock = -qty

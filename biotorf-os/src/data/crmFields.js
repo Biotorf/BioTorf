@@ -10,9 +10,9 @@ const SCHEMAS = {
   shipments:  ['id', 'number', 'orderId', 'farmId', 'journeyId', 'date', 'planDate', 'carrier', 'vehicle', 'transport', 'driver', 'plate', 'route', 'items', 'amount', 'status', 'received'],
   tasks:      ['id', 'title', 'owner', 'due', 'priority', 'status', 'refKind', 'refId'],
   contacts:   ['id', 'farmId', 'name', 'role', 'phone', 'whatsapp', 'telegram', 'email', 'primary'],
-  skus:       ['id', 'name', 'line', 'pack', 'recipe', 'recipeVersion', 'powderKgPerL', 'lossPct', 'status', 'category', 'unit', 'price', 'stock', 'notes'],
+  skus:       ['id', 'name', 'line', 'pack', 'recipe', 'recipeVersion', 'pasteKgPerL', 'powderKgPerL', 'lossPct', 'status', 'category', 'unit', 'price', 'stock', 'notes'],
   warehouse:  ['id', 'sku', 'batch', 'qty', 'reserved', 'unit', 'warehouse', 'expiry', 'status', 'orderId'],
-  production: ['id', 'date', 'sku', 'product', 'lot', 'qty', 'unit', 'plannedVolumeL', 'recipeVersion', 'plannedPowderKg', 'status', 'supplyId', 'inputLot', 'powderUsedKg', 'actualQty', 'qcStatus', 'shift', 'operator', 'notes', 'orderId'],
+  production: ['id', 'date', 'sku', 'product', 'lot', 'qty', 'unit', 'plannedVolumeL', 'recipeVersion', 'plannedPasteKg', 'plannedPowderKg', 'status', 'supplyId', 'inputLot', 'pasteUsedKg', 'powderUsedKg', 'actualQty', 'qcStatus', 'shift', 'operator', 'notes', 'orderId'],
   pilots:     ['id', 'title', 'farmId', 'dealId', 'journeyId', 'crop', 'area', 'startDate', 'endDate', 'nextCheck', 'control', 'goal', 'status', 'owner', 'result'],
   quotes:     ['id', 'number', 'dealId', 'farmId', 'journeyId', 'date', 'items', 'terms', 'total', 'status'],
   journeys:   ['id', 'leadId', 'farmId', 'dealId', 'pilotId', 'quoteId', 'orderId', 'invoiceId', 'shipmentId', 'stage', 'owner', 'next', 'qualification', 'history'],
@@ -64,8 +64,8 @@ export const FIELD_RU = {
   scheduledDate: 'Дата публикации', link: 'Ссылка', whatsapp: 'WhatsApp', telegram: 'Telegram',
   plannedVolumeL: 'План выпуска, л', supplyId: 'Поставка сырья', inputLot: 'Партия сырья',
   actualQty: 'Фактический выпуск', qcStatus: 'Контроль качества', pasteUsedKg: 'Расход пасты, кг', powderUsedKg: 'Расход порошка, кг',
-  recipeVersion: 'Версия рецептуры', powderKgPerL: 'Порошок на 1 л, кг',
-  lossPct: 'Плановые потери сырья, %', plannedPowderKg: 'План расхода порошка, кг',
+  recipeVersion: 'Версия рецептуры', pasteKgPerL: 'Паста на 1 л, кг', powderKgPerL: 'Порошок на 1 л, кг (прежняя норма)',
+  lossPct: 'Плановые потери сырья, %', plannedPasteKg: 'План расхода пасты, кг', plannedPowderKg: 'План расхода порошка, кг',
   material: 'Тип сырья', control: 'Контрольный участок', goal: 'Цель пилота',
 };
 

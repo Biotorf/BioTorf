@@ -250,8 +250,8 @@ async function save(closeAfter = true) {
 
 function isRawMaterial(item) { return ['powder', 'paste'].includes(item.material); }
 
-function addPowderRow() {
-  const material = { ...emptyItem(form.kind), name: 'Порошок', material: 'powder', lot: '', unit: 'кг', qcStatus: 'Ожидается' };
+function addPasteRow() {
+  const material = { ...emptyItem(form.kind), name: 'Паста-концентрат', material: 'paste', lot: '', unit: 'кг', qcStatus: 'Ожидается' };
   const first = form.items[0];
   if (form.items.length === 1 && !first.skuId && !first.name) form.items.splice(0, 1, material);
   else form.items.push(material);
@@ -410,7 +410,7 @@ function exportCsv() {
                 hide-label searchable placeholder="— свободная позиция —" @change="onSku(it, $event)" />
               <input v-model="it.name" class="input slim-in" style="margin-top:4px" aria-label="Наименование" placeholder="Наименование">
               <template v-if="isRawMaterial(it)">
-                <span v-if="it.material === 'paste'" class="mini">Архивная позиция: паста</span>
+                <span v-if="it.material === 'powder'" class="mini">Порошок (прежняя позиция)</span>
                 <label>{{ label('lot') }} <input v-model.trim="it.lot" class="input slim-in" maxlength="200" /></label>
                 <label>{{ label('qcStatus') }}
                   <select v-model="it.qcStatus" class="input slim-in">
@@ -446,7 +446,7 @@ function exportCsv() {
     </fieldset>
     <div class="actionbar" style="margin-bottom:14px">
       <button v-if="canWrite" class="btn slim" :disabled="saving" @click="addRow">＋ Строка</button>
-      <button v-if="canWrite && !isDispatch" class="btn slim" :disabled="saving" @click="addPowderRow">＋ Партия порошка</button>
+      <button v-if="canWrite && !isDispatch" class="btn slim" :disabled="saving" @click="addPasteRow">＋ Партия пасты</button>
       <button class="btn slim ghost" @click="exportXls">⬇ Скачать .xls</button>
       <button class="btn slim ghost" @click="exportCsv">⬇ Скачать .csv</button>
     </div>

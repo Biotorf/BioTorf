@@ -14,8 +14,8 @@ const { canEdit } = usePermissions();
 const emit = defineEmits(['legacy-mode']);
 const labels = {
   opening: 'Начальный остаток',
-  receipt_powder: 'Приёмка порошка',
   receipt_paste: 'Приёмка пасты',
+  receipt_powder: 'Приёмка порошка (прежние поставки)',
   production: 'Выпуск и расход сырья',
   reserve: 'Резерв под заказ',
   release: 'Снятие резерва',
@@ -24,7 +24,7 @@ const labels = {
   adjustment: 'Корректировка по инвентаризации',
   reversal: 'Сторно',
 };
-const movementTypes = Object.keys(labels).filter((type) => !['reversal', 'receipt_paste'].includes(type));
+const movementTypes = Object.keys(labels).filter((type) => type !== 'reversal');
 const sourceTables = {
   logistics: 'Документ логистики',
   production: 'Производственная партия',
@@ -32,6 +32,7 @@ const sourceTables = {
   shipments: 'Отгрузка CRM',
 };
 const sourceTypes = {
+  receipt_paste: ['logistics'],
   receipt_powder: ['logistics'],
   production: ['production'],
   reserve: ['orders'],
@@ -65,7 +66,7 @@ const signedNumber = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 3, 
 const date = new Intl.DateTimeFormat('ru-RU', { dateStyle: 'short', timeStyle: 'short' });
 
 const labelSku = (sku) => sku === 'POWDER' ? 'Порошок-концентрат'
-  : sku === 'PASTE' ? 'Паста (исторические партии)' : db.skuById(sku)?.name || sku;
+  : sku === 'PASTE' ? 'Паста-концентрат' : db.skuById(sku)?.name || sku;
 const unitFor = (sku) => ['POWDER', 'PASTE'].includes(sku) ? 'кг' : 'шт.';
 function qty(value) {
   return value == null || value === '' ? '—' : number.format(Number(value));
@@ -102,12 +103,13 @@ const finishedSkus = computed(() => [...new Set([
   ...(db.skus || []).map((row) => row.id),
   ...balances.value.map((row) => row.sku),
 ])].filter((sku) => !['POWDER', 'PASTE'].includes(sku)));
+const receiptSku = (type) => ({ receipt_paste: 'PASTE', receipt_powder: 'POWDER' })[type];
 const sourceRows = computed(() => {
   const type = form.value?.type;
   const table = form.value?.collection;
   const rows = table === 'logistics' ? logisticsDocuments.value : db.data[table] || [];
-  if (type === 'receipt_powder') return rows.filter((row) => row.kind === 'supply' && row.status === 'Принят'
-    && row.items?.some((item) => item.material === 'powder' && item.qcStatus === 'Пройден'));
+  if (receiptSku(type)) return rows.filter((row) => row.kind === 'supply' && row.status === 'Принят'
+    && row.items?.some((item) => item.material?.toUpperCase() === receiptSku(type) && item.qcStatus === 'Пройден'));
   if (type === 'production') return rows.filter((row) => row.status === 'Завершено' && ['Пройден', 'Отклонён'].includes(row.qcStatus));
   if (table === 'logistics') return rows.filter((row) => row.kind === 'dispatch' && !row.shipmentId);
   return rows;
@@ -172,10 +174,10 @@ function changeType() {
   draft.sourceId = '';
   draft.orderId = '';
   draft.lines = draft.type === 'production'
-    ? [line('POWDER', warehouse), line('', warehouse)]
-    : [line(draft.type === 'receipt_powder' ? 'POWDER' : '', warehouse)];
+    ? [line('PASTE', warehouse), line('', warehouse)]
+    : [line(receiptSku(draft.type) || '', warehouse)];
 }
-function showForm(type = canEdit('warehouse') && balances.value.length ? 'receipt_powder' : inventoryTypes.value[0], source = {}, orderId = '') {
+function showForm(type = canEdit('warehouse') && balances.value.length ? 'receipt_paste' : inventoryTypes.value[0], source = {}, orderId = '') {
   if (!canPost.value || !inventoryTypes.value.includes(type)) return;
   formError.value = '';
   success.value = '';
@@ -191,14 +193,16 @@ function showForm(type = canEdit('warehouse') && balances.value.length ? 'receip
 function prefillSource(record) {
   const draft = form.value;
   if (!record || !draft) return;
-  if (draft.type === 'receipt_powder') {
-    draft.lines = record.items.filter((item) => item.material === 'powder' && item.qcStatus === 'Пройден')
-      .map((item) => line('POWDER', record.warehouse || '', item.lot, String(Number(item.qty) * (item.unit === 'т' ? 1000 : 1))));
+  if (receiptSku(draft.type)) {
+    const sku = receiptSku(draft.type);
+    draft.lines = record.items.filter((item) => item.material?.toUpperCase() === sku && item.qcStatus === 'Пройден')
+      .map((item) => line(sku, record.warehouse || '', item.lot, String(Number(item.qty) * (item.unit === 'т' ? 1000 : 1))));
   } else if (draft.type === 'production') {
+    const rawSku = Number(record.pasteUsedKg) > 0 ? 'PASTE' : 'POWDER';
     const matchingWarehouses = [...new Set(balances.value.filter((row) =>
-      row.sku === 'POWDER' && row.lot === record.inputLot && Number(row.available) > 0).map((row) => row.warehouse))];
+      row.sku === rawSku && row.lot === record.inputLot && Number(row.available) > 0).map((row) => row.warehouse))];
     const warehouse = matchingWarehouses.length === 1 ? matchingWarehouses[0] : '';
-    draft.lines = [line('POWDER', warehouse, record.inputLot || '', String(record.powderUsedKg ?? ''))];
+    draft.lines = [line(rawSku, warehouse, record.inputLot || '', String((rawSku === 'PASTE' ? record.pasteUsedKg : record.powderUsedKg) ?? ''))];
     if (record.qcStatus === 'Пройден') {
       draft.lines.push(line(record.sku || '', warehouse, record.lot || '', String(record.actualQty ?? '')));
     }
@@ -264,11 +268,10 @@ function closeForm() {
   if (location.hash.startsWith('#/warehouse?')) history.replaceState(null, '', '#/warehouse');
 }
 function skuOptions(type) {
-  if (type === 'receipt_powder') return ['POWDER'];
-  if (type === 'production') return ['POWDER', ...finishedSkus.value];
+  if (receiptSku(type)) return [receiptSku(type)];
+  if (type === 'production') return ['PASTE', 'POWDER', ...finishedSkus.value];
   if (['opening', 'adjustment'].includes(type)) {
-    const legacy = balances.value.some((row) => row.sku === 'PASTE') ? ['PASTE'] : [];
-    return ['POWDER', ...legacy, ...finishedSkus.value];
+    return ['PASTE', 'POWDER', ...finishedSkus.value];
   }
   return finishedSkus.value;
 }
@@ -401,9 +404,9 @@ onBeforeUnmount(() => window.removeEventListener('hashchange', showLinkedForm));
         </div>
 
         <template v-if="!form.reverseOf && !form.removeBalance">
-          <button v-if="selectedSource && ['receipt_powder', 'production', 'dispatch', 'reserve', 'release'].includes(form.type)" type="button"
+          <button v-if="selectedSource && ['receipt_paste', 'receipt_powder', 'production', 'dispatch', 'reserve', 'release'].includes(form.type)" type="button"
             class="btn slim ghost prefill" :disabled="busyWarehouses.size > 0" @click="chooseSource">Заполнить из документа</button>
-          <p v-if="form.type === 'production'" class="mini">Укажите расход порошка и фактический выпуск по партиям. При отклонении контроля качества укажите расход сырья.</p>
+          <p v-if="form.type === 'production'" class="mini">Укажите расход сырья и фактический выпуск по партиям. При отклонении контроля качества укажите расход сырья.</p>
           <p v-if="form.type === 'adjustment'" class="mini">Укажите разницу между фактическим и учётным остатком. Уменьшение записывается со знаком минус.</p>
           <div v-for="(row, index) in form.lines" :key="row.key" class="movement-line">
             <CrmSelectField v-model="row.sku" class="field" label="Товар"
@@ -419,7 +422,7 @@ onBeforeUnmount(() => window.removeEventListener('hashchange', showLinkedForm));
               :aria-label="'Удалить строку ' + (index + 1)" @click="form.lines.splice(index, 1)">✕</button>
           </div>
           <datalist :id="lotListId"><option v-for="lot in knownLots" :key="lot" :value="lot" /></datalist>
-          <button type="button" class="btn slim ghost" @click="form.lines.push(line(form.type === 'receipt_powder' ? 'POWDER' : '', form.lines.at(-1)?.warehouse))">＋ Строка</button>
+          <button type="button" class="btn slim ghost" @click="form.lines.push(line(receiptSku(form.type) || '', form.lines.at(-1)?.warehouse))">＋ Строка</button>
         </template>
 
         <p v-if="formError" class="danger-text" role="alert">{{ formError }}</p>

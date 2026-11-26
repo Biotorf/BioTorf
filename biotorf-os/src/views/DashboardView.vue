@@ -105,7 +105,7 @@ function clientName(sale) {
     <section class="panel operations">
       <header class="section-head"><h2>Операции</h2></header>
       <div class="operation-links">
-        <a href="#/shipments?kind=supply"><strong>Поставка порошка</strong><small>Документы закупки и приёмки</small></a>
+        <a href="#/shipments?kind=supply"><strong>Поставка пасты</strong><small>Документы закупки и приёмки</small></a>
         <a href="#/warehouse"><strong>Склад</strong><small>Партии, остатки и резервы</small></a>
         <a href="#/shipments?kind=dispatch"><strong>Отгрузки</strong><small>Открыто {{ readyToShip }}</small></a>
         <a href="#/automation"><strong>Автоматизация</strong><small>Правила и история выполнения</small></a>

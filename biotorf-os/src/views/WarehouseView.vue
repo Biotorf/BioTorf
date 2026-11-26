@@ -39,7 +39,7 @@ const legacyRows = computed(() => (Array.isArray(db.warehouse) ? db.warehouse : 
       <div>
         <h1>Склад</h1>
         <ManualLink />
-        <div class="subtitle">Остатки порошка и готовой продукции по партиям</div>
+        <div class="subtitle">Остатки пасты и готовой продукции по партиям</div>
       </div>
     </div>
 

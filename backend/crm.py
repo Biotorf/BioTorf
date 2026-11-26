@@ -188,15 +188,16 @@ def _record_data(rec: dict, rid: str) -> dict:
 
 
 def _write(tx, coll: str, rec: dict, rid: str) -> dict:
-    if coll == "skus" and any(rec.get(field) not in (None, "") for field in ("powderKgPerL", "lossPct")):
+    norm_field = "pasteKgPerL" if rec.get("pasteKgPerL") not in (None, "") else "powderKgPerL"
+    if coll == "skus" and any(rec.get(field) not in (None, "") for field in (norm_field, "lossPct")):
         try:
-            norm = float(str(rec.get("powderKgPerL")).replace(",", "."))
+            norm = float(str(rec.get(norm_field)).replace(",", "."))
             losses = float(str(rec.get("lossPct")).replace(",", "."))
         except (TypeError, ValueError) as exc:
-            raise ValueError("Укажите норму расхода порошка и процент потерь") from exc
+            raise ValueError("Укажите норму расхода сырья и процент потерь") from exc
         if not str(rec.get("recipeVersion") or "").strip() or not math.isfinite(norm) or norm <= 0 or not 0 <= losses < 100:
             raise ValueError("Укажите действующую версию рецептуры, норму расхода больше нуля и потери от 0 до 100% (исключительно)")
-        rec = {**rec, "powderKgPerL": norm, "lossPct": losses}
+        rec = {**rec, norm_field: norm, "lossPct": losses}
     stamp = _now()
     tx.execute(
         "INSERT INTO crm_records (id, coll, data, updated) VALUES (?,?,?,?) "
