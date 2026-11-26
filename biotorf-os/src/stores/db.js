@@ -274,6 +274,9 @@ export const useDbStore = defineStore('db', {
       this.data.logistics ??= [];
       const id = payload.clientId || this.uid('LOC');
       const online = await checkApi();
+      if (payload.kind === 'supply' && payload.status === 'Принят' && !online) {
+        throw new Error('Для приёмки на склад нужна связь с сервером.');
+      }
       if (payload.issueAct && !online) throw new Error('Для выпуска акта нужна связь с сервером.');
       const item = online
         ? await logisticsApi.create({ ...payload, clientId: id })
@@ -288,7 +291,9 @@ export const useDbStore = defineStore('db', {
       const previous = (this.data.logistics || []).find((doc) => doc.id === id);
       if (!previous) throw new Error('Документ не найден.');
       const next = String(id).startsWith('LOC-')
-        ? { ...previous, ...payload, id, updatedAt: new Date().toISOString() }
+        ? (payload.kind === 'supply' && payload.status === 'Принят'
+          ? await logisticsApi.create({ ...payload, clientId: id })
+          : { ...previous, ...payload, id, updatedAt: new Date().toISOString() })
         : await logisticsApi.update(id, payload);
       const index = this.data.logistics.findIndex((doc) => doc.id === id);
       if (index >= 0) this.data.logistics.splice(index, 1, next);

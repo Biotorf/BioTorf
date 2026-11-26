@@ -14,6 +14,7 @@ const { canEdit } = usePermissions();
 const emit = defineEmits(['legacy-mode']);
 const labels = {
   opening: 'Начальный остаток',
+  receipt_goods: 'Приёмка товара',
   receipt_paste: 'Приёмка пасты',
   receipt_powder: 'Приёмка порошка (прежние поставки)',
   production: 'Выпуск и расход сырья',
@@ -24,7 +25,7 @@ const labels = {
   adjustment: 'Корректировка по инвентаризации',
   reversal: 'Сторно',
 };
-const movementTypes = Object.keys(labels).filter((type) => type !== 'reversal');
+const movementTypes = Object.keys(labels).filter((type) => !['reversal', 'receipt_goods'].includes(type));
 const sourceTables = {
   logistics: 'Документ логистики',
   production: 'Производственная партия',

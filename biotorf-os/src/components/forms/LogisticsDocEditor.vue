@@ -67,7 +67,7 @@ function itemDraft(item) {
 }
 
 function emptyItem(kind) {
-  return itemDraft({ skuId: '', name: '', qty: 1, unit: kind === 'dispatch' ? 'шт.' : 'л', price: 0, note: '' });
+  return itemDraft({ skuId: '', name: '', qty: 1, unit: 'шт.', price: 0, note: '' });
 }
 
 function genNumber(kind) {
@@ -208,11 +208,19 @@ function validatePayload(payload) {
   payload.items = payload.items.filter((item) => item.name || item.skuId || item.material);
   if (!payload.number) throw new Error('Укажите номер документа.');
   if (!payload.items.length) throw new Error('Добавьте хотя бы одну позицию.');
+  const receiving = payload.kind === 'supply' && payload.status === 'Принят';
+  if (receiving && !payload.warehouse) throw new Error('Выберите склад назначения поставки.');
   for (const item of payload.items) {
     if (!Number.isFinite(item.qty) || item.qty <= 0 || !Number.isFinite(item.price) || item.price < 0) {
       throw new Error('Укажите положительное количество и неотрицательную цену каждой позиции.');
     }
-    if (!isRawMaterial(item)) continue;
+    if (!isRawMaterial(item)) {
+      if (receiving && (!item.skuId || !item.lot || !Number.isInteger(item.qty) ||
+          !['шт.', 'шт', 'штук', 'упак', 'упак.'].includes(item.unit))) {
+        throw new Error('Для приёмки товара выберите его из каталога, укажите партию и целое количество в штуках или упаковках.');
+      }
+      continue;
+    }
     if (payload.kind !== 'supply' || !item.lot || !['кг', 'т'].includes(item.unit)) {
       throw new Error('Для сырья укажите партию поставщика и массу в кг или т.');
     }
@@ -409,9 +417,9 @@ function exportCsv() {
               <CrmSelectField v-if="!isRawMaterial(it)" v-model="it.skuId" :label="label('skuId')" :options="products"
                 hide-label searchable placeholder="— свободная позиция —" @change="onSku(it, $event)" />
               <input v-model="it.name" class="input slim-in" style="margin-top:4px" aria-label="Наименование" placeholder="Наименование">
+              <label v-if="!isDispatch">Партия поставщика <input v-model.trim="it.lot" class="input slim-in" maxlength="200" /></label>
               <template v-if="isRawMaterial(it)">
                 <span v-if="it.material === 'powder'" class="mini">Порошок (прежняя позиция)</span>
-                <label>{{ label('lot') }} <input v-model.trim="it.lot" class="input slim-in" maxlength="200" /></label>
                 <label>{{ label('qcStatus') }}
                   <select v-model="it.qcStatus" class="input slim-in">
                     <option>Ожидается</option><option>Пройден</option><option>Отклонён</option>
@@ -465,6 +473,9 @@ function exportCsv() {
       </div>
     </div>
 
+    <p v-if="!isDispatch && form.status === 'Принят'" class="mini">
+      При сохранении принятой поставки CRM автоматически оприходует позиции на выбранном складе.
+    </p>
     <div class="editor-actions">
       <button class="btn" :disabled="saving || busyLists.size > 0" @click="closeEditor">{{ canWrite ? 'Отмена' : 'Закрыть' }}</button>
       <span v-if="saveError" class="danger-text" role="alert">{{ saveError }}</span>

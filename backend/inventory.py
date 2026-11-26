@@ -3,6 +3,7 @@
 import hashlib
 import json
 import re
+from uuid import uuid4
 from decimal import Decimal, InvalidOperation
 
 import crm
@@ -15,10 +16,12 @@ SOURCE_POSTINGS = "inventorySourcePostings"
 ORDER_STOCK = "inventoryOrderStock"
 CANCELLED = {"Отменён", "Отменен", "Отменена", "Отменено"}
 TYPES = frozenset({
-    "opening", "receipt_paste", "receipt_powder", "production", "reserve", "release",
+    "opening", "receipt_paste", "receipt_powder", "receipt_goods", "production", "reserve", "release",
     "dispatch", "return", "adjustment", "reversal",
 })
+RECEIPT_TYPES = {"receipt_paste": "paste", "receipt_powder": "powder", "receipt_goods": ""}
 SOURCE_TYPES = {
+    "receipt_goods": {"logistics"},
     "receipt_paste": {"logistics"},
     "receipt_powder": {"logistics"},
     "production": {"production"},
@@ -171,7 +174,7 @@ def _posting_source(tx, event: dict) -> tuple[dict | None, str | None]:
     if not record:
         raise ValueError("Документ-основание не найден")
     kind = event["type"]
-    if coll == "logistics" and record["kind"] != ("supply" if kind in {"receipt_paste", "receipt_powder"} else "dispatch"):
+    if coll == "logistics" and record["kind"] != ("supply" if kind in RECEIPT_TYPES else "dispatch"):
         raise ValueError("Тип документа логистики не подходит для этой операции")
     if coll == "logistics" and kind in {"dispatch", "return"} and record.get("shipmentId"):
         raise ValueError("Проведите складскую операцию по связанной отгрузке CRM.")
@@ -180,7 +183,7 @@ def _posting_source(tx, event: dict) -> tuple[dict | None, str | None]:
         if event["orderId"] and event["orderId"] != source_order:
             raise ValueError("Заказ должен совпадать с заказом в документе")
         event["orderId"] = source_order
-    unique_source = kind in {"receipt_paste", "receipt_powder", "production", "dispatch"}
+    unique_source = kind in RECEIPT_TYPES or kind in {"production", "dispatch"}
     return record, _hash([kind, coll, rid]) if unique_source else None
 
 
@@ -218,6 +221,55 @@ def _check_document_lines(lines: list[dict], limits: dict) -> None:
             raise ValueError(f"Количество SKU «{sku}» превышает указанное в документе")
 
 
+def receipt_lines(tx, doc: dict, kind: str, *, fallback_warehouse: str = "") -> list[dict]:
+    material = RECEIPT_TYPES[kind]
+    warehouse = str(doc.get("warehouse") or "").strip() or fallback_warehouse
+    lines = []
+    for item in doc["items"]:
+        if (item.get("material") or "") != material:
+            continue
+        if not warehouse:
+            raise ValueError("Укажите склад назначения поставки.")
+        lot = str(item.get("lot") or "").strip()
+        if not lot:
+            raise ValueError("Укажите номер партии каждой позиции поставки.")
+        if material:
+            if item.get("qcStatus") != "Пройден" or item.get("unit") not in {"кг", "т"}:
+                raise ValueError("Проверьте контроль качества и единицу приёмки сырья.")
+            sku = material.upper()
+            unit = "кг"
+            qty = Decimal(str(item["qty"])) * (1000 if item["unit"] == "т" else 1)
+        else:
+            sku = item.get("skuId")
+            if not sku or sku in RAW_SKUS or not crm.get_record(tx, "skus", sku):
+                raise ValueError("Выберите товар из каталога для каждой позиции поставки.")
+            if item.get("unit") not in {"шт.", "шт", "штук", "упак", "упак."}:
+                raise ValueError("Для поступления товара укажите количество в штуках или упаковках.")
+            unit, qty = "шт.", item["qty"]
+        lines.append({"sku": sku, "lot": lot, "warehouse": warehouse,
+                      "unit": unit, "qty": _decimal(_number(qty, unit))})
+    return lines
+
+
+def supply_receipts(tx, doc_id: str) -> dict:
+    result = {}
+    for kind in RECEIPT_TYPES:
+        index = crm.get_record(tx, SOURCE_POSTINGS, _hash([kind, "logistics", doc_id]))
+        if index:
+            event = crm.get_record(tx, EVENTS, index["eventId"])
+            if event:
+                result[kind] = event
+    return result
+
+
+def receipt_quantities(lines):
+    result = {}
+    for row in lines:
+        key = _key(row)
+        result[key] = result.get(key, Decimal(0)) + Decimal(row["qty"])
+    return result
+
+
 def _validate_event(tx, event: dict, source: dict | None) -> None:
     kind, lines, order_id = event["type"], event["lines"], event["orderId"]
     raw = [row for row in lines if row["sku"] in RAW_SKUS]
@@ -233,29 +285,18 @@ def _validate_event(tx, event: dict, source: dict | None) -> None:
         _check_document_lines(finished, _document_quantities(source))
     if kind in {"reserve", "release", "dispatch", "return"} and raw:
         raise ValueError("Резерв, отгрузка и возврат относятся к готовой продукции")
+    if kind == "receipt_goods" and not source:
+        raise ValueError("Для прихода товара выберите документ поставки.")
     if kind in {"receipt_paste", "receipt_powder"}:
         material = "paste" if kind == "receipt_paste" else "powder"
         if finished or any(row["sku"] != material.upper() for row in raw):
             raise ValueError("Тип сырья в строках должен совпадать с видом приёмки")
-        if source:
-            expected = {}
-            if source.get("status") != "Принят":
-                raise ValueError("Приёмка возможна после подтверждения документа поставки")
-            for item in source.get("items") or []:
-                if item.get("material") != material:
-                    continue
-                if item.get("qcStatus") != "Пройден" or item.get("unit") not in {"кг", "т"}:
-                    raise ValueError("Для сырья проверьте качество и единицу приёмки")
-                lot = item["lot"]
-                qty = Decimal(str(item["qty"])) * (1000 if item["unit"] == "т" else 1)
-                expected[lot] = expected.get(lot, Decimal(0)) + _number(qty, "кг")
-            actual = {}
-            for row in lines:
-                if source.get("warehouse") and row["warehouse"] != source["warehouse"].strip():
-                    raise ValueError("Склад должен совпадать со складом назначения в поставке")
-                actual[row["lot"]] = actual.get(row["lot"], Decimal(0)) + Decimal(row["qty"])
-            if actual != expected:
-                raise ValueError("Партии и количество сырья должны совпадать с принятыми позициями поставки")
+    if kind in RECEIPT_TYPES and source:
+        if source.get("status") != "Принят":
+            raise ValueError("Приёмка возможна после подтверждения документа поставки")
+        expected = receipt_lines(tx, source, kind, fallback_warehouse=lines[0]["warehouse"])
+        if receipt_quantities(lines) != receipt_quantities(expected):
+            raise ValueError("Партии, склад и количество должны совпадать с позициями поставки")
     if kind == "production":
         if not raw or len({row["sku"] for row in raw}) != 1:
             raise ValueError("Для производства укажите расход одного вида сырья")
@@ -358,63 +399,76 @@ def post_event(conn, payload: dict, *, actor: str, role: str) -> dict:
     event = _normalize(payload)
     if not may_post(role, event["type"]):
         raise PermissionError("Нет прав проводить эту складскую операцию")
-    req_hash = _hash(event)
     with crm.write_transaction(conn) as tx:
-        posted = crm.get_record(tx, EVENTS, event["id"])
-        if posted:
-            if posted.get("requestHash") != req_hash:
-                raise InventoryConflict("ID уже используется для другой складской операции")
-            return get_state(tx, posted)
+        return get_state(tx, _post_event(tx, event, actor=actor))
 
-        original = None
-        source_key = None
-        if event["type"] == "reversal":
-            original = crm.get_record(tx, EVENTS, event["reverseOf"])
-            if not original or original["type"] == "reversal":
-                raise ValueError("Исходная складская операция не найдена или уже является отменой")
-            if original.get("reversedBy"):
-                raise InventoryConflict("Эта операция уже отменена")
-            prepared = [
-                {**effect,
-                 "stockChange": _decimal(-Decimal(effect["stockChange"])),
-                 "reservedChange": _decimal(-Decimal(effect["reservedChange"])),
-                 "shippedChange": _decimal(-Decimal(effect.get("shippedChange", "0")))}
-                for effect in original["lines"]
-            ]
-        else:
-            record, source_key = _posting_source(tx, event)
-            indexed = source_key and crm.get_record(tx, SOURCE_POSTINGS, source_key)
-            if indexed:
-                previous = crm.get_record(tx, EVENTS, indexed["eventId"])
-                if previous and not previous.get("reversedBy"):
-                    raise InventoryConflict("Этот документ уже проведён на складе")
-            _validate_event(tx, event, record)
-            if record:
-                event["sourceSnapshot"] = {
-                    key: record[key] for key in ("number", "date", "status") if record.get(key)
-                }
-            prepared = event["lines"]
 
-        effects = []
-        for row in prepared:
-            balance = crm.get_record(tx, BALANCES, _hash(_key(row)))
-            if event.get("clearBalance"):
-                if Decimal((balance or {}).get("onHand", "0")) != -Decimal(row["qty"]):
-                    raise InventoryConflict("Остаток изменился. Обновите склад и выберите партию снова.")
-                if Decimal(balance.get("reserved", "0")):
-                    raise InventoryConflict("Сначала снимите резерв по этой партии.")
-            if event["type"] == "opening" and balance:
-                raise InventoryConflict("Начальный остаток для этой партии уже задан. Используйте корректировку.")
-            effect = row if original else _effect(event, row, balance)
-            _apply_effect(tx, effect, balance)
-            _apply_order_effect(tx, effect, enforce_limit=event["type"] in {"reserve", "dispatch"})
-            effects.append(effect)
+def post_supply_receipt(tx, doc, kind, lines, *, actor):
+    event = _normalize({
+        "id": str(uuid4()), "type": kind, "lines": lines,
+        "source": {"collection": "logistics", "id": doc["id"]},
+        "reference": "Автоматическая приёмка " + doc["number"][:450],
+    })
+    return _post_event(tx, event, actor=actor)
 
-        event.update({"lines": effects, "createdAt": crm._now(), "createdBy": actor, "requestHash": req_hash})
-        event = crm._write(tx, EVENTS, event, event["id"])
-        if original:
-            original["reversedBy"] = event["id"]
-            crm._write(tx, EVENTS, {k: v for k, v in original.items() if k != "_updatedAt"}, original["id"])
-        if source_key:
-            crm._write(tx, SOURCE_POSTINGS, {"id": source_key, "eventId": event["id"]}, source_key)
-        return get_state(tx, event)
+
+def _post_event(tx, event, *, actor):
+    req_hash = _hash(event)
+    posted = crm.get_record(tx, EVENTS, event["id"])
+    if posted:
+        if posted.get("requestHash") != req_hash:
+            raise InventoryConflict("ID уже используется для другой складской операции")
+        return posted
+
+    original = None
+    source_key = None
+    if event["type"] == "reversal":
+        original = crm.get_record(tx, EVENTS, event["reverseOf"])
+        if not original or original["type"] == "reversal":
+            raise ValueError("Исходная складская операция не найдена или уже является отменой")
+        if original.get("reversedBy"):
+            raise InventoryConflict("Эта операция уже отменена")
+        prepared = [
+            {**effect,
+             "stockChange": _decimal(-Decimal(effect["stockChange"])),
+             "reservedChange": _decimal(-Decimal(effect["reservedChange"])),
+             "shippedChange": _decimal(-Decimal(effect.get("shippedChange", "0")))}
+            for effect in original["lines"]
+        ]
+    else:
+        record, source_key = _posting_source(tx, event)
+        indexed = source_key and crm.get_record(tx, SOURCE_POSTINGS, source_key)
+        if indexed:
+            previous = crm.get_record(tx, EVENTS, indexed["eventId"])
+            if previous and not previous.get("reversedBy"):
+                raise InventoryConflict("Этот документ уже проведён на складе")
+        _validate_event(tx, event, record)
+        if record:
+            event["sourceSnapshot"] = {
+                key: record[key] for key in ("number", "date", "status") if record.get(key)
+            }
+        prepared = event["lines"]
+
+    effects = []
+    for row in prepared:
+        balance = crm.get_record(tx, BALANCES, _hash(_key(row)))
+        if event.get("clearBalance"):
+            if Decimal((balance or {}).get("onHand", "0")) != -Decimal(row["qty"]):
+                raise InventoryConflict("Остаток изменился. Обновите склад и выберите партию снова.")
+            if Decimal(balance.get("reserved", "0")):
+                raise InventoryConflict("Сначала снимите резерв по этой партии.")
+        if event["type"] == "opening" and balance:
+            raise InventoryConflict("Начальный остаток для этой партии уже задан. Используйте корректировку.")
+        effect = row if original else _effect(event, row, balance)
+        _apply_effect(tx, effect, balance)
+        _apply_order_effect(tx, effect, enforce_limit=event["type"] in {"reserve", "dispatch"})
+        effects.append(effect)
+
+    event.update({"lines": effects, "createdAt": crm._now(), "createdBy": actor, "requestHash": req_hash})
+    event = crm._write(tx, EVENTS, event, event["id"])
+    if original:
+        original["reversedBy"] = event["id"]
+        crm._write(tx, EVENTS, {k: v for k, v in original.items() if k != "_updatedAt"}, original["id"])
+    if source_key:
+        crm._write(tx, SOURCE_POSTINGS, {"id": source_key, "eventId": event["id"]}, source_key)
+    return event

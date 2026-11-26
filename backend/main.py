@@ -1378,14 +1378,57 @@ def new_log_id(kind: str) -> str:
     return prefix + "-" + str(int(time.time() * 1000))[-9:] + os.urandom(2).hex().upper()
 
 
+def logistics_receipt_status(conn, doc):
+    if doc["kind"] != "supply":
+        return doc
+    receipts = inventory.supply_receipts(conn, doc["id"])
+    expected = {kind for kind, material in inventory.RECEIPT_TYPES.items()
+                if any(item.get("material", "") == material for item in doc["items"])}
+    active = {kind for kind, entry in receipts.items() if not entry.get("reversedBy")}
+    return {**doc, "receiptStatus": (
+        "posted" if expected and expected <= active else
+        "reversed" if not active and receipts else "pending"
+    )}
+
+
+def save_logistics_document(tx, body, doc_id, actor, existing=None):
+    document = prepare_logistics_document(tx, body, existing)
+    if body.kind == "supply":
+        normalized = logistics.normalize_doc(document, doc_id)
+        receipts = inventory.supply_receipts(tx, doc_id)
+        active = {kind: event for kind, event in receipts.items() if not event.get("reversedBy")}
+        if active:
+            if normalized["status"] != "Принят":
+                raise inventory.InventoryConflict("Сначала сторнируйте приёмку в журнале склада.")
+            for kind, posted in active.items():
+                planned = inventory.receipt_lines(
+                    tx, normalized, kind, fallback_warehouse=posted["lines"][0]["warehouse"])
+                if inventory.receipt_quantities(planned) != inventory.receipt_quantities(posted["lines"]):
+                    raise inventory.InventoryConflict(
+                        "Склад, партии и количество проведённой приёмки меняются после сторно.")
+        batches = {}
+        if normalized["status"] == "Принят":
+            for kind in inventory.RECEIPT_TYPES:
+                if kind in active or (kind in receipts and (existing or {}).get("status") == "Принят"):
+                    continue
+                lines = inventory.receipt_lines(tx, normalized, kind)
+                if lines:
+                    batches[kind] = lines
+        saved = logistics.upsert_doc(tx, document, doc_id, commit=False)
+        for kind, lines in batches.items():
+            inventory.post_supply_receipt(tx, saved, kind, lines, actor=actor)
+        return logistics_receipt_status(tx, saved)
+    return logistics.upsert_doc(tx, document, doc_id, commit=False)
+
+
 @app.get("/api/logistics")
 def list_logistics(kind: str | None = Query(None, pattern="^(supply|dispatch)$")):
     with closing(store.connect()) as conn:
-        return {"items": logistics.list_docs(conn, kind)}
+        return {"items": [logistics_receipt_status(conn, doc) for doc in logistics.list_docs(conn, kind)]}
 
 
 @app.post("/api/logistics", status_code=201)
-def create_logistics(body: LogisticsIn):
+def create_logistics(body: LogisticsIn, request: Request):
     doc_id = new_log_id(body.kind)
     if body.shipmentId and body.kind == "dispatch":
         doc_id = "DSP-SHIP-" + body.shipmentId
@@ -1393,34 +1436,39 @@ def create_logistics(body: LogisticsIn):
         prefix = "SUP" if body.kind == "supply" else "DSP"
         doc_id = prefix + "-" + body.clientId.removeprefix("LOC-")
     try:
-        with closing(store.connect()) as conn:
-            existing = logistics.get_doc(conn, doc_id)
+        with closing(store.connect()) as conn, crm.write_transaction(conn) as tx:
+            existing = logistics.get_doc(tx, doc_id)
             if existing:
-                return existing
-            document = prepare_logistics_document(conn, body)
-            return logistics.upsert_doc(conn, document, doc_id, create_only=True)
+                return logistics_receipt_status(tx, existing)
+            return save_logistics_document(tx, body, doc_id, request.state.user)
+    except inventory.InventoryConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
 
 
 @app.put("/api/logistics/{doc_id}")
-def update_logistics(doc_id: str, body: LogisticsIn):
-    with store.connect() as conn:
-        existing = logistics.get_doc(conn, doc_id)
-        if not existing:
-            raise HTTPException(404, "Документ не найден")
-        if body.kind != existing["kind"]:
-            raise HTTPException(422, "Тип существующего документа менять нельзя")
-        try:
-            return logistics.upsert_doc(conn, prepare_logistics_document(conn, body, existing), doc_id)
-        except ValueError as exc:
-            raise HTTPException(422, str(exc)) from exc
+def update_logistics(doc_id: str, body: LogisticsIn, request: Request):
+    try:
+        with closing(store.connect()) as conn, crm.write_transaction(conn) as tx:
+            existing = logistics.get_doc(tx, doc_id)
+            if not existing:
+                raise HTTPException(404, "Документ не найден")
+            if body.kind != existing["kind"]:
+                raise HTTPException(422, "Тип существующего документа менять нельзя")
+            return save_logistics_document(tx, body, doc_id, request.state.user, existing)
+    except inventory.InventoryConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @app.delete("/api/logistics/{doc_id}", status_code=204)
 def delete_logistics(doc_id: str):
-    with closing(store.connect()) as conn:
-        if not logistics.delete_doc(conn, doc_id):
+    with closing(store.connect()) as conn, crm.write_transaction(conn) as tx:
+        if any(not entry.get("reversedBy") for entry in inventory.supply_receipts(tx, doc_id).values()):
+            raise HTTPException(409, "Сначала сторнируйте приёмку в журнале склада.")
+        if not logistics.delete_doc(tx, doc_id, commit=False):
             raise HTTPException(404, "Документ не найден")
 
 

@@ -118,7 +118,7 @@ def normalize_doc(body: dict, doc_id: str) -> dict:
     return doc
 
 
-def upsert_doc(conn, body: dict, doc_id: str, *, create_only: bool = False) -> dict:
+def upsert_doc(conn, body: dict, doc_id: str, *, create_only: bool = False, commit: bool = True) -> dict:
     kind = body.get("kind") or "supply"
     if kind not in KINDS:
         raise ValueError(f"kind должен быть одним из {KINDS}")
@@ -132,11 +132,13 @@ def upsert_doc(conn, body: dict, doc_id: str, *, create_only: bool = False) -> d
         "ON CONFLICT(id) " + conflict,
         (doc_id, kind, json.dumps(doc, ensure_ascii=False), now),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return get_doc(conn, doc_id)
 
 
-def delete_doc(conn, doc_id: str) -> bool:
+def delete_doc(conn, doc_id: str, *, commit: bool = True) -> bool:
     cur = conn.execute("DELETE FROM logistics_docs WHERE id=?", (doc_id,))
-    conn.commit()
+    if commit:
+        conn.commit()
     return cur.rowcount > 0
