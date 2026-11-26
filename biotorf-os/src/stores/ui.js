@@ -6,7 +6,7 @@ import { defineAsyncComponent, markRaw } from 'vue';
 const VALID_VIEWS = [
   'dashboard', 'automation', 'registry', 'crm', 'comms', 'pipeline', 'pilots', 'knowledge', 'social',
   'products', 'orders', 'production', 'warehouse', 'shipments', 'finance',
-  'tasks', 'analytics', 'journey', 'calendar', 'media', 'notifications', 'employees', 'channels',
+  'tasks', 'analytics', 'journey', 'calendar', 'media', 'notifications', 'employees', 'channels', 'organization',
 ];
 function viewFromHash() {
   const v = (location.hash || '').replace(/^#\/?/, '').split('?')[0];

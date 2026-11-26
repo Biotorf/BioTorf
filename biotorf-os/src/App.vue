@@ -97,6 +97,7 @@ const views = {
   media: markRaw(defineAsyncComponent(() => import('@/views/MediaView.vue'))),
   notifications: markRaw(defineAsyncComponent(() => import('@/views/NotificationsView.vue'))),
   employees: markRaw(defineAsyncComponent(() => import('@/views/EmployeesView.vue'))),
+  organization: markRaw(defineAsyncComponent(() => import('@/views/OrganizationView.vue'))),
   channels: markRaw(defineAsyncComponent(() => import('@/views/ChannelsView.vue'))),
 };
 

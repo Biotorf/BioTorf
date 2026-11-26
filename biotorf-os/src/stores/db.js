@@ -273,7 +273,9 @@ export const useDbStore = defineStore('db', {
     async addLogistics(payload) {
       this.data.logistics ??= [];
       const id = payload.clientId || this.uid('LOC');
-      const item = await checkApi()
+      const online = await checkApi();
+      if (payload.issueAct && !online) throw new Error('Для выпуска акта нужна связь с сервером.');
+      const item = online
         ? await logisticsApi.create({ ...payload, clientId: id })
         : { ...payload, id, updatedAt: new Date().toISOString() };
       const index = this.data.logistics.findIndex((doc) => doc.id === item.id || doc.id === id);

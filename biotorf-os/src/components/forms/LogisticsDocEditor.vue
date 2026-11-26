@@ -7,6 +7,7 @@
 import { computed, onMounted, reactive, ref, useId } from 'vue';
 import CrmSelectField from '@/components/CrmSelectField.vue';
 import { useDbStore } from '@/stores/db';
+import { REQUISITE_FIELDS, COMPANY_CONTACT_FIELDS } from '@/data/requisites';
 import { crmFieldLabel, LOGISTICS_KINDS } from '@/data/crmFields';
 import { useUiStore } from '@/stores/ui';
 import { useFormatters } from '@/composables/useFormatters';
@@ -254,9 +255,6 @@ function addPowderRow() {
 }
 
 // ── Акт приёма-передачи под документ ────────────────────────────────
-const ACT_TYPES = ['Акт приёма-передачи', 'Товарная накладная (ТОРГ-12)', 'Акт выполненных работ', 'УПД'];
-const actType = ref(ACT_TYPES[0]);
-
 function actRows() {
   const rows = [['№', 'Наименование', 'Кол-во', 'Ед.', 'Цена, сом', 'Сумма, сом']];
   form.items.forEach((it, i) => {
@@ -268,6 +266,13 @@ function actRows() {
   return rows;
 }
 
+function partyDetails(profile) {
+  return [...REQUISITE_FIELDS, ...COMPANY_CONTACT_FIELDS]
+    .filter(([key]) => profile[key])
+    .map(([key, label]) => `<div>${escapeHtml(label)}: ${escapeHtml(profile[key])}</div>`)
+    .join('');
+}
+
 function buildActHtml(actMeta) {
   const label = isDispatch.value ? 'Грузополучатель' : 'Получатель (Покупатель)';
   const supplier = isDispatch.value ? 'Грузоотправитель' : 'Поставщик';
@@ -276,12 +281,13 @@ function buildActHtml(actMeta) {
     : `<tr>${r.map((c, j) => `<td class="${j >= 2 ? 'num' : ''}">${typeof c === 'number' ? num(c) : escapeHtml(c)}</td>`).join('')}</tr>`
   ).join('');
   return `
-  <div class="org">ОсОО «Агро Трейд Плюс» · BIOTORF KG · ИНН _______ · тел. _______</div>
+  <div class="org">${escapeHtml(actMeta.organization.shortName || actMeta.organization.legalName)}</div>
   <h1>${escapeHtml(actMeta.type)} № ${escapeHtml(actMeta.number)} от ${new Date(actMeta.date + 'T12:00:00').toLocaleDateString('ru-RU')}</h1>
   <div class="small">к документу ${isDispatch.value ? 'выгрузки (отгрузки)' : 'поставки'} № ${escapeHtml(form.number)} от ${new Date(form.date + 'T12:00:00').toLocaleDateString('ru-RU')}</div>
   <div class="grid">
-    <div><b>${supplier}</b>${isDispatch.value ? 'ОсОО «Агро Трейд Плюс», склад: ' + escapeHtml(form.warehouse || '—') : escapeHtml(form.party || '—')}</div>
-    <div><b>${label}</b>${isDispatch.value ? escapeHtml(form.party || '—') : escapeHtml(form.warehouse || 'Склад')} ${form.farmId ? '· ' + escapeHtml(db.farmById(form.farmId)?.name || form.farmId) : ''}</div>
+    <div style="flex:1 1 220px; min-width:0; overflow-wrap:anywhere"><b>${supplier}</b>${partyDetails(isDispatch.value ? actMeta.organization : actMeta.counterparty)}</div>
+    <div style="flex:1 1 220px; min-width:0; overflow-wrap:anywhere"><b>${label}</b>${partyDetails(isDispatch.value ? actMeta.counterparty : actMeta.organization)}</div>
+    ${form.warehouse ? `<div><b>Склад</b>${escapeHtml(form.warehouse)}</div>` : ''}
     ${form.vehicle ? `<div><b>Транспорт</b>${escapeHtml(form.vehicle)}</div>` : ''}
     ${form.driver ? `<div><b>Водитель/экспедитор</b>${escapeHtml(form.driver)}</div>` : ''}
     ${form.base ? `<div><b>Основание</b>${escapeHtml(form.base)}</div>` : ''}
@@ -302,16 +308,13 @@ async function createAct() {
   saving.value = true;
   saveError.value = '';
   try {
-    const meta = {
-      type: actType.value,
-      number: savedDoc.value?.act?.number || ('А-' + form.number),
-      date: savedDoc.value?.act?.date || form.date,
-    };
-    const document = await persist({ ...docPayload(), act: meta });
+    const document = await persist({ ...docPayload(), issueAct: true });
+    const meta = document.act;
+    if (!meta?.organization || !meta?.counterparty) {
+      throw new Error('Сервер не сохранил реквизиты акта. Повторите после восстановления связи.');
+    }
     printHtml(meta.type + ' ' + meta.number, buildActHtml(meta));
-    if (String(document.id).startsWith('LOC-')) {
-      saveError.value = 'Акт сохранён только на этом устройстве, пока нет связи с сервером.';
-    } else closeEditor();
+    closeEditor();
   } catch (error) {
     saveError.value = error.message;
   } finally {
@@ -455,9 +458,6 @@ function exportCsv() {
         <template v-else>создайте акт приёма-передачи — он сохранится в карточке документа и откроется на печать (PDF).</template>
       </div>
       <div v-if="canWrite" class="actionbar">
-        <select v-model="actType" class="select" style="max-width:280px">
-          <option v-for="t in ACT_TYPES" :key="t">{{ t }}</option>
-        </select>
         <button class="btn primary slim" :disabled="disabled" @click="createAct">📄 Создать акт и открыть на печать</button>
       </div>
     </div>

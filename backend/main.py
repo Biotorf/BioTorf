@@ -1230,10 +1230,65 @@ class LogisticsItem(BaseModel):
     note: str | None = None
 
 
+class Requisites(BaseModel):
+    legalName: str = Field("", max_length=250)
+    shortName: str = Field("", max_length=250)
+    country: str = Field("", max_length=250)
+    legalForm: str = Field("", max_length=250)
+    taxId: str = Field("", max_length=250)
+    taxRegistrationCode: str = Field("", max_length=250)
+    registrationNumber: str = Field("", max_length=250)
+    statisticsCode: str = Field("", max_length=250)
+    legalAddress: str = Field("", max_length=500)
+    address: str = Field("", max_length=500)
+    postalAddress: str = Field("", max_length=500)
+    bankName: str = Field("", max_length=250)
+    bankCode: str = Field("", max_length=250)
+    bankAccount: str = Field("", max_length=250)
+    correspondentAccount: str = Field("", max_length=250)
+    swift: str = Field("", max_length=250)
+    signatory: str = Field("", max_length=250)
+    signatoryTitle: str = Field("", max_length=250)
+    signatoryBasis: str = Field("", max_length=250)
+    taxRegime: str = Field("", max_length=250)
+    phone: str = Field("", max_length=250)
+    email: str = Field("", max_length=250)
+
+
+class OrganizationSettings(Requisites):
+    revision: str | None = None
+
+
+ORGANIZATION_COLLECTION = "_organization"
+ORGANIZATION_ID = "primary"
+
+
+@app.get("/api/organization")
+def read_organization():
+    with closing(store.connect()) as conn:
+        profile = crm.get_record(conn, ORGANIZATION_COLLECTION, ORGANIZATION_ID) or {}
+    return {**Requisites.model_validate(profile).model_dump(), "revision": profile.get("_updatedAt")}
+
+
+@app.put("/api/organization")
+def save_organization(body: OrganizationSettings, request: Request):
+    if not auth.can_write(request.state.role, "admin"):
+        raise HTTPException(403, "Изменять реквизиты могут директор и операционный руководитель")
+    values = {key: value.strip() for key, value in body.model_dump(exclude={"revision"}).items()}
+    try:
+        with closing(store.connect()) as conn:
+            saved = crm.upsert(conn, ORGANIZATION_COLLECTION, {**values, "_expectedRev": body.revision}, ORGANIZATION_ID)
+    except crm.ConflictError as exc:
+        raise HTTPException(409, "Реквизиты изменились. Загрузите актуальные данные и повторите изменения.") from exc
+    return {**values, "revision": saved["_updatedAt"]}
+
+
 class LogisticsAct(BaseModel):
     type: str = "Акт приёма-передачи"
     number: str | None = None
     date: str | None = None
+    organization: Requisites | None = None
+    counterparty: Requisites | None = None
 
 
 class LogisticsIn(BaseModel):
@@ -1251,7 +1306,56 @@ class LogisticsIn(BaseModel):
     base: str | None = None
     note: str | None = None
     act: LogisticsAct | None = None
+    issueAct: bool = False
     items: list[LogisticsItem] = Field(default_factory=list)
+
+
+def prepare_logistics_document(conn, body: LogisticsIn, existing: dict | None = None) -> dict:
+    document = body.model_dump(exclude={"issueAct"})
+    if not body.issueAct:
+        if existing:
+            document["act"] = existing.get("act")
+        return document
+
+    profile = crm.get_record(conn, ORGANIZATION_COLLECTION, ORGANIZATION_ID) or {}
+    organization = Requisites.model_validate(profile)
+    required = {"legalName": "полное наименование", "shortName": "сокращённое наименование",
+                "country": "страна регистрации",
+                "taxId": "ИНН", "legalAddress": "юридический адрес"}
+    missing = [label for key, label in required.items() if not getattr(organization, key)]
+    if missing:
+        raise ValueError("Заполните в настройках организации: " + ", ".join(missing) + ".")
+
+    if body.kind == "dispatch":
+        client = crm.get_record(conn, "farms", body.farmId) if body.farmId else None
+        if not client:
+            raise ValueError("Выберите клиента из справочника и заполните его реквизиты в карточке.")
+        counterparty = Requisites.model_validate({
+            key: str(client.get(key) or "").strip() for key in Requisites.model_fields
+        })
+        person_types = {"частный покупатель", "физическое лицо", "физлицо", "частное лицо"}
+        is_person = str(client.get("type") or "").strip().lower() in person_types
+        client_required = {"legalName": "ФИО"} if is_person else required
+        missing = [label for key, label in client_required.items() if not getattr(counterparty, key)]
+        if missing:
+            raise ValueError("Заполните во вкладке «Реквизиты» клиента: " + ", ".join(missing) + ".")
+    else:
+        supplier = (body.party or "").strip()
+        if not supplier:
+            raise ValueError("Укажите поставщика.")
+        counterparty = Requisites(legalName=supplier)
+
+    number, date = (body.number or "").strip(), body.date
+    if not number or not date:
+        raise ValueError("Укажите номер и дату документа.")
+    old_act = (existing or {}).get("act") or {}
+    document["act"] = LogisticsAct(
+        number=old_act.get("number") or ("А-" + number),
+        date=old_act.get("date") or date,
+        organization=organization,
+        counterparty=counterparty,
+    ).model_dump()
+    return document
 
 
 def new_log_id(kind: str) -> str:
@@ -1273,7 +1377,11 @@ def create_logistics(body: LogisticsIn):
         doc_id = prefix + "-" + body.clientId.removeprefix("LOC-")
     try:
         with closing(store.connect()) as conn:
-            return logistics.upsert_doc(conn, body.model_dump(), doc_id, create_only=True)
+            existing = logistics.get_doc(conn, doc_id)
+            if existing:
+                return existing
+            document = prepare_logistics_document(conn, body)
+            return logistics.upsert_doc(conn, document, doc_id, create_only=True)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
 
@@ -1287,7 +1395,7 @@ def update_logistics(doc_id: str, body: LogisticsIn):
         if body.kind != existing["kind"]:
             raise HTTPException(422, "Тип существующего документа менять нельзя")
         try:
-            return logistics.upsert_doc(conn, body.model_dump(), doc_id)
+            return logistics.upsert_doc(conn, prepare_logistics_document(conn, body, existing), doc_id)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
 

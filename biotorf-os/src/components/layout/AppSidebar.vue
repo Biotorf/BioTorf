@@ -49,6 +49,7 @@ watch(() => ui.view, (view) => {
       <button v-for="[key, label] in extra" :key="key" type="button" :class="{ active: ui.view === key }" @click="ui.go(key)">{{ label }}</button>
       <button v-if="ui.role === 'director'" type="button" :class="{ active: ui.view === 'employees' }" @click="ui.go('employees')">Сотрудники и роли</button>
       <button v-if="['director', 'operations'].includes(ui.role)" type="button" :class="{ active: ui.view === 'channels' }" @click="ui.go('channels')">Каналы связи</button>
+      <button v-if="['director', 'operations'].includes(ui.role)" type="button" :class="{ active: ui.view === 'organization' }" @click="ui.go('organization')">Настройки организации</button>
       <a class="manual-entry" href="/manual.html#start" target="_blank" rel="noopener">Справка</a>
     </nav>
   </aside>

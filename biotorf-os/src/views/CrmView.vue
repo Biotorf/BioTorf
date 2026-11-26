@@ -1,4 +1,5 @@
 <script setup>
+import RequisiteFields from '@/components/forms/RequisiteFields.vue';
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
@@ -69,7 +70,7 @@ const customers = computed(() => {
     if (status.value && client.status !== status.value) return false;
     if (!query) return true;
     const { phone, email, contacts } = clientInfo.value.get(client.id);
-    return [client.name, client.owner, client.region, client.type, client.taxId, phone, email]
+    return [client.name, client.owner, client.region, client.type, client.taxId, client.legalName, client.shortName, phone, email]
       .some(includesQuery) || contacts.some((contact) =>
       [contact.name, contact.phone, contact.email].some(includesQuery)) ||
       (digits.length >= 3 && [phone, ...contacts.map((contact) => contact.phone)]
@@ -188,12 +189,14 @@ async function createClient() {
           <div class="create-fields">
             <label class="field">E-mail <input v-model="detail.email" class="input" type="email" autocomplete="email" /></label>
             <CrmSelectField v-model="detail.region" label="Регион" :options="db.optionsFor('regions', 'farms', 'region')" list-key="regions" />
-            <label class="field">ИНН <input v-model="detail.taxId" class="input" inputmode="numeric" /></label>
-            <label class="field">Адрес <input v-model="detail.address" class="input" autocomplete="street-address" /></label>
             <CrmSelectField v-model="detail.source" label="Источник" :options="db.optionsFor('sources', 'farms', 'source')" list-key="sources" />
             <label class="field">Связаться <input v-model="detail.next" class="input" type="date" /></label>
             <label class="field detailed-note">Заметки <textarea v-model="detail.notes" class="input" rows="2" /></label>
           </div>
+        </details>
+        <details class="more-client-fields">
+          <summary>Реквизиты для документов</summary>
+          <RequisiteFields :values="detail" @update="(key, value) => detail[key] = value" />
         </details>
         <p v-if="match" class="duplicate-hint">Похожий контакт уже есть. <a :href="clientLink(match.id)">{{ match.name }}</a></p>
         <p v-if="createError" role="alert" class="danger-text">{{ createError }}</p>

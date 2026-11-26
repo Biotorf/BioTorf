@@ -1,4 +1,5 @@
 <script setup>
+import { REQUISITE_FIELDS } from '@/data/requisites';
 import { computed, nextTick, ref, watch } from 'vue';
 import { checkApi, commsApi } from '@/api/commsClient';
 import { clientInitials, clientRecords, phoneDigits, primaryContact as findPrimaryContact } from '@/data/clientDesk';
@@ -56,8 +57,7 @@ const profileFields = computed(() => [
   ['Регион', farm.value?.region],
   ['Ответственный', farm.value?.owner],
   ['Источник', farm.value?.source],
-  ['Адрес', farm.value?.address],
-  ['ИНН', farm.value?.taxId],
+
   ['Культура', farm.value?.crop],
   ['Площадь', farm.value?.area != null && farm.value.area !== '' ? farm.value.area + ' га' : ''],
 ].filter(([, value]) => value != null && value !== ''));
@@ -94,6 +94,7 @@ const tabs = computed(() => [
   { id: 'sales', label: 'Продажи', count: salesCount.value },
   { id: 'finance', label: 'Финансы', count: financeCount.value },
   { id: 'contacts', label: 'Контакты', count: contacts.value.length },
+  { id: 'requisites', label: 'Реквизиты' },
   { id: 'docs', label: 'Документы', count: related.value.clientDocs?.length },
 ]);
 const active = ref('overview');
@@ -290,7 +291,7 @@ async function startSale() {
       </div>
     </header>
     <p v-if="cardError" class="danger-text" role="alert">{{ cardError }}</p>
-    <CrmRowModal v-if="edit" :key="`${edit.coll}:${edit.record?.id || 'new'}`" inline :coll="edit.coll" :record="edit.record" :initial-values="edit.initial" @close="edit = null" />
+    <CrmRowModal v-if="edit" :key="`${edit.coll}:${edit.record?.id || 'new'}:${!!edit.requisitesOnly}`" inline :requisites-only="edit.requisitesOnly" :coll="edit.coll" :record="edit.record" :initial-values="edit.initial" @close="edit = null" />
 
     <dl class="account-metrics" aria-label="Показатели клиента">
       <div><dt>Активные сделки</dt><dd>{{ activeDeals.length }}<small v-if="pipelineAmount != null">{{ money(pipelineAmount) }}</small></dd></div>
@@ -328,6 +329,19 @@ async function startSale() {
             </li>
           </ul>
           <p v-else class="client-empty">Событий пока нет.</p>
+        </div>
+
+        <div v-else-if="active === 'requisites'" class="customer-tab-content">
+          <div class="section-heading">
+            <h3>Реквизиты для документов</h3>
+            <button v-if="canEditCollection('farms')" class="btn slim"
+              @click="edit = { coll: 'farms', record: farm, requisitesOnly: true }">Изменить реквизиты</button>
+          </div>
+          <dl class="profile-fields">
+            <div v-for="[label, value] in REQUISITE_FIELDS.map(([key, label]) => [label, farm[key]])" :key="label">
+              <dt>{{ label }}</dt><dd>{{ value || '—' }}</dd>
+            </div>
+          </dl>
         </div>
 
         <div v-else-if="active === 'photos'" class="customer-tab-content">

@@ -10,11 +10,14 @@ import { useDbStore } from '@/stores/db';
 import { useUiStore } from '@/stores/ui';
 import { COLL_RU, crmDictionaryKey, crmFieldLabel, REF_FIELD, REF_KINDS, crmFields, crmTitle, crmValue, DEAL_STAGES, dealStage, statusOptions } from '@/data/crmFields';
 
+import { REQUISITE_FIELDS } from '@/data/requisites';
+
 const props = defineProps({
   coll: { type: String, required: true },     // farms, leads, deals…
   initialValues: { type: Object, default: () => ({}) },
   record: { type: Object, default: null },    // непусто — режим редактирования
   inline: Boolean,
+  requisitesOnly: Boolean,
   allowReferenceCreate: { type: Boolean, default: true },
 });
 const emit = defineEmits(['close', 'saved', 'deleted']);
@@ -156,7 +159,10 @@ function referenceSaved(record) {
 
 const isEdit = computed(() => !!props.record);
 
-const fields = computed(() => crmFields(props.coll, [props.record || props.initialValues]));
+const requisites = REQUISITE_FIELDS.map(([key]) => key);
+const fields = computed(() => props.requisitesOnly
+  ? ['id', ...requisites]
+  : crmFields(props.coll, [props.record || props.initialValues]));
 const form = ref({});
 const showExtraFields = ref(false);
 const coreFields = {
@@ -164,7 +170,7 @@ const coreFields = {
   production: ['date', 'sku', 'lot', 'qty', 'unit', 'plannedVolumeL', 'plannedPowderKg', 'status',
     'supplyId', 'inputLot', 'powderUsedKg', 'pasteUsedKg', 'actualQty', 'qcStatus'],
 };
-const visibleFields = computed(() => fields.value.filter((key) => key !== 'items' &&
+const visibleFields = computed(() => fields.value.filter((key) => key !== 'items' && (!props.requisitesOnly || key !== 'id') &&
   (!coreFields[props.coll] || showExtraFields.value || coreFields[props.coll].includes(key))));
 const extraFieldsCount = computed(() => coreFields[props.coll] ?
   fields.value.filter((key) => !coreFields[props.coll].includes(key)).length : 0);
@@ -255,7 +261,7 @@ async function save() {
     if (!isEdit.value && suppliedId && (db.data[props.coll] || []).some((row) => String(row.id) === suppliedId)) {
       throw new Error('Запись с таким ID уже существует. Откройте её для редактирования.');
     }
-    for (const key of requiredFields[props.coll] || []) {
+    for (const key of props.requisitesOnly ? [] : (requiredFields[props.coll] || [])) {
       if ((!isEdit.value || form.value[key] !== initial[key]) && !form.value[key]?.trim()) {
         throw new Error(`Заполните поле «${fieldLabel(key)}»`);
       }
@@ -356,7 +362,7 @@ async function removeRecord() {
     <section :class="inline ? 'panel inline-editor' : 'modal'" :role="inline ? undefined : 'dialog'"
       :aria-modal="inline ? undefined : 'true'" :aria-labelledby="modalId">
       <div class="head">
-        <h2 :id="modalId" ref="heading" tabindex="-1">{{ isEdit ? 'Редактировать запись' : 'Новая запись' }} · {{ COLL_RU[coll] || coll }}</h2>
+        <h2 :id="modalId" ref="heading" tabindex="-1">{{ requisitesOnly ? 'Редактировать реквизиты' : (isEdit ? 'Редактировать запись' : 'Новая запись') + ' · ' + (COLL_RU[coll] || coll) }}</h2>
         <button class="x" type="button" aria-label="Закрыть форму" :disabled="busy || addingBusy || !!linkedDraft" @click="emit('close')">✕</button>
       </div>
       <div class="body">
@@ -395,7 +401,7 @@ async function removeRecord() {
         <div v-if="error" class="err" role="alert">{{ error }}</div>
       </div>
       <div class="foot">
-        <button v-if="isEdit" type="button" class="btn slim danger-text remove" :disabled="busy || addingBusy || !!linkedDraft" @click="removeRecord">🗑 Удалить запись</button>
+        <button v-if="isEdit && !requisitesOnly" type="button" class="btn slim danger-text remove" :disabled="busy || addingBusy || !!linkedDraft" @click="removeRecord">🗑 Удалить запись</button>
         <button type="button" class="btn ghost slim" :disabled="busy || addingBusy || !!linkedDraft" @click="emit('close')">Отмена</button>
         <button type="button" class="btn primary slim" :disabled="busy || addingBusy || !!linkedDraft" @click="save">{{ busy ? 'Сохранение…' : 'Сохранить' }}</button>
       </div>
