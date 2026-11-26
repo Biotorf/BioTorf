@@ -79,7 +79,15 @@ function includesQuery(values) {
 }
 const visibleBalances = computed(() => balances.value.filter((row) =>
   includesQuery([row.sku, labelSku(row.sku), row.lot, row.warehouse, ...Object.keys(row.reservations || {})])));
+const selectedBalance = ref(null);
+function openBalanceHistory(row) {
+  selectedBalance.value = row;
+  query.value = '';
+  tab.value = 'history';
+}
 const visibleEvents = computed(() => events.value.filter((event) =>
+  (!selectedBalance.value || event.lines?.some((line) =>
+    ['sku', 'lot', 'warehouse', 'unit'].every((key) => line[key] === selectedBalance.value[key]))) &&
   includesQuery([labels[event.type], event.reference, event.orderId, event.createdBy, event.source?.id,
     ...(event.lines || []).flatMap((line) => [labelSku(line.sku), line.sku, line.lot, line.warehouse])])));
 const knownWarehouses = computed(() => [...new Set([
@@ -325,8 +333,8 @@ onBeforeUnmount(() => window.removeEventListener('hashchange', showLinkedForm));
   <section class="inventory">
     <div class="inventory-bar">
       <div v-if="ready" class="actionbar">
-        <button class="btn slim" data-tour="warehouse-balance" :class="{ primary: tab === 'balances' }" :aria-pressed="tab === 'balances'" @click="tab = 'balances'">Остатки</button>
-        <button class="btn slim" :class="{ primary: tab === 'history' }" :aria-pressed="tab === 'history'" @click="tab = 'history'">Журнал движений</button>
+        <button class="btn slim" data-tour="warehouse-balance" :class="{ primary: tab === 'balances' }" :aria-pressed="tab === 'balances'" @click="selectedBalance = null; tab = 'balances'">Остатки</button>
+        <button class="btn slim" :class="{ primary: tab === 'history' }" :aria-pressed="tab === 'history'" @click="selectedBalance = null; tab = 'history'">Журнал движений</button>
       </div>
       <div class="actionbar">
         <button class="btn slim ghost" :disabled="loading || saving" @click="refresh">{{ loading ? 'Обновление…' : 'Обновить' }}</button>
@@ -402,7 +410,7 @@ onBeforeUnmount(() => window.removeEventListener('hashchange', showLinkedForm));
       </div>
       <div v-if="tab === 'balances'" class="table-wrap">
         <table class="table">
-          <thead><tr><th>Товар</th><th>Партия</th><th>Склад</th><th>Ед.</th><th>В наличии</th><th>В резерве</th><th>Доступно</th></tr></thead>
+          <thead><tr><th>Товар</th><th>Партия</th><th>Склад</th><th>Ед.</th><th>В наличии</th><th>В резерве</th><th>Доступно</th><th>Действия</th></tr></thead>
           <tbody>
             <tr v-for="row in visibleBalances" :key="JSON.stringify([row.sku, row.lot, row.warehouse, row.unit])">
               <td><b>{{ labelSku(row.sku) }}</b><div class="mini">{{ row.sku }}</div></td>
@@ -415,12 +423,17 @@ onBeforeUnmount(() => window.removeEventListener('hashchange', showLinkedForm));
                 </details>
               </td>
               <td><b>{{ qty(row.available) }}</b></td>
+              <td><button type="button" class="btn slim" @click="openBalanceHistory(row)">Движения партии</button></td>
             </tr>
-            <tr v-if="!visibleBalances.length"><td colspan="7" class="empty">{{ query ? 'По этому запросу партий нет.' : 'Остатков в складском журнале пока нет.' }}</td></tr>
+            <tr v-if="!visibleBalances.length"><td colspan="8" class="empty">{{ query ? 'По этому запросу партий нет.' : 'Остатков в складском журнале пока нет.' }}</td></tr>
           </tbody>
         </table>
       </div>
       <div v-else class="table-wrap">
+        <p v-if="selectedBalance" class="mini">Движения партии {{selectedBalance.lot}} · {{selectedBalance.warehouse}}
+          <button type="button" class="btn slim ghost" @click="selectedBalance = null">Показать все</button>
+        </p>
+        <p v-if="canEdit('warehouse')" class="mini">Чтобы убрать ошибочное движение из расчёта остатков, нажмите «Отменить операцию (сторно)».</p>
         <p v-if="events.length === 150" class="mini history-limit">Показаны последние 150 операций.</p>
         <table class="table">
           <thead><tr><th>Дата</th><th>Движение</th><th>Позиции</th><th>Основание</th><th>Сотрудник</th><th v-if="canEdit('warehouse')">Действие</th></tr></thead>
@@ -440,7 +453,7 @@ onBeforeUnmount(() => window.removeEventListener('hashchange', showLinkedForm));
                 <div v-if="event.reference">{{ event.reference }}</div>
               </td>
               <td>{{ event.createdBy || '—' }}</td>
-              <td v-if="canEdit('warehouse')"><button v-if="!event.reversedBy && event.type !== 'reversal'" class="btn slim ghost" :disabled="!!form || saving || !canPost" @click="showReverse(event)">Сторно</button></td>
+              <td v-if="canEdit('warehouse')"><button v-if="!event.reversedBy && event.type !== 'reversal'" class="btn slim ghost" :disabled="!!form || saving || !canPost" @click="showReverse(event)">Отменить операцию (сторно)</button></td>
             </tr>
             <tr v-if="!visibleEvents.length"><td :colspan="canEdit('warehouse') ? 6 : 5" class="empty">{{ query ? 'Движения не найдены.' : 'Проведённых движений пока нет.' }}</td></tr>
           </tbody>
