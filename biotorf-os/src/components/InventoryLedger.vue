@@ -11,6 +11,7 @@ import { useUiStore } from '@/stores/ui';
 const db = useDbStore();
 const ui = useUiStore();
 const { canEdit } = usePermissions();
+const props = defineProps({ readonly: Boolean });
 const emit = defineEmits(['legacy-mode']);
 const labels = {
   opening: 'Начальный остаток',
@@ -39,7 +40,7 @@ const sourceTypes = {
   dispatch: ['shipments', 'logistics'],
   return: ['shipments', 'logistics'],
 };
-const inventoryTypes = computed(() => canEdit('warehouse') ? movementTypes : ui.role === 'production' ? ['production'] : []);
+const inventoryTypes = computed(() => props.readonly ? [] : canEdit('warehouse') ? movementTypes : ui.role === 'production' ? ['production'] : []);
 const balances = ref([]);
 const logisticsDocuments = ref([]);
 const events = ref([]);
@@ -54,7 +55,7 @@ const success = ref('');
 const form = ref(null);
 const ready = ref(false);
 const unavailable = ref(false);
-const canPost = computed(() => ready.value && !unavailable.value && !loading.value && !error.value);
+const canPost = computed(() => !props.readonly && ready.value && !unavailable.value && !loading.value && !error.value);
 let lastSubmission = null;
 let nextLineKey = 0;
 const lotListId = useId();
@@ -440,7 +441,7 @@ onBeforeUnmount(() => window.removeEventListener('hashchange', showLinkedForm));
                 <div v-if="event.reference">{{ event.reference }}</div>
               </td>
               <td>{{ event.createdBy || '—' }}</td>
-              <td v-if="canEdit('warehouse')"><button v-if="!event.reversedBy && event.type !== 'reversal'" class="btn slim ghost" :disabled="!!form || saving || !canPost" @click="showReverse(event)">Сторно</button></td>
+              <td v-if="!props.readonly && canEdit('warehouse')"><button v-if="!event.reversedBy && event.type !== 'reversal'" class="btn slim ghost" :disabled="!!form || saving || !canPost" @click="showReverse(event)">Сторно</button></td>
             </tr>
             <tr v-if="!visibleEvents.length"><td :colspan="canEdit('warehouse') ? 6 : 5" class="empty">{{ query ? 'Движения не найдены.' : 'Проведённых движений пока нет.' }}</td></tr>
           </tbody>

@@ -51,6 +51,7 @@ if store.IS_POSTGRES:
     from pg import check_connection as pg_check
 import logistics
 import inventory
+import stock
 import channels
 import chat_inbox
 import crm
@@ -178,6 +179,7 @@ def media_path(media_id: str) -> Path | None:
 
 app = FastAPI(title="BIOTORF Business OS · Comms API", version="0.2.0")
 app.include_router(record_photos.router)
+app.include_router(stock.router)
 
 
 def _ensure_channels_schema():
@@ -209,6 +211,7 @@ def _ensure_schema():
             logistics.init_tables(conn)
             crm.init_tables(conn)
             record_photos.init_tables(conn)
+            stock.init_tables(conn)
             users.init_tables(conn)
         _ensure_channels_schema()
         if store.IS_POSTGRES:
@@ -1305,17 +1308,9 @@ def inventory_state():
         return inventory.get_state(conn)
 
 
-@app.post("/api/inventory", status_code=201)
-def inventory_post(body: dict, request: Request):
-    try:
-        with closing(store.connect()) as conn:
-            return inventory.post_event(conn, body, actor=request.state.user, role=request.state.role)
-    except PermissionError as exc:
-        raise HTTPException(403, str(exc)) from exc
-    except inventory.InventoryConflict as exc:
-        raise HTTPException(409, str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
+@app.post("/api/inventory")
+def inventory_post():
+    raise HTTPException(410, "Прежний журнал доступен для просмотра. Создайте документ в разделе «Склад».")
 
 
 # ── CRM ядро: сквозной процесс и операционные реестры (руководство v0.9) ─────
@@ -2103,7 +2098,7 @@ def health():
     return JSONResponse(status_code=status, content={
         "ok": db_ok, "service": "biotorf-comms", "version": app.version,
         "revision": os.environ.get("RENDER_GIT_COMMIT") or None,
-        "features": {"inventory": True, "chatClientCapture": True, "automationRules": True, "recordPhotos": True},
+        "features": {"inventory": True, "stockDocuments": True, "chatClientCapture": True, "automationRules": True, "recordPhotos": True},
         "db": ("postgres: " + ("up" if db_ok else "DOWN — " + db_msg))
               if store.IS_POSTGRES else "sqlite",
         "ts": now_iso(),
