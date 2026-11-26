@@ -154,6 +154,10 @@ def _normalize(raw: dict) -> dict:
     ]
     if not lines:
         raise ValueError("Операция не меняет остаток ни по одной партии")
+    if raw.get("clearBalance") is True:
+        if kind != "adjustment" or len(lines) != 1 or Decimal(lines[0]["qty"]) >= 0:
+            raise ValueError("Для удаления укажите одну партию с отрицательным количеством")
+        event["clearBalance"] = True
     return {**event, "lines": lines}
 
 
@@ -384,6 +388,11 @@ def post_event(conn, payload: dict, *, actor: str, role: str) -> dict:
         effects = []
         for row in prepared:
             balance = crm.get_record(tx, BALANCES, _hash(_key(row)))
+            if event.get("clearBalance"):
+                if Decimal((balance or {}).get("onHand", "0")) != -Decimal(row["qty"]):
+                    raise InventoryConflict("Остаток изменился. Обновите склад и выберите партию снова.")
+                if Decimal(balance.get("reserved", "0")):
+                    raise InventoryConflict("Сначала снимите резерв по этой партии.")
             if event["type"] == "opening" and balance:
                 raise InventoryConflict("Начальный остаток для этой партии уже задан. Используйте корректировку.")
             effect = row if original else _effect(event, row, balance)

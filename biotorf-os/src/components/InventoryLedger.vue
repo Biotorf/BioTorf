@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, useId, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, useId, watch } from 'vue';
 import CrmSelectField from '@/components/CrmSelectField.vue';
 import { logisticsApi } from '@/api/logisticsClient';
 import { inventoryApi } from '@/api/inventoryClient';
@@ -52,6 +52,8 @@ const error = ref('');
 const formError = ref('');
 const success = ref('');
 const form = ref(null);
+const removeReason = ref(null);
+const eventLabel = (event) => event.clearBalance ? 'Списание остатка партии' : (labels[event.type] || event.type);
 const ready = ref(false);
 const unavailable = ref(false);
 const canPost = computed(() => ready.value && !unavailable.value && !loading.value && !error.value);
@@ -77,7 +79,7 @@ function includesQuery(values) {
   const term = query.value.trim().toLowerCase();
   return !term || values.some((value) => String(value ?? '').toLowerCase().includes(term));
 }
-const visibleBalances = computed(() => balances.value.filter((row) =>
+const visibleBalances = computed(() => balances.value.filter((row) => Number(row.onHand) > 0 &&
   includesQuery([row.sku, labelSku(row.sku), row.lot, row.warehouse, ...Object.keys(row.reservations || {})])));
 const selectedBalance = ref(null);
 function openBalanceHistory(row) {
@@ -88,7 +90,7 @@ function openBalanceHistory(row) {
 const visibleEvents = computed(() => events.value.filter((event) =>
   (!selectedBalance.value || event.lines?.some((line) =>
     ['sku', 'lot', 'warehouse', 'unit'].every((key) => line[key] === selectedBalance.value[key]))) &&
-  includesQuery([labels[event.type], event.reference, event.orderId, event.createdBy, event.source?.id,
+  includesQuery([eventLabel(event), event.reference, event.orderId, event.createdBy, event.source?.id,
     ...(event.lines || []).flatMap((line) => [labelSku(line.sku), line.sku, line.lot, line.warehouse])])));
 const knownWarehouses = computed(() => [...new Set([
   ...balances.value.map((row) => row.warehouse),
@@ -239,6 +241,14 @@ function showLinkedForm() {
   if (!type || form.value) return;
   showForm(type, { collection: query.get('sourceCollection'), id: query.get('sourceId') || '' }, query.get('orderId') || '');
 }
+async function showRemoveBalance(row) {
+  if (!canPost.value || !canEdit('warehouse') || form.value || Number(row.reserved)) return;
+  showForm('adjustment');
+  form.value.removeBalance = row;
+  form.value.lines = [line(row.sku, row.warehouse, row.lot, '-' + row.onHand)];
+  await nextTick();
+  removeReason.value?.focus();
+}
 function showReverse(event) {
   if (!canPost.value || !canEdit('warehouse') || busyWarehouses.size || event.reversedBy || event.type === 'reversal') return;
   formError.value = '';
@@ -288,6 +298,7 @@ function toPayload() {
   });
   return {
     type: draft.type, reference,
+    ...(draft.removeBalance ? { clearBalance: true } : {}),
     ...(sourceId ? { source: { collection: draft.collection, id: sourceId } } : {}),
     ...(orderId ? { orderId } : {}),
     lines,
@@ -361,11 +372,15 @@ onBeforeUnmount(() => window.removeEventListener('hashchange', showLinkedForm));
       <slot name="legacy" />
     </section>
     <form v-if="ready && form" class="panel operation" @submit.prevent="submit">
-      <h2>{{ form.reverseOf ? 'Сторно складской операции' : 'Новая складская операция' }}</h2>
+      <h2>{{ form.removeBalance ? 'Удаление остатка партии' : form.reverseOf ? 'Сторно складской операции' : 'Новая складская операция' }}</h2>
       <fieldset :disabled="saving">
         <p v-if="reverseEvent">{{ labels[reverseEvent.type] }} · {{ dateTime(reverseEvent.createdAt) }} · {{ reverseEvent.reference || reverseEvent.id }}</p>
+        <p v-if="form.removeBalance">
+          Будет списано {{ qty(form.removeBalance.onHand) }} {{ form.removeBalance.unit }}.
+          {{ labelSku(form.removeBalance.sku) }} · {{ form.removeBalance.lot }} · {{ form.removeBalance.warehouse }}
+        </p>
         <div class="operation-fields">
-          <label v-if="!form.reverseOf">Вид операции
+          <label v-if="!form.reverseOf && !form.removeBalance">Вид операции
             <select v-model="form.type" class="select" :disabled="busyWarehouses.size > 0" @change="changeType">
               <option v-for="type in inventoryTypes" :key="type" :value="type">{{ labels[type] }}</option>
             </select>
@@ -380,12 +395,12 @@ onBeforeUnmount(() => window.removeEventListener('hashchange', showLinkedForm));
             searchable placeholder="Выберите документ" @change="chooseSource" />
           <CrmSelectField v-if="orderVisible" v-model="form.orderId" class="field" label="Заказ" :options="orderChoices"
             :required="orderRequired" searchable placeholder="Выберите заказ" @change="chooseOrder" />
-          <label>{{ form.reverseOf ? 'Причина сторно' : 'Основание' }}
-            <input v-model="form.reference" class="input" maxlength="500" :required="!!form.reverseOf || ['opening', 'adjustment'].includes(form.type)" />
+          <label>{{ form.removeBalance ? 'Причина списания' : form.reverseOf ? 'Причина сторно' : 'Основание' }}
+            <input ref="removeReason" v-model="form.reference" class="input" maxlength="500" :required="!!form.reverseOf || ['opening', 'adjustment'].includes(form.type)" />
           </label>
         </div>
 
-        <template v-if="!form.reverseOf">
+        <template v-if="!form.reverseOf && !form.removeBalance">
           <button v-if="selectedSource && ['receipt_powder', 'production', 'dispatch', 'reserve', 'release'].includes(form.type)" type="button"
             class="btn slim ghost prefill" :disabled="busyWarehouses.size > 0" @click="chooseSource">Заполнить из документа</button>
           <p v-if="form.type === 'production'" class="mini">Укажите расход порошка и фактический выпуск по партиям. При отклонении контроля качества укажите расход сырья.</p>
@@ -409,7 +424,7 @@ onBeforeUnmount(() => window.removeEventListener('hashchange', showLinkedForm));
 
         <p v-if="formError" class="danger-text" role="alert">{{ formError }}</p>
         <div class="actionbar operation-footer">
-          <button type="submit" class="btn slim primary" :disabled="!canPost || busyWarehouses.size > 0">{{ saving ? 'Проведение…' : form.reverseOf ? 'Провести сторно' : 'Провести операцию' }}</button>
+          <button type="submit" class="btn slim primary" :disabled="!canPost || busyWarehouses.size > 0">{{ saving ? 'Проведение…' : form.removeBalance ? 'Списать остаток' : form.reverseOf ? 'Провести сторно' : 'Провести операцию' }}</button>
           <button type="button" class="btn slim ghost" :disabled="busyWarehouses.size > 0" @click="closeForm">Отмена</button>
         </div>
       </fieldset>
@@ -435,7 +450,13 @@ onBeforeUnmount(() => window.removeEventListener('hashchange', showLinkedForm));
                 </details>
               </td>
               <td><b>{{ qty(row.available) }}</b></td>
-              <td><button type="button" class="btn slim" @click="openBalanceHistory(row)">Движения партии</button></td>
+              <td class="actionbar">
+                <button type="button" class="btn slim" @click="openBalanceHistory(row)">Движения партии</button>
+                <button v-if="canEdit('warehouse')" type="button" class="btn slim ghost danger-text"
+                  :disabled="!canPost || !!form || Number(row.reserved) > 0"
+                  @click="showRemoveBalance(row)">Удалить</button>
+                <span v-if="canEdit('warehouse') && Number(row.reserved) > 0" class="mini">Сначала снимите резерв</span>
+              </td>
             </tr>
             <tr v-if="!visibleBalances.length"><td colspan="8" class="empty">{{ query ? 'По этому запросу партий нет.' : 'Остатков в складском журнале пока нет.' }}</td></tr>
           </tbody>
@@ -452,7 +473,7 @@ onBeforeUnmount(() => window.removeEventListener('hashchange', showLinkedForm));
           <tbody>
             <tr v-for="event in visibleEvents" :key="event.id">
               <td>{{ dateTime(event.createdAt) }}</td>
-              <td>{{ labels[event.type] || event.type }}<div v-if="event.reversedBy" class="mini">Сторнировано</div></td>
+              <td>{{ eventLabel(event) }}<div v-if="event.reversedBy" class="mini">Сторнировано</div></td>
               <td class="ledger-lines">
                 <div v-for="(row, index) in event.lines" :key="index">
                   {{ labelSku(row.sku) }} · {{ row.lot }} · {{ row.warehouse }} · {{ effectsText(row) }}
