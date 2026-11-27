@@ -28,7 +28,7 @@ const source = computed(() => db.data.production || []);
 const statuses = computed(() => ['Все', ...statusOptions('production', source.value)]);
 const rows = computed(() => source.value.filter((row) => statusFilter.value === 'Все' || row.status === statusFilter.value));
 function canPost(row) {
-  return canEditCollection('production') && row.status === 'Завершено' && (row.pasteUsedKg > 0 || row.powderUsedKg > 0) &&
+  return db.skuById(row.sku)?.stockType !== 'finished' && canEditCollection('production') && row.status === 'Завершено' && (row.pasteUsedKg > 0 || row.powderUsedKg > 0) &&
     !!row.inputLot && !!row.lot && ['Пройден', 'Отклонён'].includes(row.qcStatus);
 }
 </script>
@@ -68,6 +68,7 @@ function canPost(row) {
         <p v-if="row.qty || row.plannedVolumeL"><strong>План</strong> {{ row.qty ?? '—' }} {{ row.unit || 'шт.' }} <span v-if="row.plannedVolumeL">· {{ row.plannedVolumeL }} л</span></p>
         <p v-if="row.plannedPasteKg != null"><strong>Паста по рецептуре {{ row.recipeVersion }}</strong> {{ row.plannedPasteKg }} кг</p>
         <p v-if="row.plannedPowderKg != null"><strong>Порошок по рецептуре {{ row.recipeVersion }}</strong> {{ row.plannedPowderKg }} кг</p>
+        <p v-if="row.stockEventId" class="mini">{{ row.stockReversed ? 'Выпуск сторнирован' : 'Проведено по рецептуре · см. журнал склада' }}</p>
         <p v-if="row.actualQty != null"><strong>Выпуск</strong> {{ row.actualQty }} {{ row.unit || 'шт.' }} · {{ row.qcStatus || 'Контроль ожидается' }}</p>
         <div class="actionbar">
           <button v-if="canEditCollection('production')" class="btn slim" @click="rowOpen = { record: row }">{{ row.status === 'Завершено' ? 'Открыть партию' : 'Заполнить партию' }}</button>

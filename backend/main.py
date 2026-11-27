@@ -1654,8 +1654,11 @@ def crm_wipe(coll: str, request: Request):
     """Полностью очистить одну таблицу CRM (для ручного наполнения с нуля)."""
     _check_coll(coll)
     _require_crm_admin(request)
-    with closing(store.connect()) as conn:
-        removed = crm.wipe_collection(conn, coll, actor=request.state.user)
+    try:
+        with closing(store.connect()) as conn:
+            removed = crm.wipe_collection(conn, coll, actor=request.state.user)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
     return {"coll": coll, "removed": removed}
 
 
@@ -1695,6 +1698,8 @@ def crm_delete(coll: str, rid: str, request: Request, revision: str | None = Non
                 raise HTTPException(404, "Запись не найдена")
     except crm.ConflictError as e:
         raise _crm_conflict(e)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 # ── исходящая отправка: ответ клиенту прямо из ленты ─────────────────────────

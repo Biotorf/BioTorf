@@ -514,9 +514,10 @@ export const useDbStore = defineStore('db', {
         const sku = this.skuById(item.sku);
         const norm = Number(sku?.pasteKgPerL);
         const loss = Number(sku?.lossPct);
-        const plannedPaste = item.volume * norm / (1 - loss / 100);
-        const hasNorm = sku?.recipeVersion && sku.lossPct != null && sku.lossPct !== '' &&
-          Number.isFinite(plannedPaste) && norm > 0 && loss >= 0 && loss < 100;
+        const component = sku?.components?.find((row) => row.sku === 'PASTE');
+        const plannedPaste = component ? item.qty * Number(component.qty) : item.volume * norm / (1 - loss / 100);
+        const hasLegacyNorm = sku.lossPct != null && sku.lossPct !== '' && norm > 0 && loss >= 0 && loss < 100;
+        const hasNorm = sku?.recipeVersion && Number.isFinite(plannedPaste) && plannedPaste > 0 && (component || hasLegacyNorm);
         return {
           id: this.uid('PLAN'), date: order.date,
           sku: item.sku, product: item.name, qty: item.qty, unit: 'шт.',
@@ -719,6 +720,10 @@ export const useDbStore = defineStore('db', {
         throw new Error('В файле есть повторяющиеся ID');
       }
       return serializeCrm(this.crmSync, async () => {
+        if (coll === 'production' && prepared.some((row) => row.status === 'Завершено')
+            && !apiOn() && !(await checkApi())) {
+          throw new Error('Для завершения выпуска нужна связь с сервером.');
+        }
         if (!apiOn() && mode === 'replace') throw new Error('Для замены таблицы требуется подключение к серверу.');
         const pending = this.crmSync.pending[coll];
         if (apiOn() && (mode === 'replace' ? pending.size : prepared.some((row) => pending.has(row.id)))) {

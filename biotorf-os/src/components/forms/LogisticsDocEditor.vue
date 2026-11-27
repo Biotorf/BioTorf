@@ -1,4 +1,5 @@
 <script setup>
+import { FINISHED_WAREHOUSE, isFinished, PASTE, RAW_WAREHOUSE, stockUnit } from '@/data/stockCatalog';
 // Редактор поставок и отгрузок.
 // Таблица позиций редактируется прямо в ячейках — как в Excel:
 //   товар | кол-во | ед. | цена | сумма (авто) | примечание.
@@ -52,7 +53,7 @@ const form = reactive({
   party: source?.party || '',
   farmId: source?.farmId || '',
   orderId: source?.orderId || '',
-  warehouse: source?.warehouse || '',
+  warehouse: source?.warehouse || ((source?.kind || props.kind) === 'supply' ? RAW_WAREHOUSE : ''),
   vehicle: source?.vehicle || '',
   driver: source?.driver || '',
   base: source?.base || '',
@@ -90,13 +91,14 @@ const orders = computed(() => db.orders.filter((order) => {
   label: [order.number || order.num || order.id, db.farmById(order.farmId)?.name].filter(Boolean).join(' · '),
 })));
 const warehouses = computed(() => [...new Set([
+  RAW_WAREHOUSE, FINISHED_WAREHOUSE,
   ...db.warehouse.map((row) => row.warehouse || row.location),
   ...db.logistics.map((row) => row.warehouse),
 ].filter(Boolean))]);
 const suppliers = computed(() => logisticsOptions('party', 'supply'));
 const vehicles = computed(() => logisticsOptions('vehicle'));
 const drivers = computed(() => logisticsOptions('driver'));
-const products = computed(() => db.skus.map((sku) => ({
+const products = computed(() => (isDispatch.value ? db.skus.filter(isFinished) : [PASTE, ...db.skus]).map((sku) => ({
   value: sku.id,
   label: [sku.name || sku.id, sku.pack ? `${sku.pack} л` : '', sku.id].filter(Boolean).join(' · '),
 })));
@@ -176,8 +178,15 @@ const removeRow = (i) => {
 
 function onSku(item, id) {
   if (!id) return;
-  const sku = db.skuById(id);
+  const sku = id === PASTE.id ? PASTE : db.skuById(id);
   item.name = sku.name;
+  if (!isDispatch.value) {
+    item.material = id === PASTE.id ? 'paste' : '';
+    item.unit = stockUnit(sku);
+    if (!form.items.some((row) => row !== item && (row.skuId || row.material))) {
+      form.warehouse = isFinished(sku) ? FINISHED_WAREHOUSE : RAW_WAREHOUSE;
+    }
+  }
   if (!item.price) item.price = Number(sku.price) || 0;
 }
 
@@ -215,7 +224,11 @@ function validatePayload(payload) {
       throw new Error('Укажите положительное количество и неотрицательную цену каждой позиции.');
     }
     if (!isRawMaterial(item)) {
-      if (receiving && (!item.skuId || !item.lot || !Number.isInteger(item.qty) ||
+      const raw = item.skuId && db.skuById(item.skuId)?.stockType === 'raw';
+      if (receiving && raw && (!item.lot || item.unit !== 'кг')) {
+        throw new Error('Для сырья укажите партию и массу в килограммах.');
+      }
+      if (receiving && !raw && (!item.skuId || !item.lot || !Number.isInteger(item.qty) ||
           !['шт.', 'шт', 'штук', 'упак', 'упак.'].includes(item.unit))) {
         throw new Error('Для приёмки товара выберите его из каталога, укажите партию и целое количество в штуках или упаковках.');
       }
@@ -259,8 +272,9 @@ async function save(closeAfter = true) {
 function isRawMaterial(item) { return ['powder', 'paste'].includes(item.material); }
 
 function addPasteRow() {
-  const material = { ...emptyItem(form.kind), name: 'Паста-концентрат', material: 'paste', lot: '', unit: 'кг', qcStatus: 'Ожидается' };
+  const material = { ...emptyItem(form.kind), skuId: PASTE.id, name: PASTE.name, material: 'paste', lot: '', unit: 'кг', qcStatus: 'Ожидается' };
   const first = form.items[0];
+  if (!hasItems.value) form.warehouse = RAW_WAREHOUSE;
   if (form.items.length === 1 && !first.skuId && !first.name) form.items.splice(0, 1, material);
   else form.items.push(material);
 }
@@ -414,7 +428,7 @@ function exportCsv() {
         <tbody>
           <tr v-for="(it, i) in form.items" :key="it.key">
             <td>
-              <CrmSelectField v-if="!isRawMaterial(it)" v-model="it.skuId" :label="label('skuId')" :options="products"
+              <CrmSelectField v-if="!isRawMaterial(it) || it.skuId === PASTE.id" v-model="it.skuId" :label="label('skuId')" :options="products"
                 hide-label searchable placeholder="— свободная позиция —" @change="onSku(it, $event)" />
               <input v-model="it.name" class="input slim-in" style="margin-top:4px" aria-label="Наименование" placeholder="Наименование">
               <label v-if="!isDispatch">Партия поставщика <input v-model.trim="it.lot" class="input slim-in" maxlength="200" /></label>
@@ -431,7 +445,7 @@ function exportCsv() {
             <td>
               <select v-model="it.unit" class="input slim-in">
                 <option v-if="it.unit && !UNITS.includes(it.unit)" :value="it.unit">{{ it.unit }}</option>
-                <option v-for="u in isRawMaterial(it) ? ['кг', 'т'] : UNITS" :key="u">{{ u }}</option>
+                <option v-for="u in it.skuId === PASTE.id ? ['кг'] : (isRawMaterial(it) ? ['кг', 'т'] : UNITS)" :key="u">{{ u }}</option>
               </select>
             </td>
             <td><input v-model.number="it.price" type="number" min="0" step="1" class="input slim-in num-in"></td>

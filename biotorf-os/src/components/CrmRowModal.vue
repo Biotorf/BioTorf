@@ -1,4 +1,5 @@
 <script setup>
+import { isFinished, PASTE, RAW_WAREHOUSE, stockTypes, stockUnit } from '@/data/stockCatalog';
 // Ручное заполнение таблиц CRM: добавление и редактирование записи прямо из UI.
 // Поля выводятся по типовому набору для коллекции (или по ключам существующих
 // записей). Сохранение идёт через db.importCollection(coll, [rec], 'merge') —
@@ -57,16 +58,20 @@ function rawLots() {
   return acceptedRawLots(supply, String(props.record?.supplyId) === form.value.supplyId);
 }
 const unitOptions = ['шт.', 'упак.', 'л', 'кг', 'т'];
-const skuOptions = computed(() => db.skus.map((sku) => ({ value: String(sku.id), label: `${crmTitle(sku)} · ${sku.id}` })));
+const skuOptions = computed(() => db.skus.filter(isFinished).map((sku) => ({ value: String(sku.id), label: `${crmTitle(sku)} · ${sku.id}` })));
 const ENUM_FIELD = {
-  inputLot: () => rawLots(),
+  stockType: () => Object.entries(stockTypes).map(([value, label]) => ({ value, label })),
+  inputLot: () => recipeProduction.value
+    ? [...new Set((db.logistics || []).filter((row) => row.warehouse === RAW_WAREHOUSE && row.status === 'Принят')
+      .flatMap((row) => row.items.filter((item) => item.material === 'paste').map((item) => item.lot)))]
+    : rawLots(),
   qcStatus: () => ['Ожидается', 'Пройден', 'Отклонён'],
   stage: () => props.coll === 'deals'
     ? [...new Set([...DEAL_STAGES, ...(db.data.deals || []).map((row) => dealStage(row.stage))].filter(Boolean))]
     : [...new Set([...(db.data.stages || []), ...(db.data.journeys || []).map((row) => row.stage)].filter(Boolean))],
   pilotStage: () => [...(db.data.pilotStages || [])],
   unit: () => unitOptions,
-  product: () => db.skus.map((sku) => sku.name).filter(Boolean),
+  product: () => db.skus.filter(isFinished).map((sku) => sku.name).filter(Boolean),
   priority: () => ['Низкий', 'Средний', 'Высокий', 'Критический'],
   consent: () => ['Нет', 'Да'],
   caseApproved: () => ['Нет', 'Да'],
@@ -83,7 +88,8 @@ function referenceTable(key) {
 }
 function referenceRows(key) {
   const coll = referenceTable(key);
-  const rows = db.data[coll] || [];
+  const candidates = db.data[coll] || [];
+  const rows = coll === 'skus' ? candidates.filter(isFinished) : candidates;
   if (key === 'supplyId') {
     return rows.filter((row) => acceptedRawLots(row, String(row.id) === String(props.record?.supplyId)).length > 0);
   }
@@ -164,13 +170,20 @@ const fields = computed(() => props.requisitesOnly
   ? ['id', ...requisites]
   : crmFields(props.coll, [props.record || props.initialValues]));
 const form = ref({});
+const components = ref([]);
+const componentOptions = computed(() => [PASTE, ...db.skus.filter((row) => !isFinished(row))].map((row) => ({
+  value: row.id, label: `${row.name || row.id} · ${stockUnit(row)}`,
+})));
+const recipeProduction = computed(() => props.coll === 'production' && db.skuById(form.value.sku)?.stockType === 'finished');
 const showExtraFields = ref(false);
 const coreFields = {
-  skus: ['id', 'name', 'line', 'pack', 'price', 'recipeVersion', 'pasteKgPerL', 'lossPct'],
+  skus: ['id', 'name', 'stockType', 'line', 'pack', 'price', 'recipeVersion'],
   production: ['date', 'sku', 'lot', 'qty', 'unit', 'plannedVolumeL', 'plannedPasteKg', 'status',
     'supplyId', 'inputLot', 'pasteUsedKg', 'actualQty', 'qcStatus'],
 };
-const visibleFields = computed(() => fields.value.filter((key) => key !== 'items' && (!props.requisitesOnly || key !== 'id') &&
+const visibleFields = computed(() => fields.value.filter((key) => !['items', 'components'].includes(key) &&
+  (props.coll !== 'skus' || !['raw', 'packaging'].includes(form.value.stockType) || ['id', 'name', 'stockType', 'price', 'notes'].includes(key)) &&
+  (!recipeProduction.value || !['supplyId', 'powderUsedKg'].includes(key)) && (!props.requisitesOnly || key !== 'id') &&
   (!coreFields[props.coll] || showExtraFields.value || coreFields[props.coll].includes(key) ||
     (props.coll === 'production' && ['powderUsedKg', 'plannedPowderKg'].includes(key) && props.record?.[key] != null))));
 const extraFieldsCount = computed(() => coreFields[props.coll] ?
@@ -221,6 +234,7 @@ function initForm() {
       : typeof v === 'object' ? JSON.stringify(v)
       : String(v);
   }
+  components.value = (props.record?.components || []).map((row) => ({ ...row }));
   const items = (props.record || props.initialValues).items;
   lineItems.value = Array.isArray(items) ? items.filter(Boolean).map((item) => ({
     ...item, sku: item.sku || item.skuId || '', packs: item.packs ?? item.qty ?? 1,
@@ -270,10 +284,10 @@ async function save() {
     if (props.coll === 'tasks' && (!isEdit.value || form.value.refKind !== initial.refKind || form.value.refId !== initial.refId)) {
       if (!!form.value.refKind !== !!form.value.refId) throw new Error('Укажите тип связи и выберите связанную запись.');
     }
-    if (props.coll === 'production') {
+    if (props.coll === 'production' && !recipeProduction.value) {
       const { supplyId, inputLot, status, qcStatus, plannedVolumeL, actualQty, powderUsedKg, pasteUsedKg } = form.value;
       const linkedSupply = (db.data.logistics || []).find((row) => String(row.id) === supplyId);
-      const isPasteLot = linkedSupply?.items?.some((item) => item.lot === inputLot && item.material === 'paste');;
+      const isPasteLot = linkedSupply?.items?.some((item) => item.lot === inputLot && item.material === 'paste');
       const actualUsed = isPasteLot ? pasteUsedKg : powderUsedKg;
       const changed = (...keys) => !isEdit.value || keys.some((key) => form.value[key] !== initial[key]);
       const validLot = !!supplyId && !!inputLot && rawLots().includes(inputLot);
@@ -298,7 +312,7 @@ async function save() {
       )) throw new Error('Для расчёта сырья укажите версию рецептуры, норму пасты больше нуля и потери от 0 до 100% (исключительно).');
     }
     for (const k of fields.value) {
-      if (k === 'items' || (k === 'stage' && props.coll === 'deals' && props.record?.journeyId)) continue;
+      if (['items', 'components'].includes(k) || (k === 'stage' && props.coll === 'deals' && props.record?.journeyId)) continue;
       let v = form.value[k];
       if (k !== 'id' && (isEdit.value ? v === initial[k] : v === '')) continue;
       if (referenceTable(k) && v && !referenceRows(k).some((row) => String(row.id) === v)) {
@@ -326,6 +340,7 @@ async function save() {
       if (props.coll === 'quotes') rec.total = total;
       if (props.coll === 'orders' && rec.amount == null) rec.amount = total;
     }
+    if (props.coll === 'skus' && form.value.stockType === 'finished') rec.components = components.value;
     if (props.record?._updatedAt) rec._expectedRev = props.record._updatedAt;
     if (!isEdit.value && !rec.id?.trim()) rec.id = db.uid(props.coll);
     const isInvoice = props.coll === 'invoices';
@@ -367,6 +382,17 @@ async function removeRecord() {
         <button class="x" type="button" aria-label="Закрыть форму" :disabled="busy || addingBusy || !!linkedDraft" @click="emit('close')">✕</button>
       </div>
       <div class="body">
+        <fieldset v-if="coll === 'skus' && form.stockType === 'finished'" class="items wide">
+          <legend>Компоненты на одну готовую упаковку</legend>
+          <p class="mini">Для пасты укажите кг на одну упаковку. Для тары и этикеток — количество в штуках.</p>
+          <div v-for="(item, index) in components" :key="itemKey(item)" class="item">
+            <CrmSelectField v-model="item.sku" label="Компонент" :options="componentOptions" searchable />
+            <label>Расход на упаковку <input v-model="item.qty" class="input" inputmode="decimal" /></label>
+            <button type="button" class="btn slim ghost" @click="components.splice(index, 1)">Убрать</button>
+          </div>
+          <button type="button" class="btn slim" @click="components.push({ sku: '', qty: '' })">＋ Компонент</button>
+        </fieldset>
+        <p v-if="recipeProduction" class="mini wide">При сохранении статуса «Завершено» CRM спишет компоненты по рецептуре и проведёт выпуск на склад готовой продукции. Фактический расход пасты можно указать отдельно.</p>
         <fieldset v-if="fields.includes('items')" class="items wide">
           <legend>{{ fieldLabel('items') }}</legend>
           <div v-for="(item, index) in lineItems" :key="itemKey(item)" class="item">

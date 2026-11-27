@@ -1,4 +1,5 @@
 <script setup>
+import { isFinished, PASTE, stockTypes, stockUnit } from '@/data/stockCatalog';
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useDbStore } from '@/stores/db';
 import { usePermissions } from '@/composables/usePermissions';
@@ -12,16 +13,20 @@ const db = useDbStore();
 const { canEditCollection } = usePermissions();
 const { money } = useFormatters();
 const filter = ref('');
+const category = ref('finished');
 const editor = ref(null);
 const page = ref(1);
 const pageSize = 24;
 const visible = computed(() => {
   const query = filter.value.trim().toLowerCase();
-  return db.skus.filter((row) => !query || [row.name, row.id, row.line].join(' ').toLowerCase().includes(query));
+  return [PASTE, ...db.skus].filter((row) =>
+    (category.value === 'finished' ? isFinished(row) : row.stockType === category.value) &&
+    (!query || [row.name, row.id, row.line].join(' ').toLowerCase().includes(query)));
+
 });
 const pageCount = computed(() => Math.max(1, Math.ceil(visible.value.length / pageSize)));
 const shownProducts = computed(() => visible.value.slice((page.value - 1) * pageSize, page.value * pageSize));
-watch(filter, () => { page.value = 1; });
+watch([filter, category], () => { page.value = 1; });
 watch(pageCount, (count) => { page.value = Math.min(page.value, count); });
 const { covers, setCover } = useCrmPhotoCovers('skus', () => shownProducts.value.map((product) => product.id));
 
@@ -48,16 +53,16 @@ function openPhotosForNewProduct(record) {
     <div class="pagehead">
       <div>
         <h1 data-tour="products-view">Каталог товаров</h1>
-        <p class="subtitle">Фасовка, цена и действующая рецептура BioTorf Agro и Home.</p>
+        <p class="subtitle">Сырьё и упаковка для производства, готовая продукция для продаж.</p>
       </div>
-      <button v-if="canEditCollection('skus')" class="btn primary" data-tour="product-create" @click="editor = { record: null }">Добавить товар</button>
+      <button v-if="canEditCollection('skus')" class="btn primary" data-tour="product-create" @click="editor = { record: null, initial: { stockType: category } }">Добавить товар</button>
     </div>
     <CrmRowModal
       v-if="editor"
       inline
       :key="editor.record?.id || 'new'"
       coll="skus"
-      :record="editor.record"
+      :record="editor.record" :initial-values="editor.initial || {}"
       @saved="openPhotosForNewProduct"
       @close="editor = null"
     />
@@ -72,6 +77,8 @@ function openPhotosForNewProduct(record) {
     </section>
 
     <div class="toolbar">
+      <button v-for="(label, key) in stockTypes" :key="key" type="button" class="btn slim"
+        :class="{ primary: category === key }" :aria-pressed="category === key" @click="category = key">{{ label }}</button>
       <input v-model="filter" type="search" class="input" aria-label="Поиск товара" placeholder="Название или артикул" />
       <a href="#/registry?table=skus">Полный реестр товаров</a>
     </div>
@@ -88,16 +95,17 @@ function openPhotosForNewProduct(record) {
               <h2>{{ row.name || row.id }}</h2>
               <span v-if="row.line" class="pill">{{ row.line }}</span>
             </div>
-            <p class="subtitle">{{ [row.id, row.pack ? row.pack + ' л' : '', row.price != null && row.price !== '' ? money(row.price) : ''].filter(Boolean).join(' · ') }}</p>
+            <p class="subtitle">{{ [row.id, isFinished(row) && row.pack ? row.pack + ' л' : stockUnit(row), row.price != null && row.price !== '' ? money(row.price) : ''].filter(Boolean).join(' · ') }}</p>
           </div>
         </header>
-        <p v-if="row.recipeVersion && row.pasteKgPerL > 0">
+        <p v-if="row.components?.length">Рецептура {{ row.recipeVersion }} · компонентов {{ row.components.length }}</p>
+        <p v-else-if="row.recipeVersion && row.pasteKgPerL > 0">
           Рецептура {{ row.recipeVersion }} · {{ row.pasteKgPerL }} кг пасты на 1 л · потери {{ row.lossPct }}%
         </p>
-        <p v-else class="subtitle">Норма расхода пасты ещё не задана.</p>
+        <p v-else-if="isFinished(row)" class="subtitle">Рецептура ещё не задана.</p>
         <div class="actionbar">
-          <a class="btn slim" :href="productPhotos(row.id)" data-tour="product-photos">Фото</a>
-          <button v-if="canEditCollection('skus')" class="btn slim ghost" @click="editor = { record: row }">Изменить</button>
+          <a v-if="row.id !== PASTE.id" class="btn slim" :href="productPhotos(row.id)" data-tour="product-photos">Фото</a>
+          <button v-if="row.id !== PASTE.id && canEditCollection('skus')" class="btn slim ghost" @click="editor = { record: row }">Изменить</button>
         </div>
       </article>
     </div>

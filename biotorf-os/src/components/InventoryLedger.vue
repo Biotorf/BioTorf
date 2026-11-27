@@ -1,4 +1,5 @@
 <script setup>
+import { FINISHED_WAREHOUSE, isFinished, RAW_WAREHOUSE } from '@/data/stockCatalog';
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, useId, watch } from 'vue';
 import CrmSelectField from '@/components/CrmSelectField.vue';
 import { logisticsApi } from '@/api/logisticsClient';
@@ -18,6 +19,7 @@ const labels = {
   receipt_paste: 'Приёмка пасты',
   receipt_powder: 'Приёмка порошка (прежние поставки)',
   production: 'Выпуск и расход сырья',
+  production_recipe: 'Выпуск по рецептуре',
   reserve: 'Резерв под заказ',
   release: 'Снятие резерва',
   dispatch: 'Отгрузка со склада',
@@ -25,7 +27,7 @@ const labels = {
   adjustment: 'Корректировка по инвентаризации',
   reversal: 'Сторно',
 };
-const movementTypes = Object.keys(labels).filter((type) => !['reversal', 'receipt_goods'].includes(type));
+const movementTypes = Object.keys(labels).filter((type) => !['reversal', 'receipt_goods', 'production_recipe'].includes(type));
 const sourceTables = {
   logistics: 'Документ логистики',
   production: 'Производственная партия',
@@ -46,6 +48,7 @@ const balances = ref([]);
 const logisticsDocuments = ref([]);
 const events = ref([]);
 const query = ref('');
+const warehouseFilter = ref('');
 const tab = ref('balances');
 const loading = ref(false);
 const saving = ref(false);
@@ -68,7 +71,7 @@ const date = new Intl.DateTimeFormat('ru-RU', { dateStyle: 'short', timeStyle: '
 
 const labelSku = (sku) => sku === 'POWDER' ? 'Порошок-концентрат'
   : sku === 'PASTE' ? 'Паста-концентрат' : db.skuById(sku)?.name || sku;
-const unitFor = (sku) => ['POWDER', 'PASTE'].includes(sku) ? 'кг' : 'шт.';
+const unitFor = (sku) => (['POWDER', 'PASTE'].includes(sku) || db.skuById(sku)?.stockType === 'raw' || balances.value.some((row) => row.sku === sku && row.unit === 'кг')) ? 'кг' : 'шт.';
 function qty(value) {
   return value == null || value === '' ? '—' : number.format(Number(value));
 }
@@ -81,7 +84,7 @@ function includesQuery(values) {
   const term = query.value.trim().toLowerCase();
   return !term || values.some((value) => String(value ?? '').toLowerCase().includes(term));
 }
-const visibleBalances = computed(() => balances.value.filter((row) => Number(row.onHand) > 0 &&
+const visibleBalances = computed(() => balances.value.filter((row) => Number(row.onHand) > 0 && (!warehouseFilter.value || warehouseFilter.value === row.warehouse) &&
   includesQuery([row.sku, labelSku(row.sku), row.lot, row.warehouse, ...Object.keys(row.reservations || {})])));
 const selectedBalance = ref(null);
 function openBalanceHistory(row) {
@@ -95,15 +98,16 @@ const visibleEvents = computed(() => events.value.filter((event) =>
   includesQuery([eventLabel(event), event.reference, event.orderId, event.createdBy, event.source?.id,
     ...(event.lines || []).flatMap((line) => [labelSku(line.sku), line.sku, line.lot, line.warehouse])])));
 const knownWarehouses = computed(() => [...new Set([
+  RAW_WAREHOUSE, FINISHED_WAREHOUSE,
   ...balances.value.map((row) => row.warehouse),
   ...logisticsDocuments.value.map((row) => row.warehouse),
   ...db.warehouse.map((row) => row.warehouse || row.location),
 ].filter(Boolean))]);
 const knownLots = computed(() => [...new Set(balances.value.map((row) => row.lot))]);
 const finishedSkus = computed(() => [...new Set([
-  ...(db.skus || []).map((row) => row.id),
+  ...(db.skus || []).filter(isFinished).map((row) => row.id),
   ...balances.value.map((row) => row.sku),
-])].filter((sku) => !['POWDER', 'PASTE'].includes(sku)));
+])].filter((sku) => !['POWDER', 'PASTE'].includes(sku) && (!db.skuById(sku)?.stockType || db.skuById(sku).stockType === 'finished')));
 const receiptSku = (type) => ({ receipt_paste: 'PASTE', receipt_powder: 'POWDER' })[type];
 const sourceRows = computed(() => {
   const type = form.value?.type;
@@ -111,7 +115,7 @@ const sourceRows = computed(() => {
   const rows = table === 'logistics' ? logisticsDocuments.value : db.data[table] || [];
   if (receiptSku(type)) return rows.filter((row) => row.kind === 'supply' && row.status === 'Принят'
     && row.items?.some((item) => item.material?.toUpperCase() === receiptSku(type) && item.qcStatus === 'Пройден'));
-  if (type === 'production') return rows.filter((row) => row.status === 'Завершено' && ['Пройден', 'Отклонён'].includes(row.qcStatus));
+  if (type === 'production') return rows.filter((row) => row.status === 'Завершено' && db.skuById(row.sku)?.stockType !== 'finished' && ['Пройден', 'Отклонён'].includes(row.qcStatus));
   if (table === 'logistics') return rows.filter((row) => row.kind === 'dispatch' && !row.shipmentId);
   return rows;
 });
@@ -272,7 +276,7 @@ function skuOptions(type) {
   if (receiptSku(type)) return [receiptSku(type)];
   if (type === 'production') return ['PASTE', 'POWDER', ...finishedSkus.value];
   if (['opening', 'adjustment'].includes(type)) {
-    return ['PASTE', 'POWDER', ...finishedSkus.value];
+    return [...new Set(['PASTE', 'POWDER', ...db.skus.map((row) => row.id), ...balances.value.map((row) => row.sku)])];
   }
   return finishedSkus.value;
 }
@@ -437,6 +441,10 @@ onBeforeUnmount(() => window.removeEventListener('hashchange', showLinkedForm));
     <p v-if="!ready && loading" role="status">Загрузка складского журнала…</p>
     <div v-if="ready">
       <div class="toolbar inventory-filter">
+        <select v-model="warehouseFilter" class="select" aria-label="Фильтр по складу">
+          <option value="">Все склады</option>
+          <option v-for="warehouse in knownWarehouses" :key="warehouse">{{ warehouse }}</option>
+        </select>
         <input v-model="query" class="input" aria-label="Поиск по складу" placeholder="Товар, партия, склад или заказ" type="search" />
       </div>
       <div v-if="tab === 'balances'" class="table-wrap">

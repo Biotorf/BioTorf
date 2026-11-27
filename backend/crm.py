@@ -214,6 +214,14 @@ def _invoice_automation(tx, coll, rid, current, saved, *, actor, allow_new=True)
 
 
 def _write_crm_record(tx, coll, document, rid, current, *, actor, allow_new_automation=True):
+    if coll in {"skus", "production"}:
+        import manufacturing
+        if coll == "skus":
+            document = manufacturing.normalize_catalog(tx, document, current)
+        else:
+            document = manufacturing.finish(tx, current, document, actor)
+            if document.get("stockEventId") and document.get("stockEventId") != (current or {}).get("stockEventId"):
+                return get_record(tx, coll, rid)
     saved = _write(tx, coll, document, rid)
     _invoice_automation(tx, coll, rid, current, saved, actor=actor, allow_new=allow_new_automation)
     return saved
@@ -249,6 +257,25 @@ def _remember_deletions(tx, coll: str, rid: str | None = None):
     )
 
 
+def _protect_stock_history(tx, coll, ids):
+    if coll == "production":
+        import manufacturing
+        for rid in ids:
+            posting = manufacturing.active_posting(tx, rid)
+            if posting and posting["type"] == "production_recipe":
+                raise ValueError("Перед удалением партии сторнируйте её выпуск в журнале склада.")
+    if coll == "skus":
+        import inventory
+        wanted = set(ids)
+        if not wanted:
+            return
+        if any(row["sku"] in wanted for row in list_records(tx, inventory.BALANCES)):
+            raise ValueError("Товары со складской историей удалить нельзя.")
+        if any(item["sku"] in wanted for sku in list_records(tx, "skus") if sku["id"] not in wanted
+               for item in (sku.get("components") or []) if isinstance(item, dict) and "sku" in item):
+            raise ValueError("Сначала исключите товар из рецептур.")
+
+
 def delete(conn, coll: str, rid: str, expected_revision=None, *, actor: str = "CRM") -> bool:
     with write_transaction(conn) as tx:
         current = get_record(tx, coll, rid)
@@ -256,6 +283,7 @@ def delete(conn, coll: str, rid: str, expected_revision=None, *, actor: str = "C
             return False
         if expected_revision is not None and expected_revision != current["_updatedAt"]:
             raise ConflictError(coll, rid)
+        _protect_stock_history(tx, coll, [rid])
         _remember_deletions(tx, coll, rid)
         tx.execute("DELETE FROM crm_records WHERE coll=? AND id=?", (coll, rid))
         _invoice_automation(tx, coll, rid, current, None, actor=actor)
@@ -322,6 +350,7 @@ def put_state(conn, payload: dict, *, actor: str = "CRM") -> dict:
                     continue
                 if rec["_expectedRev"] != current["_updatedAt"]:
                     raise ConflictError(coll, rid)
+                _protect_stock_history(tx, coll, [rid])
                 _remember_deletions(tx, coll, rid)
                 tx.execute("DELETE FROM crm_records WHERE coll=? AND id=?", (coll, rid))
                 if coll == "invoices":
@@ -338,7 +367,8 @@ def put_state(conn, payload: dict, *, actor: str = "CRM") -> dict:
                     raise ConflictError(coll, rid)
                 conflicts += 1
                 continue
-            saved = _write(tx, coll, document, rid)
+            saved = (_write_crm_record(tx, coll, document, rid, current, actor=actor)
+                     if coll in {"skus", "production"} else _write(tx, coll, document, rid))
             if coll == "invoices":
                 invoice_changes.append((rid, current, saved))
         for rid, before, after in invoice_changes:
@@ -376,6 +406,7 @@ def import_collection(conn, coll: str, records: list, mode: str = "merge", *,
             if coll == "invoices":
                 replaced_invoices = {row["id"]: row for row in list_records(tx, coll)}
             previous_ids = [row[0] for row in tx.execute("SELECT id FROM crm_records WHERE coll=?", (coll,)).fetchall()]
+            _protect_stock_history(tx, coll, (rid for rid in previous_ids if rid not in seen))
             _remember_deletions(tx, coll)
             # Сохраняем вложения карточки, если её ID остаётся в новой таблице.
             tx.executemany("DELETE FROM crm_records WHERE coll=? AND id=?",
@@ -384,7 +415,7 @@ def import_collection(conn, coll: str, records: list, mode: str = "merge", *,
         created = updated = 0
         affected = []
         for rid, rec in validated:
-            current = get_record(tx, coll, rid) if mode == "merge" else None
+            current = get_record(tx, coll, rid) if mode == "merge" or coll in {"production", "skus"} else None
             expected = rec.get("_expectedRev", _NO_REVISION)
             if expected is not _NO_REVISION and expected != (current or {}).get("_updatedAt"):
                 raise ConflictError(coll, rid)
@@ -411,6 +442,8 @@ def wipe_collection(conn, coll: str, *, actor: str = "CRM") -> int:
         if coll == "invoices":
             for row in list_records(tx, coll):
                 _invoice_automation(tx, coll, row["id"], row, None, actor=actor)
+        if coll in {"production", "skus"}:
+            _protect_stock_history(tx, coll, (row["id"] for row in list_records(tx, coll)))
         _remember_deletions(tx, coll)
         return tx.execute("DELETE FROM crm_records WHERE coll=?", (coll,)).rowcount
 

@@ -1,4 +1,5 @@
 <script setup>
+import { isFinished } from '@/data/stockCatalog';
 import { inventoryLink } from '@/utils/inventoryLink';
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import BackendBadge from '@/components/ui/BackendBadge.vue';
@@ -14,7 +15,7 @@ const { day, money } = useFormatters();
 const { canEdit, canEditCollection, canSeeFarm } = usePermissions();
 const canWork = computed(() => canEditCollection('journeys'));
 const clientOptions = computed(() => db.farms.filter(canSeeFarm).map((row) => ({ value: row.id, label: [row.name || row.id, row.region, row.phone].filter(Boolean).join(' · ') })));
-const skuOptions = computed(() => db.skus.map((row) => ({ value: row.id, label: [row.name || row.id, row.pack ? `${row.pack} л` : ''].filter(Boolean).join(' · ') })));
+const skuOptions = computed(() => db.skus.filter(isFinished).map((row) => ({ value: row.id, label: [row.name || row.id, row.pack ? `${row.pack} л` : ''].filter(Boolean).join(' · ') })));
 const phases = ['Клиент', 'Сделка', 'Предложение', 'Заказ и оплата', 'Доставка', 'Сопровождение'];
 
 const readSelection = () => new URLSearchParams(location.hash.split('?')[1]).get('id');

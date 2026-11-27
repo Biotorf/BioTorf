@@ -16,7 +16,7 @@ SOURCE_POSTINGS = "inventorySourcePostings"
 ORDER_STOCK = "inventoryOrderStock"
 CANCELLED = {"Отменён", "Отменен", "Отменена", "Отменено"}
 TYPES = frozenset({
-    "opening", "receipt_paste", "receipt_powder", "receipt_goods", "production", "reserve", "release",
+    "opening", "receipt_paste", "receipt_powder", "receipt_goods", "production", "production_recipe", "reserve", "release",
     "dispatch", "return", "adjustment", "reversal",
 })
 RECEIPT_TYPES = {"receipt_paste": "paste", "receipt_powder": "powder", "receipt_goods": ""}
@@ -25,6 +25,7 @@ SOURCE_TYPES = {
     "receipt_paste": {"logistics"},
     "receipt_powder": {"logistics"},
     "production": {"production"},
+    "production_recipe": {"production"},
     "reserve": {"orders"},
     "release": {"orders"},
     "dispatch": {"shipments", "logistics"},
@@ -37,6 +38,8 @@ class InventoryConflict(ValueError):
 
 
 def may_post(role: str, event_type: str) -> bool:
+    if event_type == "production_recipe":
+        return False
     return role in {"director", "operations", "warehouse"} or (role == "production" and event_type == "production")
 
 
@@ -145,10 +148,10 @@ def _normalize(raw: dict) -> dict:
         wh = _text(line.get("warehouse"), "Склад")
         unit = _text(line.get("unit"), "Единица")
         expected_unit = "кг" if sku in RAW_SKUS else "шт."
-        if unit != expected_unit:
+        if unit not in ({expected_unit} if sku in RAW_SKUS else {"шт.", "кг"}):
             raise ValueError(f"Для SKU «{sku}» единица учёта — {expected_unit}")
         qty = _number(line.get("qty"), unit)
-        if not qty or (kind != "adjustment" and qty < 0):
+        if not qty or (kind not in {"adjustment", "production_recipe"} and qty < 0):
             raise ValueError("Укажите положительное количество по каждой строке")
         key = (sku, lot, wh, unit)
         parsed[key] = parsed.get(key, Decimal(0)) + qty
@@ -183,8 +186,9 @@ def _posting_source(tx, event: dict) -> tuple[dict | None, str | None]:
         if event["orderId"] and event["orderId"] != source_order:
             raise ValueError("Заказ должен совпадать с заказом в документе")
         event["orderId"] = source_order
-    unique_source = kind in RECEIPT_TYPES or kind in {"production", "dispatch"}
-    return record, _hash([kind, coll, rid]) if unique_source else None
+    unique_source = kind in RECEIPT_TYPES or kind in {"production", "production_recipe", "dispatch"}
+    source_kind = "production" if kind == "production_recipe" else kind
+    return record, _hash([source_kind, coll, rid]) if unique_source else None
 
 
 def _document_quantities(doc: dict | None) -> dict:
@@ -237,15 +241,32 @@ def receipt_lines(tx, doc: dict, kind: str, *, fallback_warehouse: str = "") -> 
             if item.get("qcStatus") != "Пройден" or item.get("unit") not in {"кг", "т"}:
                 raise ValueError("Проверьте контроль качества и единицу приёмки сырья.")
             sku = material.upper()
+            if material == "paste" and item.get("skuId") == "PASTE":
+                from manufacturing import RAW_WAREHOUSE
+                if warehouse != RAW_WAREHOUSE or item["unit"] != "кг":
+                    raise ValueError("Пасту из каталога принимайте в килограммах на «Склад сырья».")
             unit = "кг"
             qty = Decimal(str(item["qty"])) * (1000 if item["unit"] == "т" else 1)
         else:
             sku = item.get("skuId")
-            if not sku or sku in RAW_SKUS or not crm.get_record(tx, "skus", sku):
+            product = crm.get_record(tx, "skus", sku) if sku and sku not in RAW_SKUS else None
+            if not product:
                 raise ValueError("Выберите товар из каталога для каждой позиции поставки.")
-            if item.get("unit") not in {"шт.", "шт", "штук", "упак", "упак."}:
-                raise ValueError("Для поступления товара укажите количество в штуках или упаковках.")
-            unit, qty = "шт.", item["qty"]
+            stock_type = product.get("stockType")
+            if stock_type:
+                from manufacturing import RAW_WAREHOUSE, FINISHED_WAREHOUSE
+                destination = FINISHED_WAREHOUSE if stock_type == "finished" else RAW_WAREHOUSE
+                if warehouse != destination:
+                    raise ValueError(f"Для «{product.get('name') or sku}» выберите «{destination}».")
+            if stock_type == "raw":
+                if item.get("unit") != "кг":
+                    raise ValueError("Для сырья укажите массу в килограммах.")
+                unit = "кг"
+            else:
+                if item.get("unit") not in {"шт.", "шт", "штук", "упак", "упак."}:
+                    raise ValueError("Для поступления товара укажите количество в штуках или упаковках.")
+                unit = "шт."
+            qty = item["qty"]
         lines.append({"sku": sku, "lot": lot, "warehouse": warehouse,
                       "unit": unit, "qty": _decimal(_number(qty, unit))})
     return lines
@@ -272,6 +293,13 @@ def receipt_quantities(lines):
 
 def _validate_event(tx, event: dict, source: dict | None) -> None:
     kind, lines, order_id = event["type"], event["lines"], event["orderId"]
+    if kind == "production_recipe":
+        return  # Only the manufacturing workflow can submit the derived lines.
+    if kind in {"opening", "adjustment"}:
+        for row in lines:
+            stock_type = (crm.get_record(tx, "skus", row["sku"]) or {}).get("stockType")
+            if stock_type and row["unit"] != ("кг" if stock_type == "raw" else "шт."):
+                raise ValueError("Единица складского учёта должна совпадать с типом товара.")
     raw = [row for row in lines if row["sku"] in RAW_SKUS]
     finished = [row for row in lines if row["sku"] not in RAW_SKUS]
     if order_id and kind in {"reserve", "dispatch"}:
@@ -283,7 +311,10 @@ def _validate_event(tx, event: dict, source: dict | None) -> None:
         if source.get("status") in CANCELLED:
             raise ValueError("Нельзя провести отменённую отгрузку")
         _check_document_lines(finished, _document_quantities(source))
-    if kind in {"reserve", "release", "dispatch", "return"} and raw:
+    if kind in {"reserve", "release", "dispatch", "return"} and (raw or any(
+        (crm.get_record(tx, "skus", row["sku"]) or {}).get("stockType") in {"raw", "packaging"}
+        or row["unit"] != "шт." for row in finished
+    )):
         raise ValueError("Резерв, отгрузка и возврат относятся к готовой продукции")
     if kind == "receipt_goods" and not source:
         raise ValueError("Для прихода товара выберите документ поставки.")
@@ -304,6 +335,8 @@ def _validate_event(tx, event: dict, source: dict | None) -> None:
         if (rejected and finished) or (not rejected and not finished):
             raise ValueError("Брак проводится только как расход сырья, успешная партия — с фактическим выпуском")
         if source:
+            if (crm.get_record(tx, "skus", str(source.get("sku") or "")) or {}).get("stockType") == "finished":
+                raise ValueError("Для готового товара со складской рецептурой сохраните завершённую партию в производстве.")
             if source.get("status") != "Завершено" or source.get("qcStatus") not in {"Пройден", "Отклонён"}:
                 raise ValueError("Для проведения завершите производственную партию и подтвердите результат контроля")
             raw_sku = raw[0]["sku"]
@@ -469,6 +502,11 @@ def _post_event(tx, event, *, actor):
     if original:
         original["reversedBy"] = event["id"]
         crm._write(tx, EVENTS, {k: v for k, v in original.items() if k != "_updatedAt"}, original["id"])
+        if original["type"] == "production_recipe":
+            batch_id = original["source"]["id"]
+            batch = crm.get_record(tx, "production", batch_id)
+            if batch and batch.get("stockEventId") == original["id"]:
+                crm._write(tx, "production", crm._record_data({**batch, "stockReversed": True}, batch_id), batch_id)
     if source_key:
         crm._write(tx, SOURCE_POSTINGS, {"id": source_key, "eventId": event["id"]}, source_key)
     return event

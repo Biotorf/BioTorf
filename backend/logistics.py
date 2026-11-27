@@ -75,7 +75,7 @@ def normalize_doc(body: dict, doc_id: str) -> dict:
     for it in body.get("items") or []:
         name = str(it.get("name") or "").strip()
         sku = str(it.get("skuId") or "").strip()
-        material = it.get("material") or ""
+        material = it.get("material") or ("paste" if sku == "PASTE" else "")
         if not name and not sku and not material:
             continue
         qty = float(it.get("qty") or 0)
