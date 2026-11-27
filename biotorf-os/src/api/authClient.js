@@ -12,18 +12,19 @@
 //
 // Если бэкенд работает в DEV_MODE (AUTH_PASSWORD пуст, сотрудников нет),
 // authState.required === false — экран входа не показывается (демо-режим).
+import { reactive } from 'vue';
 import { COMMS_API_URL } from './commsClient';
 
 const TOKEN_KEY = 'biotorf.auth.token';
 const USER_KEY = 'biotorf.auth.user';
 
-export const authState = {
+export const authState = reactive({
   token: localStorage.getItem(TOKEN_KEY) || null,
   user: (() => { try { return JSON.parse(localStorage.getItem(USER_KEY)); } catch { return null; } })(),
   // null = ещё не проверяли; true = сервер требует токен; false = DEV_MODE
   required: null,
   hasUsers: true,
-};
+});
 
 export function authToken() { return authState.token; }
 
@@ -122,20 +123,10 @@ export function logout() {
 // Определяет, требует ли сервер авторизацию, и есть ли уже сотрудники.
 // hasUsers=false + authRequired=true → на экране входа предлагаем
 // «зарегистрировать первого сотрудника — он станет генеральным директором».
-export async function checkAuthRequired() {
-  try {
-    const resp = await fetch(COMMS_API_URL + '/health', { signal: AbortSignal.timeout(5000) });
-    if (!resp.ok) { authState.required = false; return false; }
-    const info = await resp.json();
-    authState.hasUsers = !!info.hasUsers;
-    authState.required = !!(info && info.authRequired);
-    if (!authState.required) {
-      authState.user = authState.user || { login: 'dev', name: 'Разработчик', role: 'director', roleName: 'Генеральный директор' };
-    }
-    return authState.required;
-  } catch {
-    authState.required = false;   // бэкенда нет — локальный демо-режим
-    authState.hasUsers = true;
-    return false;
+export function applyAuthHealth(info) {
+  authState.hasUsers = Boolean(info.hasUsers);
+  authState.required = info.authRequired;
+  if (!authState.required && !authState.user) {
+    authState.user = { login: 'dev', name: 'Разработчик', role: 'director', roleName: 'Генеральный директор' };
   }
 }

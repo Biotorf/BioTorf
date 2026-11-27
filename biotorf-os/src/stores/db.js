@@ -877,7 +877,7 @@ export const useDbStore = defineStore('db', {
     retryCrmSync() {
       return hasCrmChanges(this.crmSync) ? this.pushCrmState() : this.pullCrmState();
     },
-    pullCrmState({ discardPending = false } = {}) {
+    pullCrmState({ discardPending = false, validateSession = false } = {}) {
       return serializeCrm(this.crmSync, async () => {
         if (!(await checkApi())) {
           this.serverOnline = false;
@@ -897,6 +897,7 @@ export const useDbStore = defineStore('db', {
           return true;
         } catch (error) {
           this.crmSyncError = error.message;
+          if (validateSession && error.status === 401) throw error;
           return false;
         }
       });

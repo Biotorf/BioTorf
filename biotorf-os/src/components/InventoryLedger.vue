@@ -351,13 +351,23 @@ function effectsText(row) {
   return changes.length ? changes.join(' · ') : `${qty(row.qty)} ${row.unit}`;
 }
 
-onMounted(() => {
+function refreshWarehouse() {
   refresh();
+  logisticsApi.list().then((docs) => {
+    if (docs) logisticsDocuments.value = docs;
+  }).catch(() => {});
+}
+
+onMounted(() => {
+  refreshWarehouse();
   db.refreshListOptions().catch(() => {});
-  logisticsApi.list().then((docs) => { logisticsDocuments.value = docs || []; }).catch(() => {});
   window.addEventListener('hashchange', showLinkedForm);
+  window.addEventListener('biotorf:backend-ready', refreshWarehouse);
 });
-onBeforeUnmount(() => window.removeEventListener('hashchange', showLinkedForm));
+onBeforeUnmount(() => {
+  window.removeEventListener('hashchange', showLinkedForm);
+  window.removeEventListener('biotorf:backend-ready', refreshWarehouse);
+});
 </script>
 
 <template>

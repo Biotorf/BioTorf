@@ -64,21 +64,31 @@ async function req(path, { signal, timeout = 8000, ...options } = {}) {
 
 let healthPromise = null;
 let healthCheckedAt = 0;
-let healthTimer = null;
-export function checkApi({ force = false } = {}) {
+let lastHealth = null;
+
+export function getApiHealth({ force = false } = {}) {
   if (healthPromise) return healthPromise;
-  if (!force && Date.now() - healthCheckedAt < 30000) return Promise.resolve(apiState.online);
-  healthPromise ??= req('/health')
-    .then(() => { apiState.online = true; return true; })
-    .catch(() => { apiState.online = false; return false; })
-    .finally(() => { healthPromise = null; healthCheckedAt = Date.now(); });
-  // фоновый watchdog: если бэкенд (или telegram-worker) упал и снова поднялся,
-  // лента должна «вернуться к жизни» без перезагрузки страницы — иначе
-  // входящие Telegram-сообщения перестают приходить на сайт молча
-  if (!healthTimer && typeof setInterval === 'function') {
-    healthTimer = setInterval(() => checkApi({ force: true }), 30000);
-  }
+  if (!force && Date.now() - healthCheckedAt < 30000) return Promise.resolve(lastHealth);
+  healthPromise = fetch(COMMS_API_URL + '/health', {
+    cache: 'no-store',
+    signal: AbortSignal.timeout(12000),
+  }).then(async (response) => {
+    if (!response.ok) return null;
+    const info = await response.json();
+    return info?.ok === false || !info || typeof info.authRequired !== 'boolean' ? null : info;
+  }).catch(() => null).then((info) => {
+    lastHealth = info;
+    apiState.online = Boolean(info);
+    return info;
+  }).finally(() => {
+    healthCheckedAt = Date.now();
+    healthPromise = null;
+  });
   return healthPromise;
+}
+
+export async function checkApi(options) {
+  return Boolean(await getApiHealth(options));
 }
 
 // Возможности сервера (что настроено): telegramSend / whatsappSend.
